@@ -76,12 +76,16 @@ jobs:
           npm run typecheck
           npm run build
           npm run package
-      - name: Create GitHub release
+      - name: Publish GitHub release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            ui/dist/extension-zea.tar.gz \
-            ui/dist/extension-zea_checksums.txt \
-            --title "$GITHUB_REF_NAME" \
-            --generate-notes
+          assets=(ui/dist/extension-zea.tar.gz ui/dist/extension-zea_checksums.txt)
+          # A release created manually in the GitHub UI must still get the assets.
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
+              --title "$GITHUB_REF_NAME" \
+              --generate-notes
+          fi
