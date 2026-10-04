@@ -148,6 +148,8 @@ export const ConnectionCard = ({ client, connection: c, provider, isAdmin, onEdi
                       connection={c.name}
                       pipeline={p}
                       gitRef={ref}
+                      branches={branches.state === 'ok' ? branches.data.branches : []}
+                      defaultBranch={branches.state === 'ok' ? branches.data.defaultBranch : undefined}
                       onStarted={run => onStarted(p.name, run)}
                       onClose={() => setFormFor(null)}
                     />

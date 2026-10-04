@@ -46,7 +46,7 @@ prints a ready-to-merge values snippet for the argo-cd chart.
   `argocd-server` to `github.com` to download the UI extension at startup.
 
 In the commands below the Argo CD namespace is `argocd`, the Helm release and
-the anchor Application are both called `zea`, and the release is `v0.1.4`.
+the anchor Application are both called `zea`, and the release is `v0.1.5`.
 
 ### Step 1. Install the backend
 
@@ -99,7 +99,7 @@ set `image.tag`.
 #### Option B: with the Helm CLI
 
 ```bash
-helm install zea oci://ghcr.io/harchschoolboy/charts/zea --version 0.1.4 \
+helm install zea oci://ghcr.io/harchschoolboy/charts/zea --version 0.1.5 \
   -n argocd \
   --set anchorApplication=argocd:<existing-app> \
   --set 'admins.users={admin}'
@@ -150,11 +150,11 @@ server:
           - name: EXTENSION_NAME
             value: zea
           - name: EXTENSION_VERSION
-            value: v0.1.4
+            value: v0.1.5
           - name: EXTENSION_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.4/extension-zea.tar.gz
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.5/extension-zea.tar.gz
           - name: EXTENSION_CHECKSUM_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.4/extension-zea_checksums.txt
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.5/extension-zea_checksums.txt
 
 configs:
   params:
@@ -242,11 +242,11 @@ one Zea installation.
                - name: EXTENSION_NAME
                  value: zea
                - name: EXTENSION_VERSION
-                 value: v0.1.4
+                 value: v0.1.5
                - name: EXTENSION_URL
-                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.4/extension-zea.tar.gz
+                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.5/extension-zea.tar.gz
                - name: EXTENSION_CHECKSUM_URL
-                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.4/extension-zea_checksums.txt
+                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.5/extension-zea_checksums.txt
              securityContext:
                runAsNonRoot: true
                runAsUser: 1000
@@ -353,6 +353,9 @@ reads the parameters from the pipeline file at that branch and shows a form.
   (`string`, `boolean`, `choice`, `number`, `environment`), with
   descriptions, defaults and required marks. GitHub accepts only the declared
   inputs, at most 25.
+- Text inputs whose name looks like a branch (`branch`, `app_branch`, `ref`,
+  `git-ref`, `gitRef`) get the branch list of the Connection's repository;
+  any other value can still be typed.
 - **GitLab CI**: the form is built from the `spec:inputs` header of
   `.gitlab-ci.yml` (inputs without a default are required). In addition, any
   CI/CD variables can be passed as key/value pairs; they arrive in jobs as

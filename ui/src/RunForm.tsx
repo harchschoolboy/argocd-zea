@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { describeError, ZeaClient } from './api';
-import { Pipeline, Run, RunInput } from './types';
+import { BranchPicker } from './BranchPicker';
+import { Branch, Pipeline, Run, RunInput } from './types';
 import { COLORS, ErrorText, Muted, useLoad } from './ui';
 
 interface Props {
@@ -8,6 +9,8 @@ interface Props {
   connection: string;
   pipeline: Pipeline;
   gitRef: string;
+  branches: Branch[];
+  defaultBranch?: string;
   onStarted: (run: Run) => void;
   onClose: () => void;
 }
@@ -18,6 +21,16 @@ interface VarRow {
 }
 
 const fieldStyle: React.CSSProperties = { width: '100%', boxSizing: 'border-box' };
+
+// Pipelines have no branch input type, so string inputs named like a branch
+// (branch, app_branch, ref, git-ref, gitRef) get the branch picker of this
+// repository. Any text is still accepted.
+export function isBranchInput(i: RunInput): boolean {
+  if (i.type !== 'string') {
+    return false;
+  }
+  return /branch/i.test(i.name) || /(^|[^a-zA-Z])ref($|[^a-zA-Z])/i.test(i.name) || /[a-z]Ref($|[^a-z])/.test(i.name);
+}
 
 function initialValues(inputs: RunInput[]): Record<string, string> {
   const out: Record<string, string> = {};
@@ -35,7 +48,7 @@ function initialValues(inputs: RunInput[]): Record<string, string> {
 
 // RunFormPanel asks for the declared inputs (and free variables when the
 // provider accepts them), then starts the pipeline at gitRef.
-export const RunFormPanel = ({ client, connection, pipeline, gitRef, onStarted, onClose }: Props) => {
+export const RunFormPanel = ({ client, connection, pipeline, gitRef, branches, defaultBranch, onStarted, onClose }: Props) => {
   const [form] = useLoad(() => client.runForm(connection, pipeline.id, gitRef), [client, connection, pipeline.id, gitRef]);
   const [values, setValues] = React.useState<Record<string, string>>({});
   const [vars, setVars] = React.useState<VarRow[]>([]);
@@ -117,6 +130,9 @@ export const RunFormPanel = ({ client, connection, pipeline, gitRef, onStarted, 
           <input className='argo-field' style={fieldStyle} type='number' value={v} onChange={e => setValue(i.name, e.target.value)} />
         );
       default:
+        if (isBranchInput(i) && branches.length > 0) {
+          return <BranchPicker value={v} branches={branches} defaultBranch={defaultBranch} onChange={nv => setValue(i.name, nv)} />;
+        }
         return (
           <input
             className='argo-field'
