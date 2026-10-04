@@ -1,5 +1,6 @@
 import * as React from 'react';
 import { describeError, ZeaClient } from './api';
+import { BranchPicker } from './BranchPicker';
 import { Connection, ProviderInfo, TestResult } from './types';
 import { COLORS, ErrorText, Muted, ProviderBadge, TestResultView, useLoad } from './ui';
 
@@ -59,8 +60,6 @@ export const ConnectionCard = ({ client, connection: c, provider, isAdmin, onEdi
     }
   };
 
-  const listID = `zea-branches-${c.name}`;
-
   return (
     <div className='white-box' style={{ margin: 0 }}>
       <div className='white-box__details'>
@@ -82,19 +81,14 @@ export const ConnectionCard = ({ client, connection: c, provider, isAdmin, onEdi
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', marginBottom: '0.8em' }}>
           <label style={{ fontWeight: 600 }}>Branch</label>
-          <input
-            className='argo-field'
-            style={{ flex: 1 }}
-            list={listID}
+          <BranchPicker
             value={ref ?? ''}
-            onChange={e => setRef(e.target.value)}
+            branches={branches.state === 'ok' ? branches.data.branches : []}
+            defaultBranch={branches.state === 'ok' ? branches.data.defaultBranch : undefined}
+            onChange={setRef}
             disabled={branches.state !== 'ok'}
             placeholder={branches.state === 'loading' ? 'Loading branches...' : ''}
           />
-          <datalist id={listID}>
-            {branches.state === 'ok' &&
-              branches.data.branches.map(b => <option key={b.name} value={b.name} label={b.protected ? 'protected' : undefined} />)}
-          </datalist>
           <button className='argo-button argo-button--base-o' title='Reload branches' onClick={reloadBranches}>
             <i className='fa fa-redo' />
           </button>
