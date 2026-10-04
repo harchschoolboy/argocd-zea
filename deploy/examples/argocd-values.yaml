@@ -19,11 +19,11 @@ server:
           - name: EXTENSION_NAME
             value: zea
           - name: EXTENSION_VERSION
-            value: v0.1.3
+            value: v0.1.4
           - name: EXTENSION_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.3/extension-zea.tar.gz
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.4/extension-zea.tar.gz
           - name: EXTENSION_CHECKSUM_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.3/extension-zea_checksums.txt
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.4/extension-zea_checksums.txt
 
 configs:
   params:

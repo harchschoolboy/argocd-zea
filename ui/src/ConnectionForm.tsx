@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { describeError, ZeaClient } from './api';
 import { Connection, ConnectionInput, CredentialMode, ProviderInfo, TestResult } from './types';
-import { ErrorText, TestResultView } from './ui';
+import { ErrorText, TestResultView, COLORS } from './ui';
 
 interface Props {
   client: ZeaClient;
@@ -25,7 +25,7 @@ const Row = ({ label, help, children }: { label: string; help?: string; children
   <div className='argo-form-row' style={{ marginBottom: '1em' }}>
     <label style={{ display: 'block', fontWeight: 600, marginBottom: '0.3em' }}>{label}</label>
     {children}
-    {help && <div style={{ fontSize: '0.85em', color: '#6d7f8b', marginTop: '0.2em' }}>{help}</div>}
+    {help && <div style={{ fontSize: '0.85em', color: COLORS.muted, marginTop: '0.2em' }}>{help}</div>}
   </div>
 );
 
@@ -169,7 +169,7 @@ export const ConnectionForm = ({ client, providers, existing, onSaved, onCancel 
             </div>
           </Row>
         )}
-        {mode?.help && <div style={{ color: '#6d7f8b', marginBottom: '0.8em' }}>{mode.help}</div>}
+        {mode?.help && <div style={{ color: COLORS.muted, marginBottom: '0.8em' }}>{mode.help}</div>}
 
         {mode?.fields.map(f => {
           const placeholder = storedKeys.has(f.key) ? '(stored - leave empty to keep)' : '';

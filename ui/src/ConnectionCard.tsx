@@ -127,7 +127,7 @@ export const ConnectionCard = ({ client, connection: c, provider, isAdmin, onEdi
             {pipelines.state === 'ok' &&
               pipelines.data?.map(p => (
                 <React.Fragment key={p.id}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', padding: '0.3em 0', borderTop: '1px solid #eee' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', padding: '0.3em 0', borderTop: `1px solid ${COLORS.border}` }}>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div>{p.name}</div>
                       <div style={{ fontSize: '0.8em', color: COLORS.muted, overflow: 'hidden', textOverflow: 'ellipsis' }}>

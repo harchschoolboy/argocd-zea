@@ -206,7 +206,7 @@ const RunRow = ({ client, connection, run, capabilities, expanded, onToggle, onC
   const canRerunFailed = finished && !!capabilities?.retryFailedJobs && (run.status === 'failed' || run.status === 'canceled');
 
   return (
-    <div style={{ borderTop: '1px solid #eee', padding: '0.35em 0' }}>
+    <div style={{ borderTop: `1px solid ${COLORS.border}`, padding: '0.35em 0' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em' }}>
         <button
           className='argo-button argo-button--base-o'

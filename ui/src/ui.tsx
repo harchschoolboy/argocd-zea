@@ -9,6 +9,9 @@ export const COLORS = {
   error: '#e96d76',
   muted: '#6d7f8b',
   warn: '#f4c030',
+  // Translucent neutrals work on both the light and the dark Argo CD theme.
+  surface: 'rgba(128, 128, 128, 0.08)',
+  border: 'rgba(128, 128, 128, 0.25)',
 };
 
 export const ErrorText = ({ text }: { text: string }) => (

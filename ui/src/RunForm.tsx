@@ -132,7 +132,7 @@ export const RunFormPanel = ({ client, connection, pipeline, gitRef, onStarted, 
   return (
     <form
       onSubmit={submit}
-      style={{ background: '#f8fbfb', border: '1px solid #dee6eb', borderRadius: 4, padding: '0.8em', margin: '0.3em 0 0.6em' }}>
+      style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 4, padding: '0.8em', margin: '0.3em 0 0.6em' }}>
       <div style={{ marginBottom: '0.6em' }}>
         Run <b>{pipeline.name}</b> on <code>{gitRef}</code>
       </div>

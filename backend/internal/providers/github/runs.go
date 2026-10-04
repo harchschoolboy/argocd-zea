@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -28,6 +29,10 @@ func (p *Provider) send(ctx context.Context, c *connections.Connection, t *targe
 		Body:   body,
 		Out:    out,
 	})
+	var ue *providers.UpstreamError
+	if errors.As(err, &ue) && ue.Status == http.StatusForbidden {
+		ue.Message += " (the GitHub App or token needs Actions: Read and write on this repository)"
+	}
 	return err
 }
 
