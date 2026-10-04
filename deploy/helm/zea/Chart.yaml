@@ -2,8 +2,8 @@ apiVersion: v2
 name: zea
 description: Zea backend - Argo CD proxy extension for building and deploying from one screen
 type: application
-version: 0.1.5
-appVersion: "0.1.5"
+version: 0.1.6
+appVersion: "0.1.6"
 home: https://github.com/harchschoolboy/argocd-zea
 sources:
   - https://github.com/harchschoolboy/argocd-zea

@@ -46,7 +46,7 @@ prints a ready-to-merge values snippet for the argo-cd chart.
   `argocd-server` to `github.com` to download the UI extension at startup.
 
 In the commands below the Argo CD namespace is `argocd`, the Helm release and
-the anchor Application are both called `zea`, and the release is `v0.1.5`.
+the anchor Application are both called `zea`, and the release is `v0.1.6`.
 
 ### Step 1. Install the backend
 
@@ -99,7 +99,7 @@ set `image.tag`.
 #### Option B: with the Helm CLI
 
 ```bash
-helm install zea oci://ghcr.io/harchschoolboy/charts/zea --version 0.1.5 \
+helm install zea oci://ghcr.io/harchschoolboy/charts/zea --version 0.1.6 \
   -n argocd \
   --set anchorApplication=argocd:<existing-app> \
   --set 'admins.users={admin}'
@@ -150,11 +150,11 @@ server:
           - name: EXTENSION_NAME
             value: zea
           - name: EXTENSION_VERSION
-            value: v0.1.5
+            value: v0.1.6
           - name: EXTENSION_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.5/extension-zea.tar.gz
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.6/extension-zea.tar.gz
           - name: EXTENSION_CHECKSUM_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.5/extension-zea_checksums.txt
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.6/extension-zea_checksums.txt
 
 configs:
   params:
@@ -242,11 +242,11 @@ one Zea installation.
                - name: EXTENSION_NAME
                  value: zea
                - name: EXTENSION_VERSION
-                 value: v0.1.5
+                 value: v0.1.6
                - name: EXTENSION_URL
-                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.5/extension-zea.tar.gz
+                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.6/extension-zea.tar.gz
                - name: EXTENSION_CHECKSUM_URL
-                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.5/extension-zea_checksums.txt
+                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.6/extension-zea_checksums.txt
              securityContext:
                runAsNonRoot: true
                runAsUser: 1000
@@ -363,8 +363,15 @@ reads the parameters from the pipeline file at that branch and shows a form.
   or higher, and the project setting "Minimum role to use pipeline
   variables" must allow it.
 
-Recent runs of the selected branch (or all branches) are listed under the
-pipelines with status, jobs and steps; active runs refresh automatically.
+Each card shows the last run of the selected branch. Click the card (or its
+name, or the last run) to open the Connection view: it keeps the branch and
+Run controls and lists recent runs of the selected branch (or all branches)
+with status, jobs and steps; failed jobs open with their steps, and active
+runs refresh automatically. The view has its own URL
+(`/zea?connection=<name>`), so it can be bookmarked and the browser Back
+button returns to the list. **Test**, **Edit** and **Delete** are in this
+view too.
+
 Running runs can be cancelled; finished runs can be rerun (GitHub) or have
 their failed jobs retried (GitHub and GitLab). Everyone who can see a
 Connection (`allowedGroups` or admin) can run, cancel and rerun its
@@ -440,7 +447,7 @@ security contexts, scheduling).
 | Install or sync stuck on the hook Job | `kubectl -n argocd logs job/zea-proxy-token` |
 | `... is not permitted in project` / `do not match any of the allowed destinations` | The Application's project does not allow the chart source or namespaces. Use the `zea` AppProject from the example, or extend your project the same way |
 | `failed to fetch chart` / `401` / `403` from `ghcr.io` | The chart version is not released, or the ghcr package is not public |
-| `GitHub API returned 401` / `GitLab API returned 401` | Credentials of the Connection; use **Test** on the card |
+| `GitHub API returned 401` / `GitLab API returned 401` | Credentials of the Connection; use **Test** in the Connection view |
 | `GitHub API returned 403` on Run, Cancel or Rerun | The GitHub App or token needs **Actions** read and write (an App owner must also accept the new permissions on the installation) |
 | `Unexpected inputs provided` (GitHub) | The workflow file on the branch changed after the form was opened; close and reopen the form |
 | `GitLab API returned 403` on Run | Token role (Developer or higher; Maintainer for protected branches) and the "Minimum role to use pipeline variables" project setting |

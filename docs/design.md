@@ -46,6 +46,15 @@ zea-backend (Go, in the Argo CD namespace)
 GitHub API / GitLab API (gitlab.com or self-hosted) / OCI registries / git
 ```
 
+### UI
+
+The page lists Connections as cards: branch picker, pipelines with **Run**,
+and the last run of the selected branch. A card opens the Connection view
+(`?connection=<name>[&ref=<branch>][&run=<id>]`, pushed to the browser
+history) with the full runs list, jobs and steps, and Test/Edit/Delete. The
+page header shows the extension version (webpack `DefinePlugin` from
+`ui/package.json`) and links to the repository.
+
 ### Anchor Application
 
 The Argo CD proxy extension requires `Argocd-Application-Name` and
