@@ -8,9 +8,9 @@ repositories (GitHub Actions, GitLab CI), pick a branch, start a pipeline,
 follow its jobs and logs, and deploy a built image the GitOps way (a commit to
 the app-of-apps repo).
 
-> Status: phase 2. Connections (GitHub and GitLab), branch and pipeline
-> listing work. Starting and following pipelines and Deploy are in progress -
-> see [docs/design.md](docs/design.md).
+> Status: phase 3. Connections (GitHub and GitLab), branches, starting
+> pipelines with parameters, run status and jobs, cancel and rerun work. Logs
+> and Deploy are in progress - see [docs/design.md](docs/design.md).
 
 ## How it fits into Argo CD
 
@@ -46,7 +46,7 @@ prints a ready-to-merge values snippet for the argo-cd chart.
   `argocd-server` to `github.com` to download the UI extension at startup.
 
 In the commands below the Argo CD namespace is `argocd`, the Helm release and
-the anchor Application are both called `zea`, and the release is `v0.1.2`.
+the anchor Application are both called `zea`, and the release is `v0.1.3`.
 
 ### Step 1. Install the backend
 
@@ -99,7 +99,7 @@ set `image.tag`.
 #### Option B: with the Helm CLI
 
 ```bash
-helm install zea oci://ghcr.io/harchschoolboy/charts/zea --version 0.1.2 \
+helm install zea oci://ghcr.io/harchschoolboy/charts/zea --version 0.1.3 \
   -n argocd \
   --set anchorApplication=argocd:<existing-app> \
   --set 'admins.users={admin}'
@@ -150,11 +150,11 @@ server:
           - name: EXTENSION_NAME
             value: zea
           - name: EXTENSION_VERSION
-            value: v0.1.2
+            value: v0.1.3
           - name: EXTENSION_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.2/extension-zea.tar.gz
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.3/extension-zea.tar.gz
           - name: EXTENSION_CHECKSUM_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.2/extension-zea_checksums.txt
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.3/extension-zea_checksums.txt
 
 configs:
   params:
@@ -242,11 +242,11 @@ one Zea installation.
                - name: EXTENSION_NAME
                  value: zea
                - name: EXTENSION_VERSION
-                 value: v0.1.2
+                 value: v0.1.3
                - name: EXTENSION_URL
-                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.2/extension-zea.tar.gz
+                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.3/extension-zea.tar.gz
                - name: EXTENSION_CHECKSUM_URL
-                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.2/extension-zea_checksums.txt
+                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.3/extension-zea_checksums.txt
              securityContext:
                runAsNonRoot: true
                runAsUser: 1000
@@ -342,6 +342,32 @@ scope `api` and role Developer. Use Maintainer if pipelines have to run on
 protected branches that Developers cannot push to. For self-managed GitLab
 served under a sub-path, set the API URL (`https://host/gitlab/api/v4`).
 
+### Running pipelines
+
+Pick a branch on a Connection card and press **Run** next to a workflow. Zea
+reads the parameters from the pipeline file at that branch and shows a form.
+
+- **GitHub Actions**: the workflow needs an `on.workflow_dispatch` trigger on
+  the selected branch, and the workflow must also exist on the default branch
+  (a GitHub rule). The form is built from `workflow_dispatch.inputs`
+  (`string`, `boolean`, `choice`, `number`, `environment`), with
+  descriptions, defaults and required marks. GitHub accepts only the declared
+  inputs, at most 25.
+- **GitLab CI**: the form is built from the `spec:inputs` header of
+  `.gitlab-ci.yml` (inputs without a default are required). In addition, any
+  CI/CD variables can be passed as key/value pairs; they arrive in jobs as
+  regular environment variables. Passing variables needs the Developer role
+  or higher, and the project setting "Minimum role to use pipeline
+  variables" must allow it.
+
+Recent runs of the selected branch (or all branches) are listed under the
+pipelines with status, jobs and steps; active runs refresh automatically.
+Running runs can be cancelled; finished runs can be rerun (GitHub) or have
+their failed jobs retried (GitHub and GitLab). Everyone who can see a
+Connection (`allowedGroups` or admin) can run, cancel and rerun its
+pipelines. Every start is written to the backend log with the user, ref and
+the names of the parameters (values are not logged).
+
 ### Upgrade
 
 Bump the version in both places, so the UI and the backend match:
@@ -412,6 +438,9 @@ security contexts, scheduling).
 | `... is not permitted in project` / `do not match any of the allowed destinations` | The Application's project does not allow the chart source or namespaces. Use the `zea` AppProject from the example, or extend your project the same way |
 | `failed to fetch chart` / `401` / `403` from `ghcr.io` | The chart version is not released, or the ghcr package is not public |
 | `GitHub API returned 401` / `GitLab API returned 401` | Credentials of the Connection; use **Test** on the card |
+| `GitHub API returned 403` on Run, Cancel or Rerun | The GitHub App or token needs **Actions** read and write (an App owner must also accept the new permissions on the installation) |
+| `Unexpected inputs provided` (GitHub) | The workflow file on the branch changed after the form was opened; close and reopen the form |
+| `GitLab API returned 403` on Run | Token role (Developer or higher; Maintainer for protected branches) and the "Minimum role to use pipeline variables" project setting |
 
 ## Development
 

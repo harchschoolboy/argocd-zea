@@ -1,7 +1,9 @@
 import * as React from 'react';
 import { describeError, ZeaClient } from './api';
 import { BranchPicker } from './BranchPicker';
-import { Connection, ProviderInfo, TestResult } from './types';
+import { RunFormPanel } from './RunForm';
+import { RunsList } from './Runs';
+import { Connection, ProviderInfo, Run, TestResult } from './types';
 import { COLORS, ErrorText, Muted, ProviderBadge, TestResultView, useLoad } from './ui';
 
 interface Props {
@@ -19,6 +21,21 @@ export const ConnectionCard = ({ client, connection: c, provider, isAdmin, onEdi
   const [busy, setBusy] = React.useState(false);
   const [actionError, setActionError] = React.useState('');
   const [test, setTest] = React.useState<TestResult | null>(null);
+  const [formFor, setFormFor] = React.useState<string | null>(null);
+  const [started, setStarted] = React.useState<{ run: Run; pipeline: string } | null>(null);
+  const [runsKey, setRunsKey] = React.useState(0);
+  const [watchUntil, setWatchUntil] = React.useState(0);
+
+  React.useEffect(() => {
+    setFormFor(null);
+  }, [ref]);
+
+  const onStarted = (pipeline: string, run: Run) => {
+    setFormFor(null);
+    setStarted({ run, pipeline });
+    setWatchUntil(Date.now() + 60_000);
+    setRunsKey(k => k + 1);
+  };
 
   React.useEffect(() => {
     if (branches.state === 'ok' && ref === null) {
@@ -109,23 +126,59 @@ export const ConnectionCard = ({ client, connection: c, provider, isAdmin, onEdi
             {pipelines.state === 'ok' && pipelines.data && pipelines.data.length === 0 && <Muted>No workflows found.</Muted>}
             {pipelines.state === 'ok' &&
               pipelines.data?.map(p => (
-                <div
-                  key={p.id}
-                  style={{ display: 'flex', alignItems: 'center', gap: '0.5em', padding: '0.3em 0', borderTop: '1px solid #eee' }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div>{p.name}</div>
-                    <div style={{ fontSize: '0.8em', color: COLORS.muted, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                      {p.dispatchable ? p.path : p.reason}
+                <React.Fragment key={p.id}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', padding: '0.3em 0', borderTop: '1px solid #eee' }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div>{p.name}</div>
+                      <div style={{ fontSize: '0.8em', color: COLORS.muted, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {p.dispatchable ? p.path : p.reason}
+                      </div>
                     </div>
+                    <button
+                      className={formFor === p.id ? 'argo-button argo-button--base-o' : 'argo-button argo-button--base'}
+                      disabled={!p.dispatchable}
+                      title={p.dispatchable ? `Run ${p.name} on ${ref}` : p.reason}
+                      onClick={() => setFormFor(formFor === p.id ? null : p.id)}>
+                      <i className='fa fa-play' /> Run
+                    </button>
                   </div>
-                  <button
-                    className='argo-button argo-button--base'
-                    disabled
-                    title={p.dispatchable ? 'Starting pipelines arrives in the next Zea phase' : p.reason}>
-                    <i className='fa fa-play' /> Run
-                  </button>
-                </div>
+                  {formFor === p.id && ref && (
+                    <RunFormPanel
+                      client={client}
+                      connection={c.name}
+                      pipeline={p}
+                      gitRef={ref}
+                      onStarted={run => onStarted(p.name, run)}
+                      onClose={() => setFormFor(null)}
+                    />
+                  )}
+                </React.Fragment>
               ))}
+            {started && (
+              <div style={{ color: COLORS.ok, margin: '0.5em 0' }}>
+                <i className='fa fa-check-circle' /> Started <b>{started.pipeline}</b> on <code>{started.run.ref}</code>
+                {started.run.webURL && (
+                  <>
+                    {' '}
+                    <a href={started.run.webURL} target='_blank' rel='noopener noreferrer'>
+                      open <i className='fa fa-external-link-alt' />
+                    </a>
+                  </>
+                )}
+                <a style={{ marginLeft: '0.6em', cursor: 'pointer', color: COLORS.muted }} title='Dismiss' onClick={() => setStarted(null)}>
+                  <i className='fa fa-times' />
+                </a>
+              </div>
+            )}
+            <RunsList
+              client={client}
+              connection={c.name}
+              gitRef={ref ?? ''}
+              capabilities={provider?.capabilities}
+              refreshKey={runsKey}
+              watchUntil={watchUntil}
+              expandRunID={started?.run.id}
+            />
           </div>
         )}
 

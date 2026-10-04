@@ -149,17 +149,23 @@ implements one interface:
 |--------|---------|
 | `ListBranches` | Branch picker |
 | `ListPipelines` | GitHub: workflows with `workflow_dispatch`; GitLab: the project pipeline |
-| `GetTriggerForm` | Input fields for a run |
-| `Trigger(ref, inputs)` | Start a run, return its reference |
-| `GetRun`, `ListJobs` | Status, stages/jobs/steps |
-| `GetLogs(job, offset)` | Logs, incremental where supported |
-| `Cancel`, `Retry`, `RetryJob`, `PlayJob` | Pipeline control |
+| `GetRunForm(pipeline, ref)` | Typed input fields read from the pipeline file at `ref`; whether free variables are allowed |
+| `Trigger(pipeline, ref, inputs, variables)` | Start a run, return it (without an id if the provider does not report one) |
+| `ListRuns(pipeline?, ref?, limit)` | Recent runs, newest first |
+| `GetRun(run)` | Run with jobs (and steps where available) |
+| `GetLogs(job, offset)` | Logs, incremental where supported *(next)* |
+| `CancelRun`, `RetryRun(failedOnly)` | Pipeline control; `PlayJob` later |
 | `Capabilities()` | What the provider supports; the UI hides the rest |
 
-Normalized model: Run -> Stage/Job -> Step, statuses `queued`, `running`,
-`success`, `failed`, `canceled`, `manual`, `skipped`.
+Normalized model: Run -> Job -> Step, statuses `queued`, `running`,
+`success`, `failed`, `canceled`, `manual`, `skipped`, `unknown`. GitLab
+stages are shown as a job prefix.
 
-### Backend API (phase 2)
+Input types: `string`, `boolean`, `choice` (with options), `number`,
+`environment`, `array`. Values travel as strings; the GitLab adapter converts
+them to typed `inputs` using the form.
+
+### Backend API (phases 2-3)
 
 All paths are relative to `/extensions/zea` and must carry the anchor
 Application headers.
@@ -176,8 +182,17 @@ Application headers.
 | `POST /api/v1/connections/{name}/test` | user | Test a saved Connection |
 | `GET /api/v1/connections/{name}/branches` | user | Default branch + branches (up to 1000) |
 | `GET /api/v1/connections/{name}/pipelines?ref=` | user | Triggerable pipelines at `ref` |
+| `GET /api/v1/connections/{name}/pipelines/{pipeline}/form?ref=` | user | Run form |
+| `POST /api/v1/connections/{name}/runs` | user | Start: `{pipelineID, ref, inputs, variables}` -> 201 with the run |
+| `GET /api/v1/connections/{name}/runs?pipeline=&ref=&limit=` | user | Recent runs (limit up to 50, default 20) |
+| `GET /api/v1/connections/{name}/runs/{run}` | user | Run with jobs and steps |
+| `POST /api/v1/connections/{name}/runs/{run}/cancel` | user | Cancel -> 202 |
+| `POST /api/v1/connections/{name}/runs/{run}/retry` | user | Rerun, body `{failedOnly}` optional -> 202 |
 
-Connections a user may not use answer 404, not 403.
+Connections a user may not use answer 404, not 403. Invalid requests and
+provider validation errors (GitHub/GitLab 400/422) answer 400/422 with the
+provider message; other provider errors answer 502. Every start is logged
+with user, Connection, pipeline, ref and parameter names (not values).
 
 ### GitHub Actions
 
@@ -185,12 +200,12 @@ Connections a user may not use answer 404, not 403.
 |-|-|
 | Auth | GitHub App (JWT -> installation token, scoped per call to one repo and minimal permissions) or fine-grained PAT |
 | Branches | `GET /repos/{o}/{r}/branches` |
-| Trigger | `POST /repos/{o}/{r}/actions/workflows/{file}/dispatches` with `{ref, inputs}` |
-| Run correlation | Classic dispatch returns 204 without a run id; use run details from the API if available, otherwise correlate via a unique `zea_run_id` input |
+| Trigger | `POST /repos/{o}/{r}/actions/workflows/{id}/dispatches` with `{ref, inputs, return_run_details: true}` - returns 200 with `workflow_run_id`; on older GHES (422 for the unknown field) retried without it, then 204 without a run id |
+| Runs | `GET /actions/workflows/{id}/runs` or `GET /actions/runs`, filter `branch` |
 | Status | `GET /actions/runs/{id}`, `GET /actions/runs/{id}/jobs` |
 | Logs | `GET /actions/jobs/{id}/logs` - reliable after job completion; no live streaming |
-| Control | cancel, force-cancel, rerun, rerun failed jobs |
-| Form | `on.workflow_dispatch.inputs` of the workflow YAML |
+| Control | cancel, rerun, rerun failed jobs (write calls use a separate installation token with `actions: write`) |
+| Form | `on.workflow_dispatch.inputs` of the workflow file at the selected ref, in declaration order; max 25 inputs, no free variables |
 | Constraints | Workflow must have `workflow_dispatch` and exist on the default branch |
 
 ### GitLab CI
@@ -199,11 +214,12 @@ Connections a user may not use answer 404, not 403.
 |-|-|
 | Auth | Project Access Token (one project, role Developer, scope `api`) or Group Access Token; `read_api` + trigger token for trigger-only setups |
 | Branches | `GET /projects/:id/repository/branches` |
-| Trigger | `POST /projects/:id/pipeline` with `{ref, variables | inputs}` - returns the pipeline id |
+| Trigger | `POST /projects/:id/pipeline` with `{ref, variables, inputs}` - returns the pipeline |
+| Runs | `GET /projects/:id/pipelines?ref=` |
 | Status | `GET /projects/:id/pipelines/:pid`, `GET .../pipelines/:pid/jobs` |
 | Logs | `GET /projects/:id/jobs/:jid/trace` - live, incremental |
-| Control | cancel, retry pipeline, retry job, play manual job |
-| Form | `spec:inputs` header of `.gitlab-ci.yml` or prefilled variables |
+| Control | cancel, retry (failed and canceled jobs only); retry job and play manual job later |
+| Form | `spec:inputs` header of `.gitlab-ci.yml` at the selected ref, plus free key/value variables (up to 50, key `[A-Za-z0-9_]`) |
 
 Later providers: Gitea/Forgejo Actions, Bitbucket Pipelines, Jenkins.
 
@@ -241,8 +257,9 @@ with selfHeal would revert them.
    to be replaced by Connections in phase 2)*
 2. **Connections + providers core** - Connection Secrets, anchor Application,
    admin/allowedGroups authz, provider interface, GitHub and GitLab adapters
-   for branches and pipeline list, Connections UI (cards).
-3. **Run** - trigger form, start, status, jobs, logs, cancel/retry/play.
+   for branches and pipeline list, Connections UI (cards). *(done)*
+3. **Run** - trigger form, start, status, jobs, cancel/retry *(done)*; logs,
+   play manual jobs *(next)*.
 4. **Images** - build-derived image list, OCI existence check.
 5. **Deploy** - plain-YAML app-of-apps write-back, parent refresh/sync.
 6. **Hardening** - caching, rate limits, audit log, error UX.

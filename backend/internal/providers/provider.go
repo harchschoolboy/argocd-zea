@@ -4,8 +4,10 @@ package providers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/harchschoolboy/argocd-zea/backend/internal/connections"
 )
@@ -23,6 +25,8 @@ type Capabilities struct {
 	RetryJob bool `json:"retryJob"`
 	// PlayManualJobs is true when manual jobs can be started.
 	PlayManualJobs bool `json:"playManualJobs"`
+	// RetryRun is true when a whole run can be started again (all jobs).
+	RetryRun bool `json:"retryRun"`
 }
 
 // CredentialField describes one credential input for the UI form.
@@ -89,6 +93,151 @@ type Pipeline struct {
 // MaxBranches caps how many branches are listed per repository.
 const MaxBranches = 1000
 
+// Input types of run parameters.
+const (
+	InputString      = "string"
+	InputBoolean     = "boolean"
+	InputChoice      = "choice"
+	InputNumber      = "number"
+	InputEnvironment = "environment"
+	// InputArray is a GitLab array input, entered as a JSON array.
+	InputArray = "array"
+)
+
+// Input is one parameter declared by a pipeline definition
+// (GitHub workflow_dispatch.inputs, GitLab spec:inputs).
+type Input struct {
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	Type        string   `json:"type"`
+	Required    bool     `json:"required"`
+	Default     string   `json:"default,omitempty"`
+	Options     []string `json:"options,omitempty"`
+}
+
+// RunForm describes what can be passed when starting a pipeline.
+type RunForm struct {
+	Inputs []Input `json:"inputs"`
+	// Variables is true when arbitrary key/value variables are accepted
+	// in addition to declared inputs (GitLab pipeline variables).
+	Variables bool `json:"variables"`
+	// Warning explains why declared inputs could not be read.
+	Warning string `json:"warning,omitempty"`
+}
+
+// TriggerRequest starts a pipeline at a ref.
+type TriggerRequest struct {
+	PipelineID string
+	Ref        string
+	Inputs     map[string]string
+	Variables  map[string]string
+}
+
+// Status is a normalized run or job status.
+type Status string
+
+// Normalized statuses shared by all providers.
+const (
+	StatusQueued   Status = "queued"
+	StatusRunning  Status = "running"
+	StatusSuccess  Status = "success"
+	StatusFailed   Status = "failed"
+	StatusCanceled Status = "canceled"
+	StatusManual   Status = "manual"
+	StatusSkipped  Status = "skipped"
+	StatusUnknown  Status = "unknown"
+)
+
+// Run is one execution of a pipeline.
+type Run struct {
+	ID         string    `json:"id,omitempty"`
+	Number     int64     `json:"number,omitempty"`
+	PipelineID string    `json:"pipelineID,omitempty"`
+	Name       string    `json:"name,omitempty"`
+	Title      string    `json:"title,omitempty"`
+	Ref        string    `json:"ref,omitempty"`
+	CommitSHA  string    `json:"commitSHA,omitempty"`
+	Event      string    `json:"event,omitempty"`
+	Actor      string    `json:"actor,omitempty"`
+	Status     Status    `json:"status"`
+	WebURL     string    `json:"webURL,omitempty"`
+	CreatedAt  time.Time `json:"createdAt,omitzero"`
+	UpdatedAt  time.Time `json:"updatedAt,omitzero"`
+}
+
+// Step is one step of a job (GitHub only).
+type Step struct {
+	Number int    `json:"number"`
+	Name   string `json:"name"`
+	Status Status `json:"status"`
+}
+
+// Job is one job of a run.
+type Job struct {
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	Stage      string    `json:"stage,omitempty"`
+	Status     Status    `json:"status"`
+	WebURL     string    `json:"webURL,omitempty"`
+	StartedAt  time.Time `json:"startedAt,omitzero"`
+	FinishedAt time.Time `json:"finishedAt,omitzero"`
+	Steps      []Step    `json:"steps,omitempty"`
+}
+
+// RunDetail is a run with its jobs.
+type RunDetail struct {
+	Run
+	Jobs []Job `json:"jobs"`
+}
+
+// RunFilter narrows ListRuns. Empty fields match everything.
+type RunFilter struct {
+	PipelineID string
+	Ref        string
+	Limit      int
+}
+
+// MaxRuns caps how many recent runs are listed.
+const MaxRuns = 50
+
+// DefaultRuns is the number of runs listed when no limit is given.
+const DefaultRuns = 20
+
+// ClampLimit bounds a requested run count to [1, MaxRuns].
+func ClampLimit(n int) int {
+	switch {
+	case n <= 0:
+		return DefaultRuns
+	case n > MaxRuns:
+		return MaxRuns
+	}
+	return n
+}
+
+// ErrUnsupported is returned for operations a provider cannot perform.
+var ErrUnsupported = errors.New("operation is not supported by this provider")
+
+// ErrInvalidRequest marks errors caused by bad user input.
+var ErrInvalidRequest = errors.New("invalid request")
+
+// Invalidf returns an error wrapping ErrInvalidRequest.
+func Invalidf(format string, args ...any) error {
+	return fmt.Errorf("%w: %s", ErrInvalidRequest, fmt.Sprintf(format, args...))
+}
+
+// ValidateID checks that a provider object ID (run, workflow) is numeric.
+func ValidateID(kind, id string) error {
+	if id == "" || len(id) > 20 {
+		return Invalidf("%s id %q is not valid", kind, id)
+	}
+	for _, r := range id {
+		if r < '0' || r > '9' {
+			return Invalidf("%s id %q is not valid", kind, id)
+		}
+	}
+	return nil
+}
+
 // Provider is implemented by every CI adapter.
 type Provider interface {
 	Info() Info
@@ -100,6 +249,17 @@ type Provider interface {
 	// ListPipelines lists triggerable pipelines as defined at ref
 	// (empty ref means the default branch).
 	ListPipelines(ctx context.Context, c *connections.Connection, ref string) ([]Pipeline, error)
+	// GetRunForm returns the parameters pipelineID accepts at ref.
+	GetRunForm(ctx context.Context, c *connections.Connection, pipelineID, ref string) (*RunForm, error)
+	// Trigger starts a pipeline. The returned Run may lack an ID when the
+	// provider does not report it; the run then shows up in ListRuns.
+	Trigger(ctx context.Context, c *connections.Connection, req TriggerRequest) (*Run, error)
+	// ListRuns returns the most recent runs matching f, newest first.
+	ListRuns(ctx context.Context, c *connections.Connection, f RunFilter) ([]Run, error)
+	GetRun(ctx context.Context, c *connections.Connection, runID string) (*RunDetail, error)
+	CancelRun(ctx context.Context, c *connections.Connection, runID string) error
+	// RetryRun starts the run again; failedOnly reruns only failed jobs.
+	RetryRun(ctx context.Context, c *connections.Connection, runID string, failedOnly bool) error
 }
 
 // Registry maps provider IDs to implementations.

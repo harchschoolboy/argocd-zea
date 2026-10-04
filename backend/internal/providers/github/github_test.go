@@ -94,10 +94,13 @@ func TestParsePrivateKey(t *testing.T) {
 
 // fakeGitHub serves the subset of the GitHub API used by the provider.
 type fakeGitHub struct {
-	t          *testing.T
-	key        *rsa.PublicKey
-	tokenCalls atomic.Int32
-	srv        *httptest.Server
+	t           *testing.T
+	key         *rsa.PublicKey
+	tokenCalls  atomic.Int32
+	writeTokens atomic.Int32
+	dispatched  map[string]any
+	posted      []string
+	srv         *httptest.Server
 }
 
 func newFakeGitHub(t *testing.T, key *rsa.PublicKey) *fakeGitHub {
@@ -133,7 +136,7 @@ func newFakeGitHub(t *testing.T, key *rsa.PublicKey) *fakeGitHub {
 		}
 		switch r.PathValue("file") {
 		case "build.yml":
-			fmt.Fprint(w, "on:\n  workflow_dispatch:\n")
+			fmt.Fprint(w, buildWorkflow)
 		case "lint.yml":
 			fmt.Fprint(w, "on: push\n")
 		default:
@@ -141,6 +144,7 @@ func newFakeGitHub(t *testing.T, key *rsa.PublicKey) *fakeGitHub {
 			fmt.Fprint(w, `{"message":"Not Found"}`)
 		}
 	}))
+	f.runRoutes(mux)
 	f.srv = httptest.NewServer(mux)
 	t.Cleanup(f.srv.Close)
 	return f
@@ -184,7 +188,10 @@ func (f *fakeGitHub) accessToken(w http.ResponseWriter, r *http.Request) {
 		Permissions  map[string]string `json:"permissions"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
-	if len(body.Repositories) != 1 || body.Repositories[0] != "r" || body.Permissions["contents"] != "read" || body.Permissions["actions"] != "read" {
+	if body.Permissions["actions"] == "write" {
+		f.writeTokens.Add(1)
+	}
+	if len(body.Repositories) != 1 || body.Repositories[0] != "r" || body.Permissions["contents"] != "read" || (body.Permissions["actions"] != "read" && body.Permissions["actions"] != "write") {
 		f.t.Fatalf("bad token request %+v", body)
 	}
 	w.WriteHeader(http.StatusCreated)

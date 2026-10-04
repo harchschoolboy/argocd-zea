@@ -51,6 +51,7 @@ func (p *Provider) Info() providers.Info {
 		Capabilities: providers.Capabilities{
 			MultiplePipelines: true,
 			RetryFailedJobs:   true,
+			RetryRun:          true,
 		},
 		CredentialModes: []providers.CredentialMode{
 			{
@@ -279,18 +280,7 @@ func workflowState(ws []workflowJSON, id string) string {
 }
 
 func (p *Provider) inspectWorkflow(ctx context.Context, c *connections.Connection, t *target, path, ref string) (bool, string) {
-	tok, err := p.token(ctx, c, t, readPermissions)
-	if err != nil {
-		return false, err.Error()
-	}
-	h := apiHeaders(tok)
-	h.Set("Accept", "application/vnd.github.raw+json")
-	var raw []byte
-	_, err = providers.Do(ctx, p.client, providerName, providers.Request{
-		URL:     t.repoURL("/contents/%s?ref=%s", escapePath(path), url.QueryEscape(ref)),
-		Header:  h,
-		RawBody: &raw,
-	})
+	raw, err := p.workflowFile(ctx, c, t, path, ref)
 	if providers.IsStatus(err, http.StatusNotFound) {
 		return false, fmt.Sprintf("workflow file does not exist on %s", ref)
 	}
@@ -305,6 +295,23 @@ func (p *Provider) inspectWorkflow(ctx context.Context, c *connections.Connectio
 		return false, fmt.Sprintf("workflow has no workflow_dispatch trigger on %s", ref)
 	}
 	return true, ""
+}
+
+// workflowFile downloads a raw file from the repository at ref.
+func (p *Provider) workflowFile(ctx context.Context, c *connections.Connection, t *target, path, ref string) ([]byte, error) {
+	tok, err := p.token(ctx, c, t, readPermissions)
+	if err != nil {
+		return nil, err
+	}
+	h := apiHeaders(tok)
+	h.Set("Accept", "application/vnd.github.raw+json")
+	var raw []byte
+	_, err = providers.Do(ctx, p.client, providerName, providers.Request{
+		URL:     t.repoURL("/contents/%s?ref=%s", escapePath(path), url.QueryEscape(ref)),
+		Header:  h,
+		RawBody: &raw,
+	})
+	return raw, err
 }
 
 func escapePath(p string) string {

@@ -38,6 +38,9 @@ type Permissions map[string]string
 // readPermissions is enough to list branches and read workflow definitions.
 var readPermissions = Permissions{"metadata": "read", "contents": "read", "actions": "read"}
 
+// writePermissions also allows starting, cancelling and rerunning workflows.
+var writePermissions = Permissions{"metadata": "read", "contents": "read", "actions": "write"}
+
 // tokenRefreshMargin renews installation tokens before they expire.
 const tokenRefreshMargin = 5 * time.Minute
 

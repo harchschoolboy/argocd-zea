@@ -46,6 +46,12 @@ func New(cfg *config.Config, log *slog.Logger, deps Deps) http.Handler {
 	mux.HandleFunc("POST /api/v1/test-connection", a.adminOnly(a.handleTestDraft))
 	mux.HandleFunc("GET /api/v1/connections/{name}/branches", a.handleBranches)
 	mux.HandleFunc("GET /api/v1/connections/{name}/pipelines", a.handlePipelines)
+	mux.HandleFunc("GET /api/v1/connections/{name}/pipelines/{pipeline}/form", a.handleRunForm)
+	mux.HandleFunc("GET /api/v1/connections/{name}/runs", a.handleListRuns)
+	mux.HandleFunc("POST /api/v1/connections/{name}/runs", a.handleTrigger)
+	mux.HandleFunc("GET /api/v1/connections/{name}/runs/{run}", a.handleGetRun)
+	mux.HandleFunc("POST /api/v1/connections/{name}/runs/{run}/cancel", a.handleCancelRun)
+	mux.HandleFunc("POST /api/v1/connections/{name}/runs/{run}/retry", a.handleRetryRun)
 
 	protected := requireProxyToken(cfg.ProxyToken, cfg.InsecureSkipProxyAuth, log,
 		requireIdentity(requireAnchor(cfg.AnchorApp, mux)))

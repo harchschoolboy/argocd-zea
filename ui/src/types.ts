@@ -30,6 +30,7 @@ export interface Capabilities {
   retryFailedJobs: boolean;
   retryJob: boolean;
   playManualJobs: boolean;
+  retryRun: boolean;
 }
 
 export interface CredentialField {
@@ -107,4 +108,68 @@ export interface Pipeline {
   path?: string;
   dispatchable: boolean;
   reason?: string;
+}
+
+export type InputType = 'string' | 'boolean' | 'choice' | 'number' | 'environment' | 'array';
+
+export interface RunInput {
+  name: string;
+  description?: string;
+  type: InputType | string;
+  required: boolean;
+  default?: string;
+  options?: string[];
+}
+
+export interface RunForm {
+  inputs: RunInput[];
+  // True when free key/value variables are accepted (GitLab).
+  variables: boolean;
+  warning?: string;
+}
+
+export interface TriggerInput {
+  pipelineID: string;
+  ref: string;
+  inputs: Record<string, string>;
+  variables: Record<string, string>;
+}
+
+export type RunStatus = 'queued' | 'running' | 'success' | 'failed' | 'canceled' | 'manual' | 'skipped' | 'unknown';
+
+export interface Run {
+  id?: string;
+  number?: number;
+  pipelineID?: string;
+  name?: string;
+  title?: string;
+  ref?: string;
+  commitSHA?: string;
+  event?: string;
+  actor?: string;
+  status: RunStatus;
+  webURL?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface Step {
+  number: number;
+  name: string;
+  status: RunStatus;
+}
+
+export interface Job {
+  id: string;
+  name: string;
+  stage?: string;
+  status: RunStatus;
+  webURL?: string;
+  startedAt?: string;
+  finishedAt?: string;
+  steps?: Step[];
+}
+
+export interface RunDetail extends Run {
+  jobs: Job[];
 }

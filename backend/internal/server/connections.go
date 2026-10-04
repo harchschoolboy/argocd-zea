@@ -269,6 +269,11 @@ func (a *api) writeErr(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, connections.ErrAlreadyExists), errors.Is(err, connections.ErrReadOnly):
 		writeError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, providers.ErrInvalidRequest), errors.Is(err, providers.ErrUnsupported):
+		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.As(err, &ue) && (ue.Status == http.StatusBadRequest || ue.Status == http.StatusUnprocessableEntity):
+		// The provider rejected user input (unknown workflow input, bad ref).
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
 	case errors.As(err, &ue):
 		writeError(w, http.StatusBadGateway, err.Error())
 	case errors.As(err, &urlErr):

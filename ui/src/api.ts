@@ -7,7 +7,11 @@ import {
   Me,
   Pipeline,
   ProviderInfo,
+  Run,
+  RunDetail,
+  RunForm,
   TestResult,
+  TriggerInput,
 } from './types';
 
 export class ApiError extends Error {
@@ -37,7 +41,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     }
     throw new ApiError(res.status, message);
   }
-  if (res.status === 204) {
+  if (res.status === 202 || res.status === 204) {
     return undefined as T;
   }
   return res.json() as Promise<T>;
@@ -116,6 +120,42 @@ export class ZeaClient {
     return (await this.call<{ pipelines: Pipeline[] }>(`api/v1/connections/${encodeURIComponent(name)}/pipelines${q}`))
       .pipelines;
   }
+
+  runForm(name: string, pipelineID: string, ref: string): Promise<RunForm> {
+    return this.call<RunForm>(
+      `api/v1/connections/${encodeURIComponent(name)}/pipelines/${encodeURIComponent(pipelineID)}/form?ref=${encodeURIComponent(ref)}`,
+    );
+  }
+
+  trigger(name: string, input: TriggerInput): Promise<Run> {
+    return this.call<Run>(`api/v1/connections/${encodeURIComponent(name)}/runs`, { method: 'POST', json: input });
+  }
+
+  async runs(name: string, filter: { pipeline?: string; ref?: string; limit?: number }): Promise<Run[]> {
+    const q = new URLSearchParams();
+    if (filter.pipeline) q.set('pipeline', filter.pipeline);
+    if (filter.ref) q.set('ref', filter.ref);
+    if (filter.limit) q.set('limit', String(filter.limit));
+    const qs = q.toString();
+    return (await this.call<{ runs: Run[] }>(`api/v1/connections/${encodeURIComponent(name)}/runs${qs ? `?${qs}` : ''}`)).runs;
+  }
+
+  run(name: string, id: string): Promise<RunDetail> {
+    return this.call<RunDetail>(`api/v1/connections/${encodeURIComponent(name)}/runs/${encodeURIComponent(id)}`);
+  }
+
+  async cancelRun(name: string, id: string): Promise<void> {
+    await this.call<void>(`api/v1/connections/${encodeURIComponent(name)}/runs/${encodeURIComponent(id)}/cancel`, {
+      method: 'POST',
+    });
+  }
+
+  async retryRun(name: string, id: string, failedOnly: boolean): Promise<void> {
+    await this.call<void>(`api/v1/connections/${encodeURIComponent(name)}/runs/${encodeURIComponent(id)}/retry`, {
+      method: 'POST',
+      json: { failedOnly },
+    });
+  }
 }
 
 export function describeError(err: unknown): string {
@@ -129,6 +169,9 @@ export function describeError(err: unknown): string {
         return err.message && err.message !== 'Not Found'
           ? err.message
           : 'Zea backend not found. Is the proxy extension enabled (server.enable.proxy.extension) and extension.config.zea set in argocd-cm?';
+      case 400:
+      case 422:
+        return err.message;
       case 502:
         return err.message || 'Upstream error.';
       case 503:

@@ -48,6 +48,46 @@ func (fakeProvider) ListPipelines(_ context.Context, _ *connections.Connection, 
 	return []providers.Pipeline{{ID: "1", Name: "build@" + ref, Dispatchable: true}}, nil
 }
 
+// lastTrigger records the most recent Trigger call of fakeProvider.
+var lastTrigger providers.TriggerRequest
+
+func (fakeProvider) GetRunForm(_ context.Context, _ *connections.Connection, pipelineID, _ string) (*providers.RunForm, error) {
+	if pipelineID != "1" {
+		return nil, providers.Invalidf("unknown pipeline")
+	}
+	return &providers.RunForm{Inputs: []providers.Input{{Name: "env", Type: providers.InputChoice, Options: []string{"dev", "prod"}}}}, nil
+}
+
+func (fakeProvider) Trigger(_ context.Context, _ *connections.Connection, req providers.TriggerRequest) (*providers.Run, error) {
+	lastTrigger = req
+	if req.Inputs["env"] == "bad" {
+		return nil, &providers.UpstreamError{Provider: "Fake", Status: 422, Message: "unexpected input"}
+	}
+	return &providers.Run{ID: "42", PipelineID: req.PipelineID, Ref: req.Ref, Status: providers.StatusQueued}, nil
+}
+
+func (fakeProvider) ListRuns(_ context.Context, _ *connections.Connection, f providers.RunFilter) ([]providers.Run, error) {
+	return []providers.Run{{ID: "42", PipelineID: f.PipelineID, Ref: f.Ref, Status: providers.StatusRunning}}, nil
+}
+
+func (fakeProvider) GetRun(_ context.Context, _ *connections.Connection, runID string) (*providers.RunDetail, error) {
+	if err := providers.ValidateID("run", runID); err != nil {
+		return nil, err
+	}
+	return &providers.RunDetail{Run: providers.Run{ID: runID, Status: providers.StatusRunning}, Jobs: []providers.Job{{ID: "1", Name: "build"}}}, nil
+}
+
+func (fakeProvider) CancelRun(_ context.Context, _ *connections.Connection, runID string) error {
+	return providers.ValidateID("run", runID)
+}
+
+func (fakeProvider) RetryRun(_ context.Context, _ *connections.Connection, _ string, failedOnly bool) error {
+	if !failedOnly {
+		return providers.ErrUnsupported
+	}
+	return nil
+}
+
 type testEnv struct {
 	h     http.Handler
 	store *connections.MemoryStore
@@ -295,5 +335,75 @@ func TestTestConnection(t *testing.T) {
 	_, body = e.do(t, "POST", "/api/v1/test-connection", draft, as("admin", ""))
 	if body["ok"] != false || !strings.Contains(body["error"].(string), "bad token") {
 		t.Fatalf("draft test with bad token: %v", body)
+	}
+}
+
+func TestRunForm(t *testing.T) {
+	e := newEnv(false)
+	code, body := e.do(t, "GET", "/api/v1/connections/shared/pipelines/1/form?ref=main", nil)
+	if code != http.StatusOK || !strings.Contains(mustJSON(body), `"env"`) {
+		t.Fatalf("form: %d %v", code, body)
+	}
+	if code, _ := e.do(t, "GET", "/api/v1/connections/shared/pipelines/9/form", nil); code != http.StatusBadRequest {
+		t.Fatalf("unknown pipeline: %d", code)
+	}
+	if code, _ := e.do(t, "GET", "/api/v1/connections/secret/pipelines/1/form", nil); code != http.StatusNotFound {
+		t.Fatalf("inaccessible connection: %d", code)
+	}
+}
+
+func TestTrigger(t *testing.T) {
+	e := newEnv(false)
+	in := map[string]any{"pipelineID": "1", "ref": " dev ", "inputs": map[string]string{"env": "prod"}, "variables": map[string]string{"X": "1"}}
+	code, body := e.do(t, "POST", "/api/v1/connections/shared/runs", in)
+	if code != http.StatusCreated || body["id"] != "42" {
+		t.Fatalf("trigger: %d %v", code, body)
+	}
+	if lastTrigger.Ref != "dev" || lastTrigger.Inputs["env"] != "prod" || lastTrigger.Variables["X"] != "1" {
+		t.Fatalf("trigger request: %+v", lastTrigger)
+	}
+
+	in["inputs"] = map[string]string{"env": "bad"}
+	if code, _ := e.do(t, "POST", "/api/v1/connections/shared/runs", in); code != http.StatusUnprocessableEntity {
+		t.Fatalf("rejected input: %d", code)
+	}
+	if code, _ := e.do(t, "POST", "/api/v1/connections/shared/runs", map[string]any{"pipelineID": "1"}); code != http.StatusBadRequest {
+		t.Fatalf("missing ref: %d", code)
+	}
+	if code, _ := e.do(t, "POST", "/api/v1/connections/shared/runs", map[string]any{"pipelineID": "1", "ref": "main", "inputs": map[string]string{" ": "x"}}); code != http.StatusBadRequest {
+		t.Fatalf("blank input name: %d", code)
+	}
+	if code, _ := e.do(t, "POST", "/api/v1/connections/secret/runs", map[string]any{"pipelineID": "1", "ref": "main"}); code != http.StatusNotFound {
+		t.Fatalf("inaccessible connection: %d", code)
+	}
+}
+
+func TestRuns(t *testing.T) {
+	e := newEnv(false)
+	code, body := e.do(t, "GET", "/api/v1/connections/shared/runs?pipeline=1&ref=dev&limit=5", nil)
+	if code != http.StatusOK || !strings.Contains(mustJSON(body), `"ref":"dev"`) {
+		t.Fatalf("list runs: %d %v", code, body)
+	}
+	if code, _ := e.do(t, "GET", "/api/v1/connections/shared/runs?limit=x", nil); code != http.StatusBadRequest {
+		t.Fatalf("bad limit: %d", code)
+	}
+	code, body = e.do(t, "GET", "/api/v1/connections/shared/runs/42", nil)
+	if code != http.StatusOK || body["id"] != "42" || len(body["jobs"].([]any)) != 1 {
+		t.Fatalf("get run: %d %v", code, body)
+	}
+	if code, _ := e.do(t, "GET", "/api/v1/connections/shared/runs/abc", nil); code != http.StatusBadRequest {
+		t.Fatalf("bad run id: %d", code)
+	}
+	if code, _ := e.do(t, "POST", "/api/v1/connections/shared/runs/42/cancel", nil); code != http.StatusAccepted {
+		t.Fatalf("cancel: %d", code)
+	}
+	if code, _ := e.do(t, "POST", "/api/v1/connections/shared/runs/42/retry", map[string]any{"failedOnly": true}); code != http.StatusAccepted {
+		t.Fatalf("retry failed: %d", code)
+	}
+	if code, _ := e.do(t, "POST", "/api/v1/connections/shared/runs/42/retry", nil); code != http.StatusBadRequest {
+		t.Fatalf("unsupported retry: %d", code)
+	}
+	if code, _ := e.do(t, "POST", "/api/v1/connections/secret/runs/42/cancel", nil); code != http.StatusNotFound {
+		t.Fatalf("inaccessible cancel: %d", code)
 	}
 }
