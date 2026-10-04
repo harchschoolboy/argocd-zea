@@ -1,0 +1,11 @@
+{{- if .Values.connections.createNamespace }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.connections.namespace }}
+  labels:
+    {{- include "zea.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+    argocd.argoproj.io/sync-options: Delete=false
+{{- end }}

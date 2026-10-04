@@ -1,0 +1,7 @@
+node_modules/
+ui/dist/
+backend/bin/
+*.tgz
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,47 @@
+# Values for the official argo-cd Helm chart (tested against chart 10.9.x /
+# Argo CD v3.5). Merge into your existing values.
+#
+# Prerequisites:
+#   1. The zea backend chart (deploy/helm/zea) is installed into the Argo CD
+#      namespace with release name "zea" (otherwise adjust the service url).
+#   2. The Secret "zea-proxy" exists in the Argo CD namespace. The Zea chart
+#      creates it by default (proxyToken.source=generate).
+#
+# After installing the Zea chart, "helm get notes zea -n argocd" (or the
+# release notes) prints this snippet with your actual names filled in.
+
+server:
+  extensions:
+    enabled: true
+    extensionList:
+      - name: extension-zea
+        env:
+          - name: EXTENSION_NAME
+            value: zea
+          - name: EXTENSION_VERSION
+            value: v0.1.0
+          - name: EXTENSION_URL
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.0/extension-zea.tar.gz
+          - name: EXTENSION_CHECKSUM_URL
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.0/extension-zea_checksums.txt
+
+configs:
+  params:
+    server.enable.proxy.extension: "true"
+
+  cm:
+    # Proxy: <argocd>/extensions/zea/* -> zea backend (prefix is stripped).
+    extension.config.zea: |
+      services:
+        - url: http://zea.argocd.svc:8080
+          headers:
+            # Resolved by Argo CD from Secret "zea-proxy", key "token".
+            - name: Zea-Proxy-Token
+              value: '$zea-proxy:token'
+
+  rbac:
+    # Who may use Zea at all. Per-Application access is additionally enforced
+    # by Argo CD: the user must be able to "get" the Application the request
+    # is scoped to.
+    policy.csv: |
+      p, role:readonly, extensions, invoke, zea, allow

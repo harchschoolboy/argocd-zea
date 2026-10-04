@@ -1,0 +1,115 @@
+{{- if eq (include "zea.proxyTokenSource" .) "generate" }}
+{{- $name := printf "%s-proxy-token" (include "zea.fullname" .) | trunc 63 | trimSuffix "-" }}
+# Creates the proxy token Secret in the cluster if it does not exist yet.
+# Helm runs it before install/upgrade; Argo CD runs it as a PreSync hook on
+# every sync. It never replaces an existing token. All objects below are
+# deleted once the Job succeeds, so the backend itself never holds the right
+# to create Secrets in the Argo CD namespace.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "zea.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "zea.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+rules:
+  # "create" cannot be limited to one Secret name by Kubernetes RBAC.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: [{{ .Values.proxyToken.secretName | quote }}]
+    verbs: ["get", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "zea.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-9"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "zea.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.proxyToken.job.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.proxyToken.job.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "zea.labels" . | nindent 8 }}
+        app.kubernetes.io/component: proxy-token
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: true
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: init-proxy-token
+          image: {{ include "zea.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["init-proxy-token"]
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - name: ZEA_PROXY_SECRET_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            - name: ZEA_PROXY_SECRET_NAME
+              value: {{ .Values.proxyToken.secretName | quote }}
+            - name: ZEA_PROXY_SECRET_KEY
+              value: {{ .Values.proxyToken.key | quote }}
+          resources:
+            {{- toYaml .Values.proxyToken.job.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

@@ -1,0 +1,62 @@
+{{- $anchor := include "zea.anchorApplication" . -}}
+{{- $parts := splitList ":" $anchor -}}
+{{- $version := printf "v%s" (.Chart.AppVersion | trimPrefix "v") -}}
+{{- $release := printf "https://github.com/harchschoolboy/argocd-zea/releases/download/%s" $version -}}
+Zea backend {{ $version }} installed as {{ include "zea.fullname" . }} in namespace {{ .Release.Namespace }}.
+
+  Anchor Application:    {{ $anchor }}
+  Connections namespace: {{ .Values.connections.namespace }}
+  Proxy token Secret:    {{ .Release.Namespace }}/{{ .Values.proxyToken.secretName }} (source: {{ include "zea.proxyTokenSource" . }})
+  Admin users:           {{ join ", " .Values.admins.users | default "-" }}
+  Admin groups:          {{ join ", " .Values.admins.groups | default "-" }}
+
+Remaining steps:
+
+1. {{ .Release.Namespace }} must be the Argo CD namespace.
+{{- if eq (include "zea.proxyTokenSource" .) "existing" }}
+
+   proxyToken.source=existing: create Secret {{ .Values.proxyToken.secretName }} with key
+   "{{ .Values.proxyToken.key }}" and label app.kubernetes.io/part-of=argocd yourself.
+{{- end }}
+
+2. The anchor Application {{ $anchor }} must exist and carry the label
+
+     argocd-zea.io/anchor: "true"
+
+   kubectl -n {{ index $parts 0 }} label application {{ index $parts 1 }} argocd-zea.io/anchor=true
+
+3. Merge into the values of the argo-cd Helm chart and upgrade Argo CD:
+
+server:
+  extensions:
+    enabled: true
+    extensionList:
+      - name: extension-zea
+        env:
+          - name: EXTENSION_NAME
+            value: zea
+          - name: EXTENSION_VERSION
+            value: {{ $version }}
+          - name: EXTENSION_URL
+            value: {{ $release }}/extension-zea.tar.gz
+          - name: EXTENSION_CHECKSUM_URL
+            value: {{ $release }}/extension-zea_checksums.txt
+configs:
+  params:
+    server.enable.proxy.extension: "true"
+  cm:
+    extension.config.zea: |
+      services:
+        - url: http://{{ include "zea.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}
+          headers:
+            - name: Zea-Proxy-Token
+              value: '${{ .Values.proxyToken.secretName }}:{{ .Values.proxyToken.key }}'
+  rbac:
+    policy.csv: |
+      p, role:readonly, extensions, invoke, zea, allow
+
+   Users additionally need "applications, get" on {{ $anchor }}.
+
+4. Open Argo CD: a "Zea" item appears in the left sidebar.
+
+Full guide: https://github.com/harchschoolboy/argocd-zea#install

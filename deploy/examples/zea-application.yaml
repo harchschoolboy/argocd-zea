@@ -1,0 +1,83 @@
+# Zea installs itself through its own AppProject, so it does not depend on how
+# the "default" project is configured (many installations restrict it). The
+# project allows exactly what the chart needs: one chart source, the Argo CD
+# namespace, the Connections namespace and the resource kinds the chart
+# renders (including the PreSync hook).
+#
+# To use an existing project instead, add the sourceRepos, destinations and
+# resource kinds below to it and change spec.project of the Application.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: zea
+  namespace: argocd
+spec:
+  description: Zea - build and deploy from Argo CD
+  sourceRepos:
+    - ghcr.io/harchschoolboy/charts
+  destinations:
+    # Backend, Service, proxy token Secret, hook Job.
+    - server: https://kubernetes.default.svc
+      namespace: argocd
+    # Connections namespace and the backend's Role in it.
+    - server: https://kubernetes.default.svc
+      namespace: zea-connections
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+  namespaceResourceWhitelist:
+    - group: ""
+      kind: ServiceAccount
+    - group: ""
+      kind: Service
+    - group: ""
+      kind: Secret
+    - group: apps
+      kind: Deployment
+    - group: batch
+      kind: Job
+    - group: rbac.authorization.k8s.io
+      kind: Role
+    - group: rbac.authorization.k8s.io
+      kind: RoleBinding
+---
+# The anchor Application: deploys the Zea backend and is the Application every
+# Zea request is authorized against. Users who can "get" it (and may invoke
+# the "zea" extension) can open Zea.
+#
+# The chart derives the anchor ("<namespace>:<name>") from the Helm release,
+# which Argo CD sets to this Application's name and destination namespace.
+# Set anchorApplication explicitly if you change spec.source.helm.releaseName
+# or keep Applications outside the Argo CD namespace.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: zea
+  namespace: argocd
+  labels:
+    # Lets the Zea UI find this Application.
+    argocd-zea.io/anchor: "true"
+spec:
+  project: zea
+  source:
+    # OCI Helm chart published by the release workflow
+    # (oci://ghcr.io/harchschoolboy/charts/zea). Argo CD expects the registry
+    # path without "oci://" plus the chart name.
+    repoURL: ghcr.io/harchschoolboy/charts
+    chart: zea
+    # Chart version = release tag without "v"; it also selects the backend
+    # image tag.
+    targetRevision: 0.1.0
+    helm:
+      valuesObject:
+        admins:
+          users: [admin]
+          groups: [platform-team]
+  destination:
+    server: https://kubernetes.default.svc
+    # Must be the Argo CD namespace (see deploy/helm/zea/values.yaml).
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

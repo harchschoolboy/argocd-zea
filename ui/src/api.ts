@@ -1,0 +1,142 @@
+import {
+  Application,
+  ApplicationList,
+  BranchList,
+  Connection,
+  ConnectionInput,
+  Me,
+  Pipeline,
+  ProviderInfo,
+  TestResult,
+} from './types';
+
+export class ApiError extends Error {
+  constructor(public readonly status: number, message: string) {
+    super(message);
+  }
+}
+
+// Argo CD may be served under a sub-path (server.rootpath / server.basehref).
+function baseHref(): string {
+  const href = document.querySelector('base')?.getAttribute('href') ?? '/';
+  return href.endsWith('/') ? href : `${href}/`;
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${baseHref()}${path.replace(/^\//, '')}`, {
+    credentials: 'same-origin',
+    ...init,
+  });
+  if (!res.ok) {
+    let message = res.statusText;
+    try {
+      const body = await res.json();
+      message = body.error ?? body.message ?? message;
+    } catch {
+      // Non-JSON error body; keep statusText.
+    }
+    throw new ApiError(res.status, message);
+  }
+  if (res.status === 204) {
+    return undefined as T;
+  }
+  return res.json() as Promise<T>;
+}
+
+export const ANCHOR_LABEL = 'argocd-zea.io/anchor';
+
+// Finds the anchor Application through the regular Argo CD API, so the result
+// is already filtered by the user's RBAC.
+export async function findAnchors(): Promise<Application[]> {
+  const fields = ['items.metadata.name', 'items.metadata.namespace', 'items.spec.project'].join(',');
+  const list = await request<ApplicationList>(
+    `api/v1/applications?selector=${encodeURIComponent(`${ANCHOR_LABEL}=true`)}&fields=${encodeURIComponent(fields)}`,
+  );
+  return (list.items ?? []).sort((a, b) =>
+    `${a.metadata.namespace}/${a.metadata.name}`.localeCompare(`${b.metadata.namespace}/${b.metadata.name}`),
+  );
+}
+
+// Client for the Zea backend. Every call goes through the Argo CD proxy
+// extension scoped to the anchor Application: Argo CD checks that the user
+// can read it and may invoke the "zea" extension before forwarding.
+export class ZeaClient {
+  constructor(private readonly anchor: Application) {}
+
+  private call<T>(path: string, init?: RequestInit & { json?: unknown }): Promise<T> {
+    const headers = new Headers(init?.headers);
+    headers.set('Argocd-Application-Name', `${this.anchor.metadata.namespace}:${this.anchor.metadata.name}`);
+    headers.set('Argocd-Project-Name', this.anchor.spec.project);
+    let body = init?.body;
+    if (init?.json !== undefined) {
+      headers.set('Content-Type', 'application/json');
+      body = JSON.stringify(init.json);
+    }
+    return request<T>(`extensions/zea/${path.replace(/^\//, '')}`, { ...init, headers, body });
+  }
+
+  me(): Promise<Me> {
+    return this.call<Me>('api/v1/me');
+  }
+
+  async providers(): Promise<ProviderInfo[]> {
+    return (await this.call<{ providers: ProviderInfo[] }>('api/v1/providers')).providers;
+  }
+
+  async connections(): Promise<Connection[]> {
+    return (await this.call<{ connections: Connection[] }>('api/v1/connections')).connections;
+  }
+
+  createConnection(input: ConnectionInput): Promise<Connection> {
+    return this.call<Connection>('api/v1/connections', { method: 'POST', json: input });
+  }
+
+  updateConnection(input: ConnectionInput): Promise<Connection> {
+    return this.call<Connection>(`api/v1/connections/${encodeURIComponent(input.name)}`, { method: 'PUT', json: input });
+  }
+
+  deleteConnection(name: string): Promise<void> {
+    return this.call<void>(`api/v1/connections/${encodeURIComponent(name)}`, { method: 'DELETE' });
+  }
+
+  testDraft(input: ConnectionInput): Promise<TestResult> {
+    return this.call<TestResult>('api/v1/test-connection', { method: 'POST', json: input });
+  }
+
+  testConnection(name: string): Promise<TestResult> {
+    return this.call<TestResult>(`api/v1/connections/${encodeURIComponent(name)}/test`, { method: 'POST' });
+  }
+
+  branches(name: string): Promise<BranchList> {
+    return this.call<BranchList>(`api/v1/connections/${encodeURIComponent(name)}/branches`);
+  }
+
+  async pipelines(name: string, ref: string): Promise<Pipeline[]> {
+    const q = ref ? `?ref=${encodeURIComponent(ref)}` : '';
+    return (await this.call<{ pipelines: Pipeline[] }>(`api/v1/connections/${encodeURIComponent(name)}/pipelines${q}`))
+      .pipelines;
+  }
+}
+
+export function describeError(err: unknown): string {
+  if (err instanceof ApiError) {
+    switch (err.status) {
+      case 401:
+        return 'Session expired. Please log in to Argo CD again.';
+      case 403:
+        return `Access denied: ${err.message}`;
+      case 404:
+        return err.message && err.message !== 'Not Found'
+          ? err.message
+          : 'Zea backend not found. Is the proxy extension enabled (server.enable.proxy.extension) and extension.config.zea set in argocd-cm?';
+      case 502:
+        return err.message || 'Upstream error.';
+      case 503:
+      case 504:
+        return `Zea backend or upstream is unreachable (${err.status}): ${err.message}`;
+      default:
+        return `${err.status}: ${err.message}`;
+    }
+  }
+  return err instanceof Error ? err.message : String(err);
+}

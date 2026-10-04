@@ -1,0 +1,117 @@
+# Zea backend MUST be installed into the Argo CD namespace: Argo CD can only
+# resolve "$<secret>:<key>" references for Secrets in its own namespace that
+# carry the label app.kubernetes.io/part-of=argocd.
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/harchschoolboy/argocd-zea-backend
+  # Defaults to the chart appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# Shared secret between Argo CD and the Zea backend. Argo CD injects it into
+# every proxied request as the "Zea-Proxy-Token" header; the backend rejects
+# requests without it, so the Argocd-* identity headers cannot be spoofed by
+# workloads that reach the backend Service directly.
+proxyToken:
+  # Name of the Secret holding the token. Referenced from argocd-cm as
+  # "$<secretName>:<key>".
+  secretName: zea-proxy
+  key: token
+  # Where the Secret comes from:
+  #   generate - (default) a pre-install/pre-upgrade hook Job (Argo CD PreSync
+  #              hook) creates the Secret with a random token if it does not
+  #              exist. An existing token is never replaced. The token never
+  #              appears in git or in the rendered manifests.
+  #   value    - the chart renders the Secret from "value" (use with an
+  #              encrypted values file).
+  #   existing - you create the Secret yourself (SealedSecrets, External
+  #              Secrets, kubectl). It must carry the label
+  #              app.kubernetes.io/part-of=argocd.
+  source: generate
+  value: ""
+  # Settings for the "generate" hook Job.
+  job:
+    backoffLimit: 3
+    activeDeadlineSeconds: 300
+    resources:
+      requests:
+        cpu: 10m
+        memory: 16Mi
+      limits:
+        memory: 64Mi
+
+logLevel: info
+
+# "<namespace>:<name>" of the anchor Application - normally the Argo CD
+# Application that deploys this chart. Every Zea request is authorized by
+# Argo CD against it ("applications, get"), so whoever can see the anchor
+# Application can open Zea. The Application must carry the label
+# argocd-zea.io/anchor: "true" so the UI can find it.
+# Empty means "<release namespace>:<release name>", which matches an Argo CD
+# Application deploying this chart into its own namespace (Argo CD uses the
+# Application name as the Helm release name).
+anchorApplication: ""
+
+# Zea admins create, edit and delete Connections in the UI. Users are Argo CD
+# usernames (local accounts such as "admin" have no groups); groups come from
+# SSO. Everyone else only sees Connections whose allowedGroups match.
+admins:
+  users:
+    - admin
+  groups: []
+
+# Connection Secrets live in a dedicated namespace so the backend never needs
+# access to Secrets in the Argo CD namespace (Kubernetes RBAC cannot restrict
+# list/create to labelled Secrets).
+connections:
+  namespace: zea-connections
+  # Create the namespace with this chart. It is annotated so that neither
+  # Helm nor Argo CD deletes it (and the Connections in it) on uninstall.
+  createNamespace: true
+  # Create a Role + RoleBinding granting the backend access to Secrets in
+  # that namespace.
+  rbac: true
+
+# Timeout for calls to GitHub / GitLab APIs.
+httpTimeout: 20s
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+service:
+  type: ClusterIP
+  port: 8080
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    memory: 128Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+extraEnv: []

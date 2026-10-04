@@ -1,0 +1,87 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "zea.fullname" . }}
+  labels:
+    {{- include "zea.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "zea.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "zea.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "zea.serviceAccountName" . }}
+      # Needed to read and write Connection Secrets.
+      automountServiceAccountToken: true
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: backend
+          image: {{ include "zea.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: ZEA_LISTEN_ADDR
+              value: ":8080"
+            - name: ZEA_LOG_LEVEL
+              value: {{ .Values.logLevel | quote }}
+            - name: ZEA_PROXY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.proxyToken.secretName }}
+                  key: {{ .Values.proxyToken.key }}
+            - name: ZEA_ANCHOR_APP
+              value: {{ include "zea.anchorApplication" . | quote }}
+            - name: ZEA_ADMIN_USERS
+              value: {{ join "," .Values.admins.users | quote }}
+            - name: ZEA_ADMIN_GROUPS
+              value: {{ join "," .Values.admins.groups | quote }}
+            - name: ZEA_CONNECTIONS_NAMESPACE
+              value: {{ required "connections.namespace is required" .Values.connections.namespace | quote }}
+            - name: ZEA_HTTP_TIMEOUT
+              value: {{ .Values.httpTimeout | quote }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
