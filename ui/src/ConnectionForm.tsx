@@ -1,7 +1,9 @@
 import * as React from 'react';
 import { describeError, ZeaClient } from './api';
-import { Connection, ConnectionInput, CredentialMode, ProviderInfo, TestResult } from './types';
-import { ErrorText, TestResultView, COLORS } from './ui';
+import { buildCredentials, CredentialsEditor, inputStyle, pickMode, Row } from './forms';
+import { cleanSources, ImageSourcesEditor } from './Images';
+import { Connection, ConnectionInput, ImageSource, ProviderInfo, TestResult } from './types';
+import { ErrorText, TestResultView, useLoad } from './ui';
 
 interface Props {
   client: ZeaClient;
@@ -12,25 +14,6 @@ interface Props {
   onCancel: () => void;
 }
 
-function initialMode(p: ProviderInfo | undefined, existing?: Connection): string {
-  if (!p) {
-    return '';
-  }
-  const keys = new Set(existing?.credentialKeys ?? []);
-  const set = p.credentialModes.find(m => m.fields.every(f => keys.has(f.key)));
-  return (set ?? p.credentialModes[0]).id;
-}
-
-const Row = ({ label, help, children }: { label: string; help?: string; children: React.ReactNode }) => (
-  <div className='argo-form-row' style={{ marginBottom: '1em' }}>
-    <label style={{ display: 'block', fontWeight: 600, marginBottom: '0.3em' }}>{label}</label>
-    {children}
-    {help && <div style={{ fontSize: '0.85em', color: COLORS.muted, marginTop: '0.2em' }}>{help}</div>}
-  </div>
-);
-
-const inputStyle: React.CSSProperties = { width: '100%', boxSizing: 'border-box' };
-
 export const ConnectionForm = ({ client, providers, existing, onSaved, onCancel }: Props) => {
   const editing = !!existing;
   const [name, setName] = React.useState(existing?.name ?? '');
@@ -38,46 +21,34 @@ export const ConnectionForm = ({ client, providers, existing, onSaved, onCancel 
   const [url, setURL] = React.useState(existing?.url ?? '');
   const [apiURL, setAPIURL] = React.useState(existing?.apiURL ?? '');
   const [groups, setGroups] = React.useState((existing?.allowedGroups ?? []).join(', '));
+  const [images, setImages] = React.useState<ImageSource[]>(existing?.images ?? []);
   const [creds, setCreds] = React.useState<Record<string, string>>({});
   const provider = providers.find(p => p.id === providerID);
-  const [modeID, setModeID] = React.useState(() => initialMode(provider, existing));
+  const modes = provider?.credentialModes ?? [];
+  const [modeID, setModeID] = React.useState(() => pickMode(modes, existing?.credentialKeys));
   const [busy, setBusy] = React.useState<'save' | 'test' | null>(null);
   const [error, setError] = React.useState('');
   const [test, setTest] = React.useState<TestResult | null>(null);
-
-  const mode: CredentialMode | undefined = provider?.credentialModes.find(m => m.id === modeID);
-  const storedKeys = new Set(existing?.credentialKeys ?? []);
+  const [registries] = useLoad(() => client.registries(), [client]);
 
   const changeProvider = (id: string) => {
     setProviderID(id);
-    setModeID(initialMode(providers.find(p => p.id === id)));
+    setModeID(pickMode(providers.find(p => p.id === id)?.credentialModes ?? []));
     setCreds({});
   };
 
-  const buildInput = (): ConnectionInput => {
-    const credentials: Record<string, string> = {};
-    for (const m of provider?.credentialModes ?? []) {
-      for (const f of m.fields) {
-        if (m.id === modeID) {
-          credentials[f.key] = creds[f.key] ?? '';
-        } else if (storedKeys.has(f.key)) {
-          // Switching modes: drop the credentials of the other mode.
-          credentials[f.key] = '-';
-        }
-      }
-    }
-    return {
-      name: name.trim(),
-      provider: providerID,
-      url: url.trim(),
-      apiURL: apiURL.trim(),
-      allowedGroups: groups
-        .split(',')
-        .map(g => g.trim())
-        .filter(Boolean),
-      credentials,
-    };
-  };
+  const buildInput = (): ConnectionInput => ({
+    name: name.trim(),
+    provider: providerID,
+    url: url.trim(),
+    apiURL: apiURL.trim(),
+    allowedGroups: groups
+      .split(',')
+      .map(g => g.trim())
+      .filter(Boolean),
+    images: cleanSources(images),
+    credentials: buildCredentials(modes, modeID, creds, existing?.credentialKeys),
+  });
 
   const runTest = async () => {
     setBusy('test');
@@ -158,40 +129,19 @@ export const ConnectionForm = ({ client, providers, existing, onSaved, onCancel 
           <input className='argo-field' style={inputStyle} value={groups} onChange={e => setGroups(e.target.value)} />
         </Row>
 
-        {provider && provider.credentialModes.length > 1 && (
-          <Row label='Authentication'>
-            <div style={{ display: 'flex', gap: '1.5em' }}>
-              {provider.credentialModes.map(m => (
-                <label key={m.id} style={{ cursor: 'pointer' }}>
-                  <input type='radio' name='mode' checked={modeID === m.id} onChange={() => setModeID(m.id)} /> {m.label}
-                </label>
-              ))}
-            </div>
-          </Row>
-        )}
-        {mode?.help && <div style={{ color: COLORS.muted, marginBottom: '0.8em' }}>{mode.help}</div>}
+        <CredentialsEditor
+          modes={modes}
+          modeID={modeID}
+          onModeChange={setModeID}
+          values={creds}
+          onChange={setCreds}
+          storedKeys={existing?.credentialKeys}
+        />
 
-        {mode?.fields.map(f => {
-          const placeholder = storedKeys.has(f.key) ? '(stored - leave empty to keep)' : '';
-          const common = {
-            className: 'argo-field',
-            style: inputStyle,
-            value: creds[f.key] ?? '',
-            placeholder,
-            autoComplete: 'off',
-            onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
-              setCreds({ ...creds, [f.key]: e.target.value }),
-          };
-          return (
-            <Row key={f.key} label={f.label} help={f.help}>
-              {f.multiline ? (
-                <textarea {...common} rows={6} spellCheck={false} style={{ ...inputStyle, fontFamily: 'monospace' }} />
-              ) : (
-                <input {...common} type={f.secret ? 'password' : 'text'} />
-              )}
-            </Row>
-          );
-        })}
+        {existing?.imagesError && (
+          <ErrorText text={`Stored image sources are invalid and will be replaced on save: ${existing.imagesError}`} />
+        )}
+        <ImageSourcesEditor client={client} value={images} onChange={setImages} registries={registries} />
 
         {error && <ErrorText text={error} />}
         {test && <TestResultView result={test} />}

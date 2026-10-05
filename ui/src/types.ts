@@ -57,12 +57,23 @@ export interface ProviderInfo {
   credentialModes: CredentialMode[];
 }
 
+// ImageSource selects images of a Connection in a registry. Patterns are Go
+// regular expressions; the named groups "branch" and "sha" are recognized.
+export interface ImageSource {
+  registry: string;
+  repository: string;
+  tags?: string;
+}
+
 export interface Connection {
   name: string;
   provider: string;
   url: string;
   apiURL?: string;
   allowedGroups: string[];
+  images: ImageSource[];
+  // Set when the stored image sources cannot be parsed.
+  imagesError?: string;
   editable: boolean;
   // Only returned to admins: which credential keys are set (never values).
   credentialKeys?: string[];
@@ -74,8 +85,80 @@ export interface ConnectionInput {
   url: string;
   apiURL: string;
   allowedGroups: string[];
+  images: ImageSource[];
   // Empty value keeps the stored secret, "-" removes it.
   credentials: Record<string, string>;
+}
+
+export interface RegistryKind {
+  id: string;
+  name: string;
+  urlExample: string;
+  urlHelp: string;
+  credentialModes: CredentialMode[];
+}
+
+export interface Registry {
+  name: string;
+  kind: string;
+  url: string;
+  editable: boolean;
+  credentialKeys: string[];
+  // Connections whose image sources use this registry.
+  usedBy: string[];
+}
+
+export interface RegistryInput {
+  name: string;
+  kind: string;
+  url: string;
+  // Empty value keeps the stored secret, "-" removes it.
+  credentials: Record<string, string>;
+}
+
+export interface RegistryTestResult {
+  ok: boolean;
+  error?: string;
+  repositoryCount?: number;
+  repositories?: string[];
+}
+
+export interface ImageTag {
+  name: string;
+  digest?: string;
+  sizeBytes?: number;
+  pushedAt?: string;
+  // Full reference, registry/repository:tag.
+  image: string;
+  commit?: string;
+  commitURL?: string;
+}
+
+export interface ImageRepository {
+  registry: string;
+  name: string;
+  image: string;
+  branch?: string;
+  // Number of tags matching the source, before the per-repository limit.
+  tagCount: number;
+  tags: ImageTag[];
+  error?: string;
+}
+
+export interface ImageSourceError {
+  // 1-based index of the image source; 0 for connection-level errors.
+  source: number;
+  registry: string;
+  error: string;
+}
+
+export interface ImagesResult {
+  // False when the Connection has no image sources.
+  configured?: boolean;
+  repositories: ImageRepository[];
+  errors?: ImageSourceError[];
+  branch?: string;
+  truncated?: boolean;
 }
 
 export interface Repository {

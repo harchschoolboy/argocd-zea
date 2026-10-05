@@ -4,9 +4,15 @@ import {
   BranchList,
   Connection,
   ConnectionInput,
+  ImageSource,
+  ImagesResult,
   Me,
   Pipeline,
   ProviderInfo,
+  Registry,
+  RegistryInput,
+  RegistryKind,
+  RegistryTestResult,
   Run,
   RunDetail,
   RunForm,
@@ -155,6 +161,47 @@ export class ZeaClient {
       method: 'POST',
       json: { failedOnly },
     });
+  }
+
+  images(name: string, opts: { ref?: string; limit?: number; refresh?: boolean }): Promise<ImagesResult> {
+    const q = new URLSearchParams();
+    if (opts.ref) q.set('ref', opts.ref);
+    if (opts.limit) q.set('limit', String(opts.limit));
+    if (opts.refresh) q.set('refresh', '1');
+    const qs = q.toString();
+    return this.call<ImagesResult>(`api/v1/connections/${encodeURIComponent(name)}/images${qs ? `?${qs}` : ''}`);
+  }
+
+  previewImages(images: ImageSource[], ref: string): Promise<ImagesResult> {
+    return this.call<ImagesResult>('api/v1/images/preview', { method: 'POST', json: { images, ref } });
+  }
+
+  async registryKinds(): Promise<RegistryKind[]> {
+    return (await this.call<{ kinds: RegistryKind[] }>('api/v1/registry-kinds')).kinds;
+  }
+
+  async registries(): Promise<Registry[]> {
+    return (await this.call<{ registries: Registry[] }>('api/v1/registries')).registries;
+  }
+
+  createRegistry(input: RegistryInput): Promise<Registry> {
+    return this.call<Registry>('api/v1/registries', { method: 'POST', json: input });
+  }
+
+  updateRegistry(input: RegistryInput): Promise<Registry> {
+    return this.call<Registry>(`api/v1/registries/${encodeURIComponent(input.name)}`, { method: 'PUT', json: input });
+  }
+
+  deleteRegistry(name: string): Promise<void> {
+    return this.call<void>(`api/v1/registries/${encodeURIComponent(name)}`, { method: 'DELETE' });
+  }
+
+  testRegistry(name: string): Promise<RegistryTestResult> {
+    return this.call<RegistryTestResult>(`api/v1/registries/${encodeURIComponent(name)}/test`, { method: 'POST' });
+  }
+
+  testRegistryDraft(input: RegistryInput): Promise<RegistryTestResult> {
+    return this.call<RegistryTestResult>('api/v1/test-registry', { method: 'POST', json: input });
   }
 }
 

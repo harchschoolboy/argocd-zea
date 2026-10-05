@@ -98,6 +98,11 @@ func (p *Provider) Validate(c *connections.Connection) error {
 	return nil
 }
 
+// CommitURL links to a commit page of the repository.
+func (p *Provider) CommitURL(c *connections.Connection, sha string) string {
+	return providers.CommitPageURL(c.URL, "/commit/", sha)
+}
+
 type target struct {
 	apiBase string
 	owner   string

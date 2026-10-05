@@ -8,8 +8,9 @@ repositories (GitHub Actions, GitLab CI), pick a branch, start a pipeline,
 follow its jobs and logs, and deploy a built image the GitOps way (a commit to
 the app-of-apps repo).
 
-> Status: phase 3. Connections (GitHub and GitLab), branches, starting
-> pipelines with parameters, run status and jobs, cancel and rerun work. Logs
+> Status: phase 4. Connections (GitHub and GitLab), branches, starting
+> pipelines with parameters, run status and jobs, cancel and rerun, and
+> container images per branch (DigitalOcean and OCI registries) work. Logs
 > and Deploy are in progress - see [docs/design.md](docs/design.md).
 
 ## How it fits into Argo CD
@@ -46,7 +47,7 @@ prints a ready-to-merge values snippet for the argo-cd chart.
   `argocd-server` to `github.com` to download the UI extension at startup.
 
 In the commands below the Argo CD namespace is `argocd`, the Helm release and
-the anchor Application are both called `zea`, and the release is `v0.1.6`.
+the anchor Application are both called `zea`, and the release is `v0.1.7`.
 
 ### Step 1. Install the backend
 
@@ -99,7 +100,7 @@ set `image.tag`.
 #### Option B: with the Helm CLI
 
 ```bash
-helm install zea oci://ghcr.io/harchschoolboy/charts/zea --version 0.1.6 \
+helm install zea oci://ghcr.io/harchschoolboy/charts/zea --version 0.1.7 \
   -n argocd \
   --set anchorApplication=argocd:<existing-app> \
   --set 'admins.users={admin}'
@@ -150,11 +151,11 @@ server:
           - name: EXTENSION_NAME
             value: zea
           - name: EXTENSION_VERSION
-            value: v0.1.6
+            value: v0.1.7
           - name: EXTENSION_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.6/extension-zea.tar.gz
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.7/extension-zea.tar.gz
           - name: EXTENSION_CHECKSUM_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.6/extension-zea_checksums.txt
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.7/extension-zea_checksums.txt
 
 configs:
   params:
@@ -242,11 +243,11 @@ one Zea installation.
                - name: EXTENSION_NAME
                  value: zea
                - name: EXTENSION_VERSION
-                 value: v0.1.6
+                 value: v0.1.7
                - name: EXTENSION_URL
-                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.6/extension-zea.tar.gz
+                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.7/extension-zea.tar.gz
                - name: EXTENSION_CHECKSUM_URL
-                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.6/extension-zea_checksums.txt
+                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.7/extension-zea_checksums.txt
              securityContext:
                runAsNonRoot: true
                runAsUser: 1000
@@ -378,6 +379,47 @@ Connection (`allowedGroups` or admin) can run, cancel and rerun its
 pipelines. Every start is written to the backend log with the user, ref and
 the names of the parameters (values are not logged).
 
+### Images
+
+The **Images** tab of a Connection lists the container images built from it,
+for the selected branch (or all branches), with tags, push time, size,
+digest, a link to the commit and a button that copies the full image
+reference.
+
+1. **Add a registry.** As an admin open **Registries** on the Zea page and
+   add one; **Test registry** lists what the credentials can see. Or commit a
+   Secret, see
+   [deploy/examples/registry-secret.yaml](deploy/examples/registry-secret.yaml).
+   - **DigitalOcean**: URL `registry.digitalocean.com/<registry>` and a
+     DigitalOcean API token with read access to the registry (custom scope
+     `registry:read`), or the `.dockerconfigjson` written by
+     `doctl registry login` / `doctl registry docker-config`.
+   - **Generic OCI** (Harbor, Zot, distribution, GitLab registry, ...): URL
+     `host/namespace`; anonymous, username/password or `.dockerconfigjson`.
+     The registry must support the catalog API (`/v2/_catalog`). GHCR and
+     Docker Hub do not, and are not supported yet.
+
+   Registries are admin-only: users never see their credentials, only the
+   images of the Connections shared with them.
+
+2. **Add image sources** to the Connection (**Edit** -> **Images**). Each
+   source is a registry plus a regular expression for repository names and an
+   optional one for tags. A named group `(?P<branch>...)` ties images to
+   branches; **Preview** shows what matches. For example, a repository that
+   pushes `vmist-server-web-<branch>-prod:<short sha>`:
+
+   | Registry | Repository pattern | Tag pattern |
+   |----------|--------------------|-------------|
+   | `do` | `^vmist-server-(web\|static)-(?P<branch>.+)-prod$` | `^[0-9a-f]{7}$` |
+
+   Branch names are compared in slug form (`feature/X` -> `feature-x`). Tags
+   that look like a commit SHA (7-40 hex characters) link to the commit; for
+   other tag formats capture the SHA with `(?P<sha>...)`, e.g.
+   `^v[0-9.]+-(?P<sha>[0-9a-f]{7})$`.
+
+Registry results are cached for a minute; the refresh button next to the list
+reloads them.
+
 ### Upgrade
 
 Bump the version in both places, so the UI and the backend match:
@@ -451,6 +493,9 @@ security contexts, scheduling).
 | `GitHub API returned 403` on Run, Cancel or Rerun | The GitHub App or token needs **Actions** read and write (an App owner must also accept the new permissions on the installation) |
 | `Unexpected inputs provided` (GitHub) | The workflow file on the branch changed after the form was opened; close and reopen the form |
 | `GitLab API returned 403` on Run | Token role (Developer or higher; Maintainer for protected branches) and the "Minimum role to use pipeline variables" project setting |
+| `DigitalOcean API returned 401` / `403` | The registry token is invalid or lacks `registry:read`; **Test** on the Registries page |
+| `registry does not support the catalog API` | The OCI registry has no `/v2/_catalog` (GHCR, Docker Hub); not supported yet |
+| Images tab is empty for a branch | **Preview** in the Connection form with an empty branch shows the repository names; check the `branch` group of the pattern against the branch slug |
 
 ## Development
 

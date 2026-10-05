@@ -2,6 +2,7 @@ import * as React from 'react';
 import { describeError, ZeaClient } from './api';
 import { BranchPicker } from './BranchPicker';
 import { RunFormPanel } from './RunForm';
+import { ImagesPanel } from './Images';
 import { routeHref } from './route';
 import { LastRun, RunsList } from './Runs';
 import { Connection, ProviderInfo, Run, TestResult } from './types';
@@ -16,10 +17,28 @@ interface Props {
   detail?: boolean;
   initialRef?: string;
   expandRunID?: string;
+  // Detail view tab: "images" or runs (default).
+  tab?: string;
   onOpen?: (ref: string, runID?: string) => void;
+  onTab?: (tab: string | undefined, ref: string) => void;
   onEdit: () => void;
   onDeleted: () => void;
 }
+
+const TabButton = ({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) => (
+  <a
+    onClick={onClick}
+    style={{
+      cursor: 'pointer',
+      padding: '0.4em 0.2em',
+      marginBottom: -1,
+      fontWeight: active ? 600 : undefined,
+      color: active ? undefined : COLORS.muted,
+      borderBottom: `2px solid ${active ? 'currentColor' : 'transparent'}`,
+    }}>
+    {children}
+  </a>
+);
 
 // Clicks on these elements never open the connection view from a card.
 const NO_NAV = 'button, a, input, select, textarea, label, [data-zea-nonav]';
@@ -34,7 +53,9 @@ export const ConnectionCard = ({
   detail,
   initialRef,
   expandRunID,
+  tab,
   onOpen,
+  onTab,
   onEdit,
   onDeleted,
 }: Props) => {
@@ -113,6 +134,7 @@ export const ConnectionCard = ({
 
   const branchList = branches.state === 'ok' ? branches.data.branches : [];
   const defaultBranch = branches.state === 'ok' ? branches.data.defaultBranch : undefined;
+  const showImages = !!detail && tab === 'images';
 
   return (
     <div className='white-box' style={{ margin: 0, cursor: detail ? undefined : 'pointer' }} onClick={onCardClick}>
@@ -174,7 +196,29 @@ export const ConnectionCard = ({
         )}
         {branches.state === 'ok' && ref && !known && <Muted>Unknown branch.</Muted>}
 
-        {known && (
+        {detail && (
+          <div data-zea-nonav style={{ display: 'flex', gap: '1.5em', borderBottom: `1px solid ${COLORS.border}`, margin: '0.5em 0' }}>
+            <TabButton active={!showImages} onClick={() => onTab?.(undefined, ref ?? '')}>
+              <i className='fa fa-play-circle' /> {provider?.capabilities.multiplePipelines ? 'Workflows' : 'Pipeline'} and runs
+            </TabButton>
+            <TabButton active={showImages} onClick={() => onTab?.('images', ref ?? '')}>
+              <i className='fa fa-box' /> Images
+            </TabButton>
+          </div>
+        )}
+
+        {showImages && (
+          <ImagesPanel
+            client={client}
+            connection={c.name}
+            gitRef={ref ?? ''}
+            ready={branches.state === 'error' || (branches.state === 'ok' && ref !== null)}
+            configured={c.images.length > 0 || !!c.imagesError}
+            isAdmin={isAdmin}
+          />
+        )}
+
+        {known && !showImages && (
           <div>
             <div data-zea-nonav style={{ cursor: 'default' }}>
               <div style={{ fontWeight: 600, margin: '0.5em 0' }}>

@@ -8,7 +8,9 @@ import (
 	"github.com/harchschoolboy/argocd-zea/backend/internal/authz"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/config"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/connections"
+	"github.com/harchschoolboy/argocd-zea/backend/internal/images"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/providers"
+	"github.com/harchschoolboy/argocd-zea/backend/internal/registries"
 )
 
 // Version is overridden at build time via -ldflags.
@@ -16,9 +18,12 @@ var Version = "dev"
 
 // Deps are the collaborators of the HTTP API.
 type Deps struct {
-	Store     connections.Store
-	Providers *providers.Registry
-	Authz     *authz.Authorizer
+	Store         connections.Store
+	Providers     *providers.Registry
+	Authz         *authz.Authorizer
+	Registries    registries.Store
+	RegistryKinds *registries.Kinds
+	Images        *images.Resolver
 }
 
 type api struct {
@@ -52,6 +57,15 @@ func New(cfg *config.Config, log *slog.Logger, deps Deps) http.Handler {
 	mux.HandleFunc("GET /api/v1/connections/{name}/runs/{run}", a.handleGetRun)
 	mux.HandleFunc("POST /api/v1/connections/{name}/runs/{run}/cancel", a.handleCancelRun)
 	mux.HandleFunc("POST /api/v1/connections/{name}/runs/{run}/retry", a.handleRetryRun)
+	mux.HandleFunc("GET /api/v1/connections/{name}/images", a.handleConnectionImages)
+	mux.HandleFunc("POST /api/v1/images/preview", a.adminOnly(a.handleImagesPreview))
+	mux.HandleFunc("GET /api/v1/registry-kinds", a.adminOnly(a.handleRegistryKinds))
+	mux.HandleFunc("GET /api/v1/registries", a.adminOnly(a.handleListRegistries))
+	mux.HandleFunc("POST /api/v1/registries", a.adminOnly(a.handleCreateRegistry))
+	mux.HandleFunc("PUT /api/v1/registries/{name}", a.adminOnly(a.handleUpdateRegistry))
+	mux.HandleFunc("DELETE /api/v1/registries/{name}", a.adminOnly(a.handleDeleteRegistry))
+	mux.HandleFunc("POST /api/v1/registries/{name}/test", a.adminOnly(a.handleTestRegistry))
+	mux.HandleFunc("POST /api/v1/test-registry", a.adminOnly(a.handleTestRegistryDraft))
 
 	protected := requireProxyToken(cfg.ProxyToken, cfg.InsecureSkipProxyAuth, log,
 		requireIdentity(requireAnchor(cfg.AnchorApp, mux)))
@@ -90,7 +104,7 @@ func (a *api) handleProviders(w http.ResponseWriter, _ *http.Request) {
 func (a *api) adminOnly(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !a.deps.Authz.IsAdmin(IdentityFrom(r.Context())) {
-			writeError(w, http.StatusForbidden, "only Zea admins can manage connections")
+			writeError(w, http.StatusForbidden, "only Zea admins can manage connections and registries")
 			return
 		}
 		next(w, r)

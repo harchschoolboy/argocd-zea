@@ -71,6 +71,11 @@ func (p *Provider) Validate(c *connections.Connection) error {
 	return err
 }
 
+// CommitURL links to a commit page of the project.
+func (p *Provider) CommitURL(c *connections.Connection, sha string) string {
+	return providers.CommitPageURL(c.URL, "/-/commit/", sha)
+}
+
 type target struct {
 	apiBase string
 	// project is the URL-encoded "group/subgroup/project" path.

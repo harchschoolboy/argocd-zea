@@ -61,10 +61,18 @@ func TestSecretStoreLifecycle(t *testing.T) {
 		t.Fatalf("create clashing with declarative name: %v", err)
 	}
 
-	upd := &Connection{Name: "app", Provider: "github", URL: "https://github.com/o/r2", Credentials: map[string]string{"token": ""}}
+	upd := &Connection{Name: "app", Provider: "github", URL: "https://github.com/o/r2", Credentials: map[string]string{"token": ""},
+		Images: []ImageSource{{Registry: "do", Repository: `^app-(?P<branch>.+)$`, Tags: `^[0-9a-f]{7}$`}}}
 	got, err := s.Update(ctx, upd)
 	if err != nil || got.URL != "https://github.com/o/r2" || got.Credentials["token"] != "ghp" {
 		t.Fatalf("update = %+v, %v", got, err)
+	}
+	if len(got.Images) != 1 || got.Images[0] != upd.Images[0] || got.ImagesError != "" || got.Credentials[KeyImages] != "" {
+		t.Fatalf("images round trip = %+v %q", got.Images, got.ImagesError)
+	}
+	got, err = s.Update(ctx, &Connection{Name: "app", Provider: "github", URL: "https://github.com/o/r2"})
+	if err != nil || len(got.Images) != 0 {
+		t.Fatalf("clearing images = %+v, %v", got, err)
 	}
 
 	if err := s.Delete(ctx, "app"); err != nil {
@@ -94,10 +102,41 @@ func TestValidate(t *testing.T) {
 		{Name: "x", Provider: "github", URL: "git@github.com:o/r"},
 		{Name: "x", Provider: "github", URL: "https://github.com/o/r", APIURL: "ftp://x"},
 		{Name: "x", Provider: "github", URL: "https://github.com/o/r", Credentials: map[string]string{"provider": "x"}},
+		{Name: "x", Provider: "github", URL: "https://github.com/o/r", Credentials: map[string]string{"images": "x"}},
+		{Name: "x", Provider: "github", URL: "https://github.com/o/r", Images: []ImageSource{{Registry: "do"}}},
+		{Name: "x", Provider: "github", URL: "https://github.com/o/r", Images: []ImageSource{{Registry: "do", Repository: "("}}},
+		{Name: "x", Provider: "github", URL: "https://github.com/o/r", Images: []ImageSource{{Registry: "do", Repository: "a", Tags: "["}}},
+		{Name: "x", Provider: "github", URL: "https://github.com/o/r", ImagesError: "broken"},
 	}
 	for i, c := range bad {
 		if c.Validate() == nil {
 			t.Fatalf("case %d should fail", i)
 		}
+	}
+}
+
+func TestParseImageSources(t *testing.T) {
+	yamlSrc := "- registry: do\n  repository: ^web-(?P<branch>.+)$\n  tags: ^[0-9a-f]+$\n"
+	jsonSrc := `[{"registry":"do","repository":"^web-(?P<branch>.+)$","tags":"^[0-9a-f]+$"}]`
+	for _, raw := range []string{yamlSrc, jsonSrc} {
+		got, err := ParseImageSources(raw)
+		if err != nil || len(got) != 1 || got[0].Repository != "^web-(?P<branch>.+)$" || got[0].Tags != "^[0-9a-f]+$" {
+			t.Fatalf("parse %q = %+v, %v", raw, got, err)
+		}
+	}
+	if _, err := ParseImageSources("- registry: do\n  unknown: 1\n"); err == nil {
+		t.Fatal("unknown field should fail")
+	}
+	if got, err := ParseImageSources("  "); err != nil || got != nil {
+		t.Fatalf("empty = %v, %v", got, err)
+	}
+	back, err := ParseImageSources(FormatImageSources([]ImageSource{{Registry: "r", Repository: `^a:"b'$`}}))
+	if err != nil || back[0].Repository != `^a:"b'$` {
+		t.Fatalf("format round trip = %+v, %v", back, err)
+	}
+	sec := ToSecret(&Connection{Name: "a", Provider: "github", URL: "https://github.com/o/r"})
+	sec.StringData[KeyImages] = "not: [a list"
+	if c := FromSecret(sec); c.ImagesError == "" || c.Credentials[KeyImages] != "" {
+		t.Fatalf("broken images = %+v", c)
 	}
 }

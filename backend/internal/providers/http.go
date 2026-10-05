@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 )
 
@@ -175,4 +176,16 @@ func ParseRepoURL(raw string) (*RepoURL, error) {
 // NormalizeAPIURL trims trailing slashes from an explicit API URL.
 func NormalizeAPIURL(raw string) string {
 	return strings.TrimRight(strings.TrimSpace(raw), "/")
+}
+
+var commitSHARe = regexp.MustCompile(`^[0-9a-fA-F]{7,64}$`)
+
+// CommitPageURL joins a repository web URL, a provider-specific commit path
+// ("/commit/") and sha. It returns "" for anything that is not a hex SHA.
+func CommitPageURL(repoURL, commitPath, sha string) string {
+	u, err := ParseRepoURL(repoURL)
+	if err != nil || !commitSHARe.MatchString(sha) {
+		return ""
+	}
+	return fmt.Sprintf("%s://%s/%s%s%s", u.Scheme, u.Host, u.Path, commitPath, strings.ToLower(sha))
 }

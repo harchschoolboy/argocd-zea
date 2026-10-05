@@ -262,6 +262,11 @@ type Provider interface {
 	RetryRun(ctx context.Context, c *connections.Connection, runID string, failedOnly bool) error
 }
 
+// CommitLinker is implemented by providers that can link to a commit page.
+type CommitLinker interface {
+	CommitURL(c *connections.Connection, sha string) string
+}
+
 // Registry maps provider IDs to implementations.
 type Registry struct {
 	byID map[string]Provider

@@ -11,6 +11,7 @@ import (
 
 	"github.com/harchschoolboy/argocd-zea/backend/internal/connections"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/providers"
+	"github.com/harchschoolboy/argocd-zea/backend/internal/registries"
 )
 
 // maxBodyBytes caps JSON request bodies.
@@ -19,23 +20,26 @@ const maxBodyBytes = 64 << 10
 // connectionView is the client-facing shape of a Connection. Credential
 // values are never returned; admins only see which keys are set.
 type connectionView struct {
-	Name           string   `json:"name"`
-	Provider       string   `json:"provider"`
-	URL            string   `json:"url"`
-	APIURL         string   `json:"apiURL,omitempty"`
-	AllowedGroups  []string `json:"allowedGroups"`
-	Editable       bool     `json:"editable"`
-	CredentialKeys []string `json:"credentialKeys,omitempty"`
+	Name           string                    `json:"name"`
+	Provider       string                    `json:"provider"`
+	URL            string                    `json:"url"`
+	APIURL         string                    `json:"apiURL,omitempty"`
+	AllowedGroups  []string                  `json:"allowedGroups"`
+	Images         []connections.ImageSource `json:"images"`
+	ImagesError    string                    `json:"imagesError,omitempty"`
+	Editable       bool                      `json:"editable"`
+	CredentialKeys []string                  `json:"credentialKeys,omitempty"`
 }
 
 // connectionInput is the body of create/update/test-connection requests.
 type connectionInput struct {
-	Name          string            `json:"name"`
-	Provider      string            `json:"provider"`
-	URL           string            `json:"url"`
-	APIURL        string            `json:"apiURL"`
-	AllowedGroups []string          `json:"allowedGroups"`
-	Credentials   map[string]string `json:"credentials"`
+	Name          string                    `json:"name"`
+	Provider      string                    `json:"provider"`
+	URL           string                    `json:"url"`
+	APIURL        string                    `json:"apiURL"`
+	AllowedGroups []string                  `json:"allowedGroups"`
+	Images        []connections.ImageSource `json:"images"`
+	Credentials   map[string]string         `json:"credentials"`
 }
 
 func (in *connectionInput) toConnection() *connections.Connection {
@@ -49,12 +53,21 @@ func (in *connectionInput) toConnection() *connections.Connection {
 	for k, v := range in.Credentials {
 		creds[strings.TrimSpace(k)] = v
 	}
+	imgs := []connections.ImageSource{}
+	for _, s := range in.Images {
+		imgs = append(imgs, connections.ImageSource{
+			Registry:   strings.TrimSpace(s.Registry),
+			Repository: strings.TrimSpace(s.Repository),
+			Tags:       strings.TrimSpace(s.Tags),
+		})
+	}
 	return &connections.Connection{
 		Name:          strings.TrimSpace(in.Name),
 		Provider:      strings.TrimSpace(in.Provider),
 		URL:           strings.TrimSpace(in.URL),
 		APIURL:        strings.TrimSpace(in.APIURL),
 		AllowedGroups: groups,
+		Images:        imgs,
 		Credentials:   creds,
 	}
 }
@@ -66,7 +79,12 @@ func (a *api) view(r *http.Request, c *connections.Connection) connectionView {
 		URL:           c.URL,
 		APIURL:        c.APIURL,
 		AllowedGroups: c.AllowedGroups,
+		Images:        c.Images,
+		ImagesError:   c.ImagesError,
 		Editable:      c.Editable,
+	}
+	if v.Images == nil {
+		v.Images = []connections.ImageSource{}
 	}
 	if a.deps.Authz.IsAdmin(IdentityFrom(r.Context())) {
 		v.CredentialKeys = c.CredentialKeys()
@@ -96,7 +114,7 @@ func (a *api) handleCreateConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c := in.toConnection()
-	if err := a.validate(c); err != nil {
+	if err := a.validate(r.Context(), c); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -132,7 +150,7 @@ func (a *api) handleUpdateConnection(w http.ResponseWriter, r *http.Request) {
 	c := in.toConnection()
 	merged := *c
 	merged.Credentials = connections.MergeCredentials(cur.Credentials, c.Credentials)
-	if err := a.validate(&merged); err != nil {
+	if err := a.validate(r.Context(), &merged); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -166,7 +184,7 @@ func (a *api) handleTestDraft(w http.ResponseWriter, r *http.Request) {
 	if cur, err := a.deps.Store.Get(r.Context(), c.Name); err == nil && cur.Editable {
 		c.Credentials = connections.MergeCredentials(cur.Credentials, c.Credentials)
 	}
-	if err := a.validate(c); err != nil {
+	if err := a.validate(r.Context(), c); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -249,7 +267,7 @@ func (a *api) usableProvider(w http.ResponseWriter, r *http.Request) (*connectio
 	return c, p, true
 }
 
-func (a *api) validate(c *connections.Connection) error {
+func (a *api) validate(ctx context.Context, c *connections.Connection) error {
 	if err := c.Validate(); err != nil {
 		return err
 	}
@@ -257,7 +275,26 @@ func (a *api) validate(c *connections.Connection) error {
 	if err != nil {
 		return err
 	}
-	return p.Validate(c)
+	if err := p.Validate(c); err != nil {
+		return err
+	}
+	return a.validateImageRegistries(ctx, c.Images)
+}
+
+// validateImageRegistries checks that every image source names a registry.
+func (a *api) validateImageRegistries(ctx context.Context, srcs []connections.ImageSource) error {
+	for i, s := range srcs {
+		if a.deps.Registries == nil {
+			return errors.New("registries are not configured")
+		}
+		if _, err := a.deps.Registries.Get(ctx, s.Registry); err != nil {
+			if errors.Is(err, registries.ErrNotFound) {
+				return fmt.Errorf("image source %d: registry %q does not exist", i+1, s.Registry)
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 // writeErr maps domain and upstream errors to HTTP responses.
@@ -265,9 +302,10 @@ func (a *api) writeErr(w http.ResponseWriter, err error) {
 	var ue *providers.UpstreamError
 	var urlErr *url.Error
 	switch {
-	case errors.Is(err, connections.ErrNotFound):
+	case errors.Is(err, connections.ErrNotFound), errors.Is(err, registries.ErrNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
-	case errors.Is(err, connections.ErrAlreadyExists), errors.Is(err, connections.ErrReadOnly):
+	case errors.Is(err, connections.ErrAlreadyExists), errors.Is(err, connections.ErrReadOnly),
+		errors.Is(err, registries.ErrAlreadyExists), errors.Is(err, registries.ErrReadOnly):
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, providers.ErrInvalidRequest), errors.Is(err, providers.ErrUnsupported):
 		writeError(w, http.StatusBadRequest, err.Error())

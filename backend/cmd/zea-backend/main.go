@@ -19,12 +19,17 @@ import (
 	"github.com/harchschoolboy/argocd-zea/backend/internal/authz"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/config"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/connections"
+	"github.com/harchschoolboy/argocd-zea/backend/internal/images"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/providers"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/providers/github"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/providers/gitlab"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/proxytoken"
+	"github.com/harchschoolboy/argocd-zea/backend/internal/registries"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/server"
 )
+
+// imagesCacheTTL is how long registry listings are reused.
+const imagesCacheTTL = time.Minute
 
 func main() {
 	cmd := run
@@ -82,10 +87,15 @@ func run() error {
 		return err
 	}
 	httpClient := &http.Client{Timeout: cfg.HTTPTimeout, Transport: http.DefaultTransport.(*http.Transport).Clone()}
+	regStore := registries.NewSecretStore(kube, cfg.ConnectionsNamespace)
+	regKinds := registries.NewKinds(registries.NewDigitalOcean(httpClient), registries.NewOCI(httpClient))
 	deps := server.Deps{
-		Store:     connections.NewSecretStore(kube, cfg.ConnectionsNamespace),
-		Providers: providers.NewRegistry(github.New(httpClient), gitlab.New(httpClient)),
-		Authz:     authz.New(cfg.AdminUsers, cfg.AdminGroups),
+		Store:         connections.NewSecretStore(kube, cfg.ConnectionsNamespace),
+		Providers:     providers.NewRegistry(github.New(httpClient), gitlab.New(httpClient)),
+		Authz:         authz.New(cfg.AdminUsers, cfg.AdminGroups),
+		Registries:    regStore,
+		RegistryKinds: regKinds,
+		Images:        images.NewResolver(regStore, regKinds, imagesCacheTTL),
 	}
 	if len(cfg.AdminUsers) == 0 && len(cfg.AdminGroups) == 0 {
 		log.Warn("no Zea admins configured (ZEA_ADMIN_USERS / ZEA_ADMIN_GROUPS); connections can only be managed declaratively")

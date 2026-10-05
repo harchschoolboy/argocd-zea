@@ -142,8 +142,8 @@ Secrets by label, so access to Secrets in the Argo CD namespace would expose
 
 | Who | Can |
 |-----|-----|
-| Zea admins (`adminGroups` in backend config) | Create/edit/delete Connections, everything below |
-| Members of `allowedGroups` of a Connection | See it, list branches, start/cancel/retry pipelines, read logs |
+| Zea admins (`adminGroups` in backend config) | Create/edit/delete Connections and Registries, everything below |
+| Members of `allowedGroups` of a Connection | See it, list branches and images, start/cancel/retry pipelines, read logs |
 | Others | Do not see the Connection |
 
 Deploy additionally requires Argo CD `sync` on the target Application
@@ -232,7 +232,80 @@ with user, Connection, pipeline, ref and parameter names (not values).
 
 Later providers: Gitea/Forgejo Actions, Bitbucket Pipelines, Jenkins.
 
+## Registries and images
+
+A **Registry** is a container registry with credentials, stored as a Secret
+in the Connections namespace (label `argocd-zea.io/secret-type: registry`,
+UI-managed name `zea-registry-<name>`):
+
+```yaml
+stringData:
+  name: do
+  kind: digitalocean            # digitalocean | oci
+  url: registry.digitalocean.com/my-registry
+  token: dop_v1_...             # kind-specific credentials
+```
+
+Registries are admin-only and have no `allowedGroups`: users never see
+registry credentials or the full repository list, only the images selected by
+the Connections shared with them.
+
+| Kind | Listing | Credentials |
+|------|---------|-------------|
+| `digitalocean` | DO API `repositoriesV2` and `tags` (size, digest and push time in one call) | API token (`registry:read`), or a `.dockerconfigjson` whose password is an API token |
+| `oci` | Distribution API `/v2/_catalog` (filtered by the URL namespace) and `tags/list`; manifests of the newest 20 tags are read for digest, size (linux/amd64) and creation time | anonymous, username/password, or `.dockerconfigjson`; Bearer token challenges are handled |
+
+A registry Secret may have the type `kubernetes.io/dockerconfigjson`, so the
+same Secret can serve as an image pull secret elsewhere.
+
+GHCR and Docker Hub have no catalog API and are not supported yet (they need
+the GitHub packages API and the Docker Hub API).
+
+**Image sources** live on the Connection (Secret key `images`, YAML list):
+
+```yaml
+images: |
+  - registry: do
+    repository: ^vmist-server-(web|static)-(?P<branch>.+)-prod$
+    tags: ^[0-9a-f]{7}$
+```
+
+- `repository` and `tags` are Go regular expressions (RE2); `tags` is
+  optional. At most 20 sources per Connection.
+- A named group `branch` in either pattern ties images to a branch: with a
+  selected branch only images whose group equals the branch slug are shown
+  (lowercase, characters outside `[a-z0-9._-]` replaced by `-`, so
+  `feature/X` becomes `feature-x`).
+- A group `sha` in the tag pattern links tags to commits; without it, tags
+  of 7-40 hex characters are taken as commit SHAs. Links use the provider's
+  commit URL.
+- Up to 30 repositories per request, 10 newest tags each (`limit` up to
+  100). Results are cached for one minute per registry; `refresh=1` bypasses
+  the cache, editing or deleting a registry invalidates it.
+- Every source must reference an existing registry when the Connection is
+  saved; a registry used by Connections cannot be deleted.
+
+### Backend API (phase 4)
+
+| Method and path | Who | Purpose |
+|-----------------|-----|---------|
+| `GET /api/v1/connections/{name}/images?ref=&limit=&refresh=` | user | Images of the Connection, filtered by branch when `ref` is set; `configured: false` without image sources |
+| `POST /api/v1/images/preview` | admin | Resolve unsaved sources: `{images, ref}`, 3 tags per repository |
+| `GET /api/v1/registry-kinds` | admin | Kinds and credential form schema |
+| `GET /api/v1/registries` | admin | Registries with `usedBy` (never credential values) |
+| `POST /api/v1/registries` | admin | Create |
+| `PUT /api/v1/registries/{name}` | admin | Update (UI-managed only); empty credential keeps the stored value |
+| `DELETE /api/v1/registries/{name}` | admin | Delete (UI-managed, unused only) |
+| `POST /api/v1/registries/{name}/test` | admin | List repositories of a saved registry |
+| `POST /api/v1/test-registry` | admin | Test unsaved form values |
+
+Per-source registry errors do not fail the request: they are returned in
+`errors` next to the repositories that did resolve.
+
 ## Deploy
+
+*Open topic - to be planned after phase 4. The notes below are the original
+sketch.*
 
 An Application is linked to a Connection with the annotation
 `argocd-zea.io/connection: <name>` (plus `argocd-zea.io/image`,
@@ -251,9 +324,8 @@ Application's spec (`helm.parameters`, `helm.valuesObject`, `kustomize.images`).
    `[skip ci]` and a trailer identifying the Argo CD user.
 5. Refresh/sync the parent through the Argo CD API on behalf of the user.
 
-Images: build-derived list (successful runs + `tag-template`), existence
-verified with `HEAD /v2/<name>/manifests/<tag>` (OCI Distribution API),
-registry credentials from `dockerconfigjson` Secrets.
+Images: listed from the registries of the Connection (see
+[Registries and images](#registries-and-images)).
 
 Not in v1: parents generated by Helm charts, ApplicationSet generators. Live
 parameter overrides via the Argo CD API are intentionally not used: a parent
@@ -269,7 +341,9 @@ with selfHeal would revert them.
    for branches and pipeline list, Connections UI (cards). *(done)*
 3. **Run** - trigger form, start, status, jobs, cancel/retry *(done)*; logs,
    play manual jobs *(next)*.
-4. **Images** - build-derived image list, OCI existence check.
+4. **Images** - Registries (DigitalOcean, generic OCI), regex image sources
+   on Connections, images per branch with commit links *(done)*; GHCR and
+   Docker Hub *(later)*.
 5. **Deploy** - plain-YAML app-of-apps write-back, parent refresh/sync.
 6. **Hardening** - caching, rate limits, audit log, error UX.
 

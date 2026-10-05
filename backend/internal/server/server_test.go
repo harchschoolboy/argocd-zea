@@ -15,7 +15,9 @@ import (
 	"github.com/harchschoolboy/argocd-zea/backend/internal/authz"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/config"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/connections"
+	"github.com/harchschoolboy/argocd-zea/backend/internal/images"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/providers"
+	"github.com/harchschoolboy/argocd-zea/backend/internal/registries"
 )
 
 const anchor = "argocd:zea"
@@ -91,24 +93,36 @@ func (fakeProvider) RetryRun(_ context.Context, _ *connections.Connection, _ str
 type testEnv struct {
 	h     http.Handler
 	store *connections.MemoryStore
+	regs  *registries.MemoryStore
 }
 
 func newEnv(skip bool) *testEnv {
 	cfg := &config.Config{ProxyToken: "s3cret", InsecureSkipProxyAuth: skip, AnchorApp: anchor}
 	store := connections.NewMemoryStore(
 		&connections.Connection{Name: "shared", Provider: "fake", URL: "https://x/o/r", AllowedGroups: []string{"devs"},
-			Credentials: map[string]string{"token": "good"}, Editable: true, SecretName: "zea-conn-shared"},
+			Credentials: map[string]string{"token": "good"}, Editable: true, SecretName: "zea-conn-shared",
+			Images: []connections.ImageSource{{Registry: "do", Repository: `^web-(?P<branch>.+)$`}}},
 		&connections.Connection{Name: "secret", Provider: "fake", URL: "https://x/o/s", AllowedGroups: []string{"ops"},
 			Credentials: map[string]string{"token": "good"}, Editable: true},
 		&connections.Connection{Name: "gitops", Provider: "fake", URL: "https://x/o/g", AllowedGroups: []string{"*"},
 			Credentials: map[string]string{"token": "good"}, Editable: false},
 	)
+	regs := registries.NewMemoryStore(
+		&registries.Registry{Name: "do", Kind: "fakereg", URL: "reg.example.com/team",
+			Credentials: map[string]string{"token": "regtok"}, Editable: true},
+		&registries.Registry{Name: "decl", Kind: "fakereg", URL: "reg.example.com/decl",
+			Credentials: map[string]string{"token": "regtok"}, Editable: false},
+	)
+	kinds := registries.NewKinds(fakeRegistryKind{})
 	deps := Deps{
-		Store:     store,
-		Providers: providers.NewRegistry(fakeProvider{}),
-		Authz:     authz.New([]string{"admin"}, []string{"zea-admins"}),
+		Store:         store,
+		Providers:     providers.NewRegistry(fakeProvider{}),
+		Authz:         authz.New([]string{"admin"}, []string{"zea-admins"}),
+		Registries:    regs,
+		RegistryKinds: kinds,
+		Images:        images.NewResolver(regs, kinds, 0),
 	}
-	return &testEnv{h: New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), deps), store: store}
+	return &testEnv{h: New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), deps), store: store, regs: regs}
 }
 
 type reqOpt func(*http.Request)

@@ -2,6 +2,7 @@ import * as React from 'react';
 import { ANCHOR_LABEL, findAnchors, ZeaClient } from './api';
 import { ConnectionCard } from './ConnectionCard';
 import { ConnectionForm } from './ConnectionForm';
+import { RegistriesView } from './Registries';
 import { navigate, useRoute } from './route';
 import { Connection, Me, ProviderInfo } from './types';
 import { COLORS, ErrorText, Muted, useLoad } from './ui';
@@ -41,7 +42,9 @@ const Connections = ({ client, ctx }: { client: ZeaClient; ctx: Context }) => {
       detail={detail}
       initialRef={detail ? route.ref : undefined}
       expandRunID={detail ? route.run : undefined}
+      tab={detail ? route.tab : undefined}
       onOpen={(ref, run) => navigate({ connection: c.name, ref, run })}
+      onTab={(tab, ref) => navigate({ connection: c.name, ref, tab })}
       onEdit={() => setEditing({ mode: 'edit', connection: c })}
       onDeleted={() => {
         if (detail) {
@@ -70,9 +73,14 @@ const Connections = ({ client, ctx }: { client: ZeaClient; ctx: Context }) => {
         </Muted>
         <div style={{ flex: 1 }} />
         {me.isAdmin && editing.mode === 'none' && !selected && (
-          <button className='argo-button argo-button--base' onClick={() => setEditing({ mode: 'create' })}>
-            <i className='fa fa-plus' /> Add connection
-          </button>
+          <>
+            <button className='argo-button argo-button--base-o' onClick={() => navigate({ view: 'registries' })}>
+              <i className='fa fa-database' /> Registries
+            </button>
+            <button className='argo-button argo-button--base' onClick={() => setEditing({ mode: 'create' })}>
+              <i className='fa fa-plus' /> Add connection
+            </button>
+          </>
         )}
         <button className='argo-button argo-button--base-o' onClick={reload}>
           <i className='fa fa-redo' /> Refresh
@@ -81,7 +89,7 @@ const Connections = ({ client, ctx }: { client: ZeaClient; ctx: Context }) => {
 
       {editing.mode !== 'none' && (
         <ConnectionForm
-          key={editing.mode === 'edit' ? editing.connection.name : 'new'}
+          key={editing.mode === 'edit' ? `form:${editing.connection.name}` : 'form:new'}
           client={client}
           providers={providers}
           existing={editing.mode === 'edit' ? editing.connection : undefined}
@@ -128,7 +136,15 @@ const Workspace = ({ client }: { client: ZeaClient }) => {
   if (ctx.state === 'error') {
     return <ErrorText text={ctx.error} />;
   }
-  return <Connections client={client} ctx={ctx.data} />;
+  return <Pages client={client} ctx={ctx.data} />;
+};
+
+const Pages = ({ client, ctx }: { client: ZeaClient; ctx: Context }) => {
+  const route = useRoute();
+  if (route.view === 'registries' && ctx.me.isAdmin) {
+    return <RegistriesView client={client} />;
+  }
+  return <Connections client={client} ctx={ctx} />;
 };
 
 export const ZeaPage = () => {

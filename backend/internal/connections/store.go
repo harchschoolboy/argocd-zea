@@ -154,6 +154,11 @@ func FromSecret(sec *corev1.Secret) *Connection {
 		Editable:      sec.Labels[LabelManagedBy] == ManagedByZea,
 		SecretName:    sec.Name,
 	}
+	if imgs, err := ParseImageSources(vals[KeyImages]); err != nil {
+		c.ImagesError = err.Error()
+	} else {
+		c.Images = imgs
+	}
 	for k, v := range vals {
 		if !isReservedKey(k) {
 			c.Credentials[k] = v
@@ -172,6 +177,9 @@ func ToSecret(c *Connection) *corev1.Secret {
 	}
 	if c.APIURL != "" {
 		data[KeyAPIURL] = c.APIURL
+	}
+	if imgs := FormatImageSources(c.Images); imgs != "" {
+		data[KeyImages] = imgs
 	}
 	for k, v := range c.Credentials {
 		if v != "" {
