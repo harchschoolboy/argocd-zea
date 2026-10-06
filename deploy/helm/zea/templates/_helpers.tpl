@@ -50,3 +50,24 @@ app.kubernetes.io/component: backend
 {{- define "zea.image" -}}
 {{- printf "%s:%s" .Values.image.repository (.Values.image.tag | default .Chart.AppVersion) }}
 {{- end }}
+
+{{- /* "namespace/name" of every allowed registry pull Secret. */ -}}
+{{- define "zea.pullSecretRefs" -}}
+{{- $refs := list }}
+{{- range (.Values.registries | default dict).pullSecrets }}
+{{- $ns := required "registries.pullSecrets[].namespace is required" .namespace }}
+{{- $name := required "registries.pullSecrets[].name is required" .name }}
+{{- $refs = append $refs (printf "%s/%s" $ns $name) }}
+{{- end }}
+{{- join "," ($refs | uniq) }}
+{{- end }}
+
+{{- define "zea.gcpWIF" -}}
+{{- $wif := ((.Values.gcp | default dict).workloadIdentityFederation | default dict) }}
+{{- if $wif.enabled }}
+{{- if not (regexMatch "^//iam\\.googleapis\\.com/projects/[0-9]+/locations/global/workloadIdentityPools/[^/]+/providers/[^/]+$" ($wif.audience | default "")) }}
+{{- fail "gcp.workloadIdentityFederation.audience must be //iam.googleapis.com/projects/<number>/locations/global/workloadIdentityPools/<pool>/providers/<provider>" }}
+{{- end }}
+true
+{{- end }}
+{{- end }}

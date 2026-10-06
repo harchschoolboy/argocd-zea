@@ -29,6 +29,11 @@ const (
 	CredPassword     = "password"
 	CredToken        = "token"
 	CredDockerConfig = ".dockerconfigjson"
+	// CredPullSecret references an existing image pull Secret as
+	// "namespace/name"; its .dockerconfigjson is read at use time.
+	CredPullSecret = "pullSecret"
+	// CredServiceAccountKey is a Google service account JSON key.
+	CredServiceAccountKey = "serviceAccountKey"
 )
 
 var (
@@ -71,6 +76,11 @@ func (r *Registry) Validate() error {
 	for k := range r.Credentials {
 		if isReservedKey(k) {
 			return fmt.Errorf("credential key %q is reserved", k)
+		}
+	}
+	if ref := r.Credentials[CredPullSecret]; ref != "" {
+		if _, _, err := ParsePullSecretRef(ref); err != nil {
+			return err
 		}
 	}
 	return nil

@@ -104,8 +104,8 @@ func Do(ctx context.Context, client *http.Client, provider string, req Request) 
 // errorMessage extracts a human-readable message from GitHub/GitLab errors.
 func errorMessage(data []byte) string {
 	var body struct {
-		Message any    `json:"message"`
-		Error   string `json:"error"`
+		Message any             `json:"message"`
+		Error   json.RawMessage `json:"error"`
 	}
 	if json.Unmarshal(data, &body) == nil {
 		switch m := body.Message.(type) {
@@ -119,8 +119,16 @@ func errorMessage(data []byte) string {
 				return string(b)
 			}
 		}
-		if body.Error != "" {
-			return body.Error
+		var s string
+		if json.Unmarshal(body.Error, &s) == nil && s != "" {
+			return s
+		}
+		// Google APIs: {"error": {"code": 403, "message": "..."}}
+		var obj struct {
+			Message string `json:"message"`
+		}
+		if json.Unmarshal(body.Error, &obj) == nil && obj.Message != "" {
+			return obj.Message
 		}
 	}
 	s := strings.TrimSpace(string(data))

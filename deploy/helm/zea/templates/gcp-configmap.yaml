@@ -1,0 +1,21 @@
+{{- if include "zea.gcpWIF" . }}
+{{- $wif := .Values.gcp.workloadIdentityFederation }}
+{{- $cfg := dict
+  "type" "external_account"
+  "audience" $wif.audience
+  "subject_token_type" "urn:ietf:params:oauth:token-type:jwt"
+  "token_url" "https://sts.googleapis.com/v1/token"
+  "credential_source" (dict "file" "/var/run/secrets/zea/gcp/token" "format" (dict "type" "text")) }}
+{{- with $wif.serviceAccountEmail }}
+{{- $_ := set $cfg "service_account_impersonation_url" (printf "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/%s:generateAccessToken" .) }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "zea.fullname" . }}-gcp
+  labels:
+    {{- include "zea.labels" . | nindent 4 }}
+data:
+  credentials.json: |
+    {{- toPrettyJson $cfg | nindent 4 }}
+{{- end }}

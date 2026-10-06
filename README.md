@@ -10,7 +10,8 @@ the app-of-apps repo).
 
 > Status: phase 4. Connections (GitHub and GitLab), branches, starting
 > pipelines with parameters, run status and jobs, cancel and rerun, and
-> container images per branch (DigitalOcean and OCI registries) work. Logs
+> container images per branch (DigitalOcean, Google Artifact Registry and OCI
+> registries) work. Logs
 > and Deploy are in progress - see [docs/design.md](docs/design.md).
 
 ## How it fits into Argo CD
@@ -47,7 +48,7 @@ prints a ready-to-merge values snippet for the argo-cd chart.
   `argocd-server` to `github.com` to download the UI extension at startup.
 
 In the commands below the Argo CD namespace is `argocd`, the Helm release and
-the anchor Application are both called `zea`, and the release is `v0.1.8`.
+the anchor Application are both called `zea`, and the release is `v0.1.9`.
 
 ### Step 1. Install the backend
 
@@ -100,7 +101,7 @@ set `image.tag`.
 #### Option B: with the Helm CLI
 
 ```bash
-helm install zea oci://ghcr.io/harchschoolboy/charts/zea --version 0.1.8 \
+helm install zea oci://ghcr.io/harchschoolboy/charts/zea --version 0.1.9 \
   -n argocd \
   --set anchorApplication=argocd:<existing-app> \
   --set 'admins.users={admin}'
@@ -151,11 +152,11 @@ server:
           - name: EXTENSION_NAME
             value: zea
           - name: EXTENSION_VERSION
-            value: v0.1.8
+            value: v0.1.9
           - name: EXTENSION_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.8/extension-zea.tar.gz
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.9/extension-zea.tar.gz
           - name: EXTENSION_CHECKSUM_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.8/extension-zea_checksums.txt
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.9/extension-zea_checksums.txt
 
 configs:
   params:
@@ -243,11 +244,11 @@ one Zea installation.
                - name: EXTENSION_NAME
                  value: zea
                - name: EXTENSION_VERSION
-                 value: v0.1.8
+                 value: v0.1.9
                - name: EXTENSION_URL
-                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.8/extension-zea.tar.gz
+                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.9/extension-zea.tar.gz
                - name: EXTENSION_CHECKSUM_URL
-                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.8/extension-zea_checksums.txt
+                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.9/extension-zea_checksums.txt
              securityContext:
                runAsNonRoot: true
                runAsUser: 1000
@@ -401,6 +402,14 @@ reference.
      `host/namespace`; anonymous, username/password or `.dockerconfigjson`.
      The registry must support the catalog API (`/v2/_catalog`). GHCR and
      Docker Hub do not, and are not supported yet.
+   - **Google Artifact Registry**: URL
+     `<location>-docker.pkg.dev/<project>/<repository>` (a longer path lists
+     only images below it); the pod's Google identity, a service account JSON
+     key, or a pull secret. See [Cloud registries](#cloud-registries).
+   - Any kind except plain-token DigitalOcean can also use **Existing pull
+     secret**: an image pull Secret that is already in the cluster, read on
+     every use. Only Secrets listed in the chart value `registries.pullSecrets`
+     are offered; the chart grants Zea `get` on exactly those.
 
    Registries are admin-only: users never see their credentials, only the
    images of the Connections shared with them.
@@ -422,6 +431,70 @@ reference.
 
 Registry results are cached for a minute; the refresh button next to the list
 reloads them.
+
+#### Cloud registries
+
+Zea reads registries with its own identity, not the nodes': node credentials
+(GKE node service account, ECR node role, AKS kubelet identity) are not
+reachable from a pod. Use one of:
+
+- **Existing pull secret** - if workloads already pull with an image pull
+  Secret, list it in the chart values and pick it in the registry form:
+
+  ```yaml
+  registries:
+    pullSecrets:
+      - namespace: apps
+        name: regcred
+  ```
+
+  The Zea Application's project must allow the Secret's namespace as a
+  destination, because the chart creates a Role there. For Artifact Registry
+  the Secret must log in as `_json_key` / `_json_key_base64` (password is a
+  service account key) or `oauth2accesstoken` (a short-lived access token,
+  which whoever writes the Secret must keep fresh).
+- **Workload identity** (Artifact Registry) - grant the Zea service account
+  (`argocd/zea`) `roles/artifactregistry.reader`:
+  - GKE with Workload Identity: bind the Kubernetes service account directly,
+
+    ```bash
+    gcloud artifacts repositories add-iam-policy-binding <repository> \
+      --location=<location> --role=roles/artifactregistry.reader \
+      --member="principal://iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<project>.svc.id.goog/subject/ns/argocd/sa/zea"
+    ```
+
+    or annotate it with a Google service account through
+    `serviceAccount.annotations` (`iam.gke.io/gcp-service-account`).
+  - Other clusters (DOKS, EKS, on-premises): Workload Identity Federation.
+    Create a pool and an OIDC provider from the cluster's service account
+    issuer; uploading the JWKS works for issuers that are not public:
+
+    ```bash
+    kubectl get --raw /.well-known/openid-configuration   # "issuer"
+    kubectl get --raw /openid/v1/jwks > jwks.json
+    gcloud iam workload-identity-pools create k8s --location=global
+    gcloud iam workload-identity-pools providers create-oidc my-cluster \
+      --location=global --workload-identity-pool=k8s \
+      --issuer-uri=<issuer> --jwk-json-path=jwks.json \
+      --attribute-mapping=google.subject=assertion.sub
+    gcloud artifacts repositories add-iam-policy-binding <repository> \
+      --location=<location> --role=roles/artifactregistry.reader \
+      --member="principal://iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/k8s/subject/system:serviceaccount:argocd:zea"
+    ```
+
+    and enable it in the chart values:
+
+    ```yaml
+    gcp:
+      workloadIdentityFederation:
+        enabled: true
+        audience: //iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/k8s/providers/my-cluster
+    ```
+
+    When the cluster rotates its signing keys, upload the new JWKS
+    (`gcloud iam workload-identity-pools providers update-oidc ... --jwk-json-path`).
+- **Service account key** (Artifact Registry) - a JSON key stored in the
+  registry Secret. Simple, but it is a long-lived secret.
 
 ### Upgrade
 
@@ -474,6 +547,9 @@ kubectl -n argocd rollout restart deploy/zea deploy/argocd-server
 | `proxyToken.source` | `generate` | `generate`: hook Job creates it; `value`: rendered from `proxyToken.value`; `existing`: you create it ([example](deploy/examples/zea-proxy-secret.yaml)) |
 | `proxyToken.secretName` / `proxyToken.key` | `zea-proxy` / `token` | Must match `$<secret>:<key>` in `extension.config.zea` |
 | `httpTimeout` | `20s` | Timeout for GitHub and GitLab API calls |
+| `registries.pullSecrets` | `[]` | `{namespace, name}` of image pull Secrets that registries may use; the chart grants `get` on exactly these |
+| `gcp.workloadIdentityFederation.*` | disabled | Google Workload Identity Federation for Artifact Registry outside GKE: `enabled`, `audience`, optional `serviceAccountEmail` to impersonate, `tokenAudience`, `tokenExpirationSeconds` |
+| `serviceAccount.annotations` / `podLabels` | `{}` | E.g. `iam.gke.io/gcp-service-account` for GKE Workload Identity |
 | `image.repository` / `image.tag` | `ghcr.io/harchschoolboy/argocd-zea-backend` / appVersion | Backend image |
 
 See [values.yaml](deploy/helm/zea/values.yaml) for the rest (resources,
@@ -498,6 +574,10 @@ security contexts, scheduling).
 | `GitLab API returned 403` on Run | Token role (Developer or higher; Maintainer for protected branches) and the "Minimum role to use pipeline variables" project setting |
 | `DigitalOcean API returned 401` / `403` | The registry token is invalid or lacks `registry:read`; **Test** on the Registries page |
 | `registry does not support the catalog API` | The OCI registry has no `/v2/_catalog` (GHCR, Docker Hub); not supported yet |
+| `no Google credentials found for the Zea pod` | Workload identity is not set up for `argocd/zea` (see [Cloud registries](#cloud-registries)); retried after a minute |
+| `Artifact Registry API returned 403` | The identity lacks `roles/artifactregistry.reader` on the repository, or (Workload Identity Federation) the principal in the IAM binding does not match `system:serviceaccount:argocd:zea` |
+| `getting a Google access token failed` | Workload Identity Federation: the provider `audience`, the issuer, or outdated JWKS |
+| `pull secret ... is not listed` / `may not read` | Add the Secret to `registries.pullSecrets` and sync the Zea Application |
 | Images tab is empty for a branch | **Preview** in the Connection form with an empty branch shows the repository names; check the `branch` group of the pattern against the branch slug |
 
 ## Development

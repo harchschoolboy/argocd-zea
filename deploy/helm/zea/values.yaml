@@ -79,6 +79,36 @@ connections:
 # Timeout for calls to GitHub / GitLab APIs.
 httpTimeout: 20s
 
+# Registries can reuse existing image pull Secrets (authentication "Existing
+# pull secret") instead of storing their own credentials. Only the Secrets
+# listed here can be used: the chart grants "get" on exactly these names, in
+# their namespaces. Zea reads them on every use, so rotation is picked up.
+registries:
+  pullSecrets: []
+  # - namespace: apps
+  #   name: regcred
+
+# Google identity for Artifact Registry (authentication "Workload identity").
+# On GKE with Workload Identity, annotate the service account instead:
+#   serviceAccount:
+#     annotations:
+#       iam.gke.io/gcp-service-account: zea@<project>.iam.gserviceaccount.com
+# On other clusters, use Workload Identity Federation: Zea exchanges its
+# Kubernetes service account token for a Google access token.
+gcp:
+  workloadIdentityFederation:
+    enabled: false
+    # Full provider name:
+    # //iam.googleapis.com/projects/<number>/locations/global/workloadIdentityPools/<pool>/providers/<provider>
+    audience: ""
+    # Google service account to impersonate. Leave empty to grant roles to the
+    # federated principal directly.
+    serviceAccountEmail: ""
+    # Audience of the projected Kubernetes token. Empty means "https:" plus
+    # the provider name, the default allowed audience of a provider.
+    tokenAudience: ""
+    tokenExpirationSeconds: 3600
+
 serviceAccount:
   create: true
   name: ""

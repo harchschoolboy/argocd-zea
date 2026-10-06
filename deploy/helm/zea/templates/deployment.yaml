@@ -60,6 +60,14 @@ spec:
               value: {{ required "connections.namespace is required" .Values.connections.namespace | quote }}
             - name: ZEA_HTTP_TIMEOUT
               value: {{ .Values.httpTimeout | quote }}
+            {{- with include "zea.pullSecretRefs" . }}
+            - name: ZEA_REGISTRY_PULL_SECRETS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if include "zea.gcpWIF" . }}
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: /var/run/secrets/zea/gcp/credentials.json
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -73,6 +81,25 @@ spec:
               port: http
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          {{- if include "zea.gcpWIF" . }}
+          volumeMounts:
+            - name: gcp
+              mountPath: /var/run/secrets/zea/gcp
+              readOnly: true
+          {{- end }}
+      {{- if include "zea.gcpWIF" . }}
+      {{- $wif := .Values.gcp.workloadIdentityFederation }}
+      volumes:
+        - name: gcp
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  audience: {{ $wif.tokenAudience | default (printf "https:%s" $wif.audience) | quote }}
+                  expirationSeconds: {{ $wif.tokenExpirationSeconds | default 3600 }}
+              - configMap:
+                  name: {{ include "zea.fullname" . }}-gcp
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

@@ -241,7 +241,7 @@ UI-managed name `zea-registry-<name>`):
 ```yaml
 stringData:
   name: do
-  kind: digitalocean            # digitalocean | oci
+  kind: digitalocean            # digitalocean | gar | oci
   url: registry.digitalocean.com/my-registry
   token: dop_v1_...             # kind-specific credentials
 ```
@@ -254,9 +254,24 @@ the Connections shared with them.
 |------|---------|-------------|
 | `digitalocean` | DO API `repositoriesV2` and `tags` (size, digest and push time in one call) | API token (`registry:read`), or a `.dockerconfigjson` whose password is an API token |
 | `oci` | Distribution API `/v2/_catalog` (filtered by the URL namespace) and `tags/list`; manifests of the newest 20 tags are read for digest, size (linux/amd64) and creation time | anonymous, username/password, or `.dockerconfigjson`; Bearer token challenges are handled |
+| `gar` | Artifact Registry API `packages` and `versions?view=FULL` (tags, digest, size and push time per version); the URL path after `<project>/<repository>` is a package prefix | pod identity (Application Default Credentials: GKE Workload Identity, Workload Identity Federation through `GOOGLE_APPLICATION_CREDENTIALS`), service account JSON key (`serviceAccountKey`) |
 
 A registry Secret may have the type `kubernetes.io/dockerconfigjson`, so the
 same Secret can serve as an image pull secret elsewhere.
+
+**Pull secret references.** Kinds that accept docker credentials (`oci`,
+`digitalocean`, `gar`) also offer the mode `pullsecret`: the registry stores
+`pullSecret: <namespace>/<name>` and the backend reads that Secret's
+`.dockerconfigjson` (or legacy `.dockercfg`) on every call, so rotation by
+whoever owns the Secret is picked up. Only Secrets in the allowlist
+`ZEA_REGISTRY_PULL_SECRETS` (chart value `registries.pullSecrets`) can be
+referenced; the chart grants `get` with `resourceNames` on exactly those, and
+the UI offers them as a select. For `gar`, the docker login must be
+`_json_key`, `_json_key_base64` or `oauth2accesstoken`.
+
+Google credentials are cached per key (or once for the pod identity);
+failed pod-identity lookups are retried after a minute, because probing the
+metadata server outside GCP is slow.
 
 GHCR and Docker Hub have no catalog API and are not supported yet (they need
 the GitHub packages API and the Docker Hub API).

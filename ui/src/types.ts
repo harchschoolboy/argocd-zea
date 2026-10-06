@@ -39,6 +39,7 @@ export interface CredentialField {
   help?: string;
   secret: boolean;
   multiline?: boolean;
+  options?: string[];
 }
 
 export interface CredentialMode {

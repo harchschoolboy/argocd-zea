@@ -36,6 +36,8 @@ type CredentialField struct {
 	Help      string `json:"help,omitempty"`
 	Secret    bool   `json:"secret"`
 	Multiline bool   `json:"multiline,omitempty"`
+	// Options, when set, limits the value to one of them (shown as a select).
+	Options []string `json:"options,omitempty"`
 }
 
 // CredentialMode is one way to authenticate (e.g. GitHub App or token).

@@ -94,6 +94,7 @@ func (o *OCI) Info() KindInfo {
 					{Key: CredDockerConfig, Label: ".dockerconfigjson", Secret: true, Multiline: true},
 				},
 			},
+			PullSecretMode(),
 		},
 	}
 }

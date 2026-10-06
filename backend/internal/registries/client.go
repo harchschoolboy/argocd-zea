@@ -52,7 +52,8 @@ type TagDescriber interface {
 
 // Kinds maps kind IDs to clients.
 type Kinds struct {
-	byID map[string]Client
+	byID        map[string]Client
+	pullSecrets PullSecretSource
 }
 
 // NewKinds registers the given clients.
@@ -64,20 +65,51 @@ func NewKinds(cs ...Client) *Kinds {
 	return k
 }
 
-// Get returns the client for kind id.
+// SetPullSecrets enables pull secret references for kinds that offer them.
+func (k *Kinds) SetPullSecrets(src PullSecretSource) {
+	k.pullSecrets = src
+}
+
+// Get returns the client for kind id. Pull secret references are resolved
+// transparently.
 func (k *Kinds) Get(id string) (Client, error) {
 	c, ok := k.byID[id]
 	if !ok {
 		return nil, fmt.Errorf("unknown registry kind %q", id)
 	}
-	return c, nil
+	if !hasPullSecretMode(c.Info()) {
+		return c, nil
+	}
+	w := &pullSecretClient{Client: c, src: k.pullSecrets}
+	if _, ok := c.(TagDescriber); ok {
+		return &pullSecretDescriber{w}, nil
+	}
+	return w, nil
 }
 
-// Infos returns all kind descriptions sorted by ID.
+// Infos returns all kind descriptions sorted by ID. The pull secret mode
+// lists the allowed Secrets, or is hidden when none are configured.
 func (k *Kinds) Infos() []KindInfo {
+	allowed := []string{}
+	if k.pullSecrets != nil {
+		allowed = k.pullSecrets.Allowed()
+	}
 	out := make([]KindInfo, 0, len(k.byID))
 	for _, c := range k.byID {
-		out = append(out, c.Info())
+		info := c.Info()
+		modes := make([]providers.CredentialMode, 0, len(info.CredentialModes))
+		for _, m := range info.CredentialModes {
+			if m.ID == PullSecretModeID {
+				if len(allowed) == 0 {
+					continue
+				}
+				m.Fields = append([]providers.CredentialField(nil), m.Fields...)
+				m.Fields[0].Options = allowed
+			}
+			modes = append(modes, m)
+		}
+		info.CredentialModes = modes
+		out = append(out, info)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
@@ -94,6 +126,12 @@ func (k *Kinds) Validate(r *Registry) error {
 	}
 	if err := ValidateCredentials(c.Info().CredentialModes, r.Credentials); err != nil {
 		return err
+	}
+	if ref := r.Credentials[CredPullSecret]; ref != "" {
+		ns, name, _ := ParsePullSecretRef(ref)
+		if k.pullSecrets == nil || !isAllowed(k.pullSecrets, ns+"/"+name) {
+			return fmt.Errorf("pull secret %s/%s is not listed in the chart value registries.pullSecrets", ns, name)
+		}
 	}
 	return c.Validate(r)
 }

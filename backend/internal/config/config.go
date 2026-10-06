@@ -31,6 +31,9 @@ type Config struct {
 	AdminUsers  []string
 	// ConnectionsNamespace holds Connection Secrets.
 	ConnectionsNamespace string
+	// RegistryPullSecrets lists the "<namespace>/<name>" image pull Secrets a
+	// registry may reference instead of storing its own credentials.
+	RegistryPullSecrets []string
 	// HTTPTimeout bounds calls to CI providers.
 	HTTPTimeout time.Duration
 	// LogLevel controls log verbosity.
@@ -48,6 +51,7 @@ func Load() (*Config, error) {
 		AdminGroups:          SplitList(os.Getenv("ZEA_ADMIN_GROUPS")),
 		AdminUsers:           SplitList(os.Getenv("ZEA_ADMIN_USERS")),
 		ConnectionsNamespace: strings.TrimSpace(os.Getenv("ZEA_CONNECTIONS_NAMESPACE")),
+		RegistryPullSecrets:  SplitList(os.Getenv("ZEA_REGISTRY_PULL_SECRETS")),
 		HTTPTimeout:          20 * time.Second,
 		ShutdownTimeout:      10 * time.Second,
 	}

@@ -86,7 +86,16 @@ export const CredentialsEditor = ({ modes, modeID, onModeChange, values, onChang
         };
         return (
           <Row key={f.key} label={f.label} help={f.help}>
-            {f.multiline ? (
+            {f.options ? (
+              <select {...common} onChange={e => onChange({ ...values, [f.key]: e.target.value })}>
+                <option value=''>{stored.has(f.key) ? '(stored - keep)' : 'Select...'}</option>
+                {f.options.map(o => (
+                  <option key={o} value={o}>
+                    {o}
+                  </option>
+                ))}
+              </select>
+            ) : f.multiline ? (
               <textarea {...common} rows={6} spellCheck={false} style={{ ...inputStyle, fontFamily: 'monospace' }} />
             ) : (
               <input {...common} type={f.secret ? 'password' : 'text'} />
