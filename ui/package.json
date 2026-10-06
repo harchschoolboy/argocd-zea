@@ -1,6 +1,6 @@
 {
   "name": "argocd-zea-ui",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "private": true,
   "description": "Zea - Argo CD UI extension: build and deploy from one screen",
   "scripts": {

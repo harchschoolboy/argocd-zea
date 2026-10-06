@@ -16,6 +16,7 @@ import (
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
+	"golang.org/x/oauth2/google/externalaccount"
 
 	"github.com/harchschoolboy/argocd-zea/backend/internal/providers"
 )
@@ -42,6 +43,13 @@ type GAR struct {
 	FindDefault func(ctx context.Context, scopes ...string) (*google.Credentials, error)
 	// FromKey parses a service account key; tests override it.
 	FromKey func(ctx context.Context, key []byte, scopes ...string) (*google.Credentials, error)
+	// STSURL and IAMCredentialsBase are the Workload Identity Federation
+	// endpoints; tests override them.
+	STSURL             string
+	IAMCredentialsBase string
+
+	// subjectTokens enables the Workload Identity Federation mode.
+	subjectTokens SubjectTokens
 
 	mu    sync.Mutex
 	cache map[string]garSource
@@ -62,33 +70,55 @@ func NewGAR(client *http.Client) *GAR {
 		FromKey: func(ctx context.Context, key []byte, scopes ...string) (*google.Credentials, error) {
 			return google.CredentialsFromJSONWithType(ctx, key, google.ServiceAccount, scopes...)
 		},
-		cache: map[string]garSource{},
+		STSURL:             "https://sts.googleapis.com/v1/token",
+		IAMCredentialsBase: "https://iamcredentials.googleapis.com",
+		cache:              map[string]garSource{},
 	}
 }
 
+// SetSubjectTokens enables the per-registry Workload Identity Federation
+// mode, which exchanges tokens of the Zea service account.
+func (g *GAR) SetSubjectTokens(t SubjectTokens) {
+	g.subjectTokens = t
+}
+
 func (g *GAR) Info() KindInfo {
+	modes := []providers.CredentialMode{}
+	if g.subjectTokens != nil {
+		modes = append(modes, providers.CredentialMode{
+			ID:    "wif",
+			Label: "Workload Identity Federation",
+			Help:  "Zea exchanges a token of its Kubernetes service account for a Google access token. The provider must trust this cluster's service account issuer; grant roles/artifactregistry.reader to the impersonated service account, or without one to the principal .../subject/system:serviceaccount:<namespace>:<name> of the Zea service account.",
+			Fields: []providers.CredentialField{
+				{Key: CredWIFProvider, Label: "Workload identity provider", Help: "//iam.googleapis.com/projects/<number>/locations/global/workloadIdentityPools/<pool>/providers/<provider>"},
+				{Key: CredImpersonate, Label: "Service account to impersonate", Help: "<name>@<project>.iam.gserviceaccount.com; the federated principal needs roles/iam.workloadIdentityUser on it.", Optional: true},
+			},
+		})
+	}
+	modes = append(modes,
+		providers.CredentialMode{
+			ID:     "workload",
+			Label:  "Pod identity",
+			Help:   "The Zea pod's Google identity: GKE Workload Identity, Workload Identity Federation configured in the chart (gcp.workloadIdentityFederation) or GOOGLE_APPLICATION_CREDENTIALS. It needs roles/artifactregistry.reader.",
+			Fields: []providers.CredentialField{},
+		},
+	)
 	return KindInfo{
 		ID:         "gar",
 		Name:       "Google Artifact Registry",
 		URLExample: "<location>" + GARHostSuffix + "/<project>/<repository>",
 		URLHelp:    "Docker repository URL; a trailing path limits the list to images below it.",
-		CredentialModes: []providers.CredentialMode{
-			{
-				ID:     "workload",
-				Label:  "Workload identity",
-				Help:   "The Zea pod's Google identity: GKE Workload Identity, Workload Identity Federation (see the chart value gcp.workloadIdentityFederation) or GOOGLE_APPLICATION_CREDENTIALS. It needs roles/artifactregistry.reader.",
-				Fields: []providers.CredentialField{},
-			},
-			{
+		CredentialModes: append(modes,
+			providers.CredentialMode{
 				ID:    "serviceaccount",
 				Label: "Service account key",
-				Help:  "A JSON key of a service account with roles/artifactregistry.reader.",
+				Help:  "A JSON key of a service account with roles/artifactregistry.reader. Prefer Workload Identity Federation: keys are long-lived secrets.",
 				Fields: []providers.CredentialField{
 					{Key: CredServiceAccountKey, Label: "Service account key (JSON)", Secret: true, Multiline: true},
 				},
 			},
 			PullSecretMode(),
-		},
+		),
 	}
 }
 
@@ -116,6 +146,9 @@ func parseGAR(raw string) (*garRepo, error) {
 
 func (g *GAR) Validate(r *Registry) error {
 	if _, err := parseGAR(r.URL); err != nil {
+		return err
+	}
+	if err := validateWIF(r); err != nil {
 		return err
 	}
 	if key := r.Credentials[CredServiceAccountKey]; key != "" {
@@ -265,6 +298,9 @@ func (g *GAR) get(ctx context.Context, r *Registry, p *garRepo, rawURL string, o
 // a service account key, a pull secret (whose docker login carries a key or
 // an access token) or Application Default Credentials.
 func (g *GAR) tokenSource(r *Registry, p *garRepo) (oauth2.TokenSource, error) {
+	if r.Credentials[CredWIFProvider] != "" {
+		return g.wifTokenSource(r)
+	}
 	key := []byte(r.Credentials[CredServiceAccountKey])
 	if len(key) == 0 && r.Credentials[CredDockerConfig] != "" {
 		user, pass, err := DockerConfigAuth(r.Credentials[CredDockerConfig], p.host)
@@ -320,6 +356,42 @@ func (g *GAR) tokenSource(r *Registry, p *garRepo) (oauth2.TokenSource, error) {
 		return nil, errors.New("Google credentials have no token source")
 	}
 	ts := oauth2.ReuseTokenSource(nil, creds.TokenSource)
+	g.cache[id] = garSource{ts: ts}
+	return ts, nil
+}
+
+// wifTokenSource exchanges Zea service account tokens through Workload
+// Identity Federation, optionally impersonating a Google service account.
+func (g *GAR) wifTokenSource(r *Registry) (oauth2.TokenSource, error) {
+	if g.subjectTokens == nil {
+		return nil, errors.New("Workload Identity Federation is not enabled in Zea (chart value registries.tokenRequest)")
+	}
+	if err := validateWIF(r); err != nil {
+		return nil, err
+	}
+	provider, sa := r.Credentials[CredWIFProvider], r.Credentials[CredImpersonate]
+	id := "wif:" + provider + "|" + sa
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if c, ok := g.cache[id]; ok && c.err == nil {
+		return c.ts, nil
+	}
+	cfg := externalaccount.Config{
+		Audience:         provider,
+		SubjectTokenType: "urn:ietf:params:oauth:token-type:jwt",
+		TokenURL:         g.STSURL,
+		Scopes:           []string{garScope},
+		// The provider's default allowed audience.
+		SubjectTokenSupplier: wifSupplier{tokens: g.subjectTokens, audience: "https:" + provider},
+	}
+	if sa != "" {
+		cfg.ServiceAccountImpersonationURL = fmt.Sprintf("%s/v1/projects/-/serviceAccounts/%s:generateAccessToken", g.IAMCredentialsBase, sa)
+	}
+	ts, err := externalaccount.NewTokenSource(context.Background(), cfg)
+	if err != nil {
+		return nil, fmt.Errorf("%s: Workload Identity Federation: %v", garName, err)
+	}
+	ts = oauth2.ReuseTokenSource(nil, ts)
 	g.cache[id] = garSource{ts: ts}
 	return ts, nil
 }

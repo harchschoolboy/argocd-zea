@@ -34,6 +34,10 @@ const (
 	CredPullSecret = "pullSecret"
 	// CredServiceAccountKey is a Google service account JSON key.
 	CredServiceAccountKey = "serviceAccountKey"
+	// CredWIFProvider is the full name of a Google Workload Identity
+	// Federation provider; CredImpersonate an optional Google service account.
+	CredWIFProvider = "workloadIdentityProvider"
+	CredImpersonate = "impersonateServiceAccount"
 )
 
 var (

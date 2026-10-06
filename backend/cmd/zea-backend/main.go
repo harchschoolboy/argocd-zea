@@ -88,7 +88,11 @@ func run() error {
 	}
 	httpClient := &http.Client{Timeout: cfg.HTTPTimeout, Transport: http.DefaultTransport.(*http.Transport).Clone()}
 	regStore := registries.NewSecretStore(kube, cfg.ConnectionsNamespace)
-	regKinds := registries.NewKinds(registries.NewDigitalOcean(httpClient), registries.NewGAR(httpClient), registries.NewOCI(httpClient))
+	gar := registries.NewGAR(httpClient)
+	if cfg.ServiceAccountNamespace != "" && cfg.ServiceAccountName != "" {
+		gar.SetSubjectTokens(registries.NewKubeServiceAccountTokens(kube, cfg.ServiceAccountNamespace, cfg.ServiceAccountName))
+	}
+	regKinds := registries.NewKinds(registries.NewDigitalOcean(httpClient), gar, registries.NewOCI(httpClient))
 	for _, ref := range cfg.RegistryPullSecrets {
 		if _, _, err := registries.ParsePullSecretRef(ref); err != nil {
 			log.Warn("ignoring registry pull secret", "error", err)

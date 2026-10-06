@@ -38,10 +38,12 @@ type CredentialField struct {
 	Multiline bool   `json:"multiline,omitempty"`
 	// Options, when set, limits the value to one of them (shown as a select).
 	Options []string `json:"options,omitempty"`
+	// Optional fields may stay empty; the mode matches when all other fields are set.
+	Optional bool `json:"optional,omitempty"`
 }
 
 // CredentialMode is one way to authenticate (e.g. GitHub App or token).
-// All fields of exactly one mode must be set.
+// All required fields of exactly one mode must be set.
 type CredentialMode struct {
 	ID     string            `json:"id"`
 	Label  string            `json:"label"`
@@ -322,14 +324,20 @@ func ValidateCredentials(modes []CredentialMode, creds map[string]string) (strin
 	}
 	matched := ""
 	for _, m := range modes {
-		set := 0
+		set, required, requiredSet := 0, 0, 0
 		for _, f := range m.Fields {
+			if !f.Optional {
+				required++
+			}
 			if creds[f.Key] != "" {
 				set++
+				if !f.Optional {
+					requiredSet++
+				}
 			}
 		}
 		switch {
-		case set == len(m.Fields):
+		case required > 0 && requiredSet == required:
 			if matched != "" {
 				return "", fmt.Errorf("credentials for both %q and %q are set; keep only one", matched, m.ID)
 			}

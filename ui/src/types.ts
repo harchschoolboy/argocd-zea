@@ -40,6 +40,7 @@ export interface CredentialField {
   secret: boolean;
   multiline?: boolean;
   options?: string[];
+  optional?: boolean;
 }
 
 export interface CredentialMode {

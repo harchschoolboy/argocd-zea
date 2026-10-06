@@ -60,6 +60,16 @@ spec:
               value: {{ required "connections.namespace is required" .Values.connections.namespace | quote }}
             - name: ZEA_HTTP_TIMEOUT
               value: {{ .Values.httpTimeout | quote }}
+            {{- if (.Values.registries | default dict).tokenRequest }}
+            - name: ZEA_SERVICE_ACCOUNT_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: ZEA_SERVICE_ACCOUNT_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.serviceAccountName
+            {{- end }}
             {{- with include "zea.pullSecretRefs" . }}
             - name: ZEA_REGISTRY_PULL_SECRETS
               value: {{ . | quote }}

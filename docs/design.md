@@ -254,7 +254,7 @@ the Connections shared with them.
 |------|---------|-------------|
 | `digitalocean` | DO API `repositoriesV2` and `tags` (size, digest and push time in one call) | API token (`registry:read`), or a `.dockerconfigjson` whose password is an API token |
 | `oci` | Distribution API `/v2/_catalog` (filtered by the URL namespace) and `tags/list`; manifests of the newest 20 tags are read for digest, size (linux/amd64) and creation time | anonymous, username/password, or `.dockerconfigjson`; Bearer token challenges are handled |
-| `gar` | Artifact Registry API `packages` and `versions?view=FULL` (tags, digest, size and push time per version); the URL path after `<project>/<repository>` is a package prefix | pod identity (Application Default Credentials: GKE Workload Identity, Workload Identity Federation through `GOOGLE_APPLICATION_CREDENTIALS`), service account JSON key (`serviceAccountKey`) |
+| `gar` | Artifact Registry API `packages` and `versions?view=FULL` (tags, digest, size and push time per version); the URL path after `<project>/<repository>` is a package prefix | per-registry Workload Identity Federation (`workloadIdentityProvider`, optional `impersonateServiceAccount`), pod identity (Application Default Credentials: GKE Workload Identity, chart-level federation through `GOOGLE_APPLICATION_CREDENTIALS`), service account JSON key (`serviceAccountKey`) |
 
 A registry Secret may have the type `kubernetes.io/dockerconfigjson`, so the
 same Secret can serve as an image pull secret elsewhere.
@@ -269,7 +269,20 @@ referenced; the chart grants `get` with `resourceNames` on exactly those, and
 the UI offers them as a select. For `gar`, the docker login must be
 `_json_key`, `_json_key_base64` or `oauth2accesstoken`.
 
-Google credentials are cached per key (or once for the pod identity);
+**Workload Identity Federation per registry.** The backend requests a
+10-minute token for its own service account through the TokenRequest API
+(audience `https:` + provider name, the provider's default allowed audience;
+RBAC: `create serviceaccounts/token` with `resourceNames` of that one service
+account, chart value `registries.tokenRequest`; the namespace and name come
+from the downward API as `ZEA_SERVICE_ACCOUNT_NAMESPACE` /
+`ZEA_SERVICE_ACCOUNT_NAME`). It exchanges the token at Google STS and, when a
+service account is set, calls `generateAccessToken` to impersonate it. The
+mode is hidden when token requests are not configured. Optional credential
+fields (`optional: true` in the kind schema) may stay empty; sending `-`
+removes a stored one.
+
+Google credentials are cached per key, per provider and service account, or
+once for the pod identity;
 failed pod-identity lookups are retried after a minute, because probing the
 metadata server outside GCP is slow.
 

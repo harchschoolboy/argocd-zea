@@ -12,14 +12,17 @@ export const Row = ({ label, help, children }: { label: string; help?: string; c
 
 export const inputStyle: React.CSSProperties = { width: '100%', boxSizing: 'border-box' };
 
-// pickMode returns the credential mode whose fields are all stored. A mode
-// without fields (anonymous) is chosen only when nothing else matches.
+// pickMode returns the credential mode whose required fields are all stored.
+// A mode without fields (anonymous) is chosen only when nothing else matches.
 export function pickMode(modes: CredentialMode[], storedKeys: string[] = []): string {
   if (modes.length === 0) {
     return '';
   }
   const keys = new Set(storedKeys);
-  const set = modes.find(m => m.fields.length > 0 && m.fields.every(f => keys.has(f.key)));
+  const set = modes.find(m => {
+    const required = m.fields.filter(f => !f.optional);
+    return required.length > 0 && required.every(f => keys.has(f.key));
+  });
   const empty = storedKeys.length === 0 ? modes.find(m => m.fields.length === 0) : undefined;
   return (set ?? empty ?? modes[0]).id;
 }
@@ -79,7 +82,13 @@ export const CredentialsEditor = ({ modes, modeID, onModeChange, values, onChang
           className: 'argo-field',
           style: inputStyle,
           value: values[f.key] ?? '',
-          placeholder: stored.has(f.key) ? '(stored - leave empty to keep)' : '',
+          placeholder: stored.has(f.key)
+            ? f.optional
+              ? '(stored - leave empty to keep, "-" to remove)'
+              : '(stored - leave empty to keep)'
+            : f.optional
+              ? '(optional)'
+              : '',
           autoComplete: 'off',
           onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
             onChange({ ...values, [f.key]: e.target.value }),

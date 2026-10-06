@@ -87,8 +87,15 @@ registries:
   pullSecrets: []
   # - namespace: apps
   #   name: regcred
+  # Let Zea request tokens for its own service account (TokenRequest API,
+  # "create serviceaccounts/token" on this one service account only). Needed
+  # by the Artifact Registry authentication "Workload Identity Federation",
+  # where every registry names its own provider and service account.
+  tokenRequest: true
 
-# Google identity for Artifact Registry (authentication "Workload identity").
+# Pod-wide Google identity for Artifact Registry (authentication "Pod
+# identity"). Per-registry Workload Identity Federation needs none of this,
+# only registries.tokenRequest.
 # On GKE with Workload Identity, annotate the service account instead:
 #   serviceAccount:
 #     annotations:

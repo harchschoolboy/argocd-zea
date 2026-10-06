@@ -2,10 +2,13 @@ package registries
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -13,6 +16,7 @@ import (
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
+	authv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -265,5 +269,122 @@ func TestGAR(t *testing.T) {
 	badKey := &Registry{Name: "gar", Kind: "gar", URL: reg.URL, Credentials: map[string]string{CredServiceAccountKey: "{}"}}
 	if err := k.Validate(badKey); err == nil || !strings.Contains(err.Error(), "invalid service account key") {
 		t.Fatalf("bad key: %v", err)
+	}
+}
+
+func TestGARWorkloadIdentityFederation(t *testing.T) {
+	const provider = "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/k8s/providers/doks"
+	const sa = "zea@proj.iam.gserviceaccount.com"
+	api := newFakeGAR(t)
+	var stsHits, iamHits atomic.Int32
+	google := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		switch r.URL.Path {
+		case "/v1/token":
+			stsHits.Add(1)
+			q, _ := url.ParseQuery(string(body))
+			if q.Get("audience") != provider || q.Get("subject_token") != "k8s:https:"+provider ||
+				q.Get("subject_token_type") != "urn:ietf:params:oauth:token-type:jwt" {
+				w.WriteHeader(http.StatusBadRequest)
+				fmt.Fprintf(w, `{"error":"invalid_grant","error_description":"bad exchange %s"}`, body)
+				return
+			}
+			tok := "gtok"
+			if q.Get("scope") != garScope {
+				tok = "federated"
+			}
+			json.NewEncoder(w).Encode(map[string]any{"access_token": tok, "issued_token_type": "urn:ietf:params:oauth:token-type:access_token", "token_type": "Bearer", "expires_in": 3600})
+		case "/v1/projects/-/serviceAccounts/" + sa + ":generateAccessToken":
+			iamHits.Add(1)
+			if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			fmt.Fprint(w, `{"accessToken":"gtok","expireTime":"2099-01-01T00:00:00Z"}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(google.Close)
+
+	var requests atomic.Int32
+	client := fake.NewSimpleClientset()
+	client.PrependReactor("create", "serviceaccounts", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		ca := a.(k8stesting.CreateAction)
+		if ca.GetSubresource() != "token" || ca.GetNamespace() != "argocd" {
+			return false, nil, nil
+		}
+		requests.Add(1)
+		tr := ca.GetObject().(*authv1.TokenRequest)
+		if *tr.Spec.ExpirationSeconds != subjectTokenSeconds {
+			return true, nil, errors.New("unexpected expiration")
+		}
+		tr.Status.Token = "k8s:" + strings.Join(tr.Spec.Audiences, ",")
+		return true, tr, nil
+	})
+
+	g := NewGAR(api.Client())
+	g.APIBase = api.URL
+	g.STSURL = google.URL + "/v1/token"
+	g.IAMCredentialsBase = google.URL
+	if g.Info().CredentialModes[0].ID == "wif" {
+		t.Fatal("WIF mode must be hidden without token requests")
+	}
+	reg := &Registry{Name: "gar", Kind: "gar", URL: "europe-west1-docker.pkg.dev/proj/repo/team",
+		Credentials: map[string]string{CredWIFProvider: provider, CredImpersonate: sa}}
+	if _, err := g.ListRepositories(context.Background(), reg); err == nil || !strings.Contains(err.Error(), "not enabled") {
+		t.Fatalf("disabled: %v", err)
+	}
+	g.SetSubjectTokens(NewKubeServiceAccountTokens(client, "argocd", "zea"))
+	if m := g.Info().CredentialModes[0]; m.ID != "wif" || !m.Fields[1].Optional {
+		t.Fatalf("modes = %+v", g.Info().CredentialModes)
+	}
+
+	ctx := context.Background()
+	for i := 0; i < 2; i++ {
+		if repos, err := g.ListRepositories(ctx, reg); err != nil || len(repos) != 2 {
+			t.Fatalf("impersonated: %+v, %v", repos, err)
+		}
+	}
+	if stsHits.Load() != 1 || iamHits.Load() != 1 || requests.Load() != 1 {
+		t.Fatalf("tokens must be reused: sts=%d iam=%d k8s=%d", stsHits.Load(), iamHits.Load(), requests.Load())
+	}
+
+	direct := &Registry{Name: "gar", Kind: "gar", URL: reg.URL, Credentials: map[string]string{CredWIFProvider: provider}}
+	if tags, err := g.ListTags(ctx, direct, "web"); err != nil || len(tags) != 2 {
+		t.Fatalf("direct: %+v, %v", tags, err)
+	}
+	if iamHits.Load() != 1 {
+		t.Fatal("direct access must not impersonate")
+	}
+	other := &Registry{Name: "gar", Kind: "gar", URL: reg.URL,
+		Credentials: map[string]string{CredWIFProvider: strings.Replace(provider, "doks", "other", 1)}}
+	if _, err := g.ListTags(ctx, other, "web"); err == nil || !strings.Contains(err.Error(), "bad exchange") {
+		t.Fatalf("wrong provider: %v", err)
+	}
+
+	k := NewKinds(g)
+	for _, r := range []*Registry{reg, direct} {
+		if err := k.Validate(r); err != nil {
+			t.Fatalf("%v: %v", r.Credentials, err)
+		}
+	}
+	for _, creds := range []map[string]string{
+		{CredImpersonate: sa},
+		{CredWIFProvider: "projects/123/locations/global/workloadIdentityPools/k8s/providers/doks"},
+		{CredWIFProvider: provider, CredImpersonate: "zea@gmail.com"},
+		{CredWIFProvider: provider, CredServiceAccountKey: `{"type":"service_account"}`},
+	} {
+		if err := k.Validate(&Registry{Name: "gar", Kind: "gar", URL: reg.URL, Credentials: creds}); err == nil {
+			t.Fatalf("%v should be rejected", creds)
+		}
+	}
+
+	denied := fake.NewSimpleClientset()
+	denied.PrependReactor("create", "serviceaccounts", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "serviceaccounts/token"}, "zea", errors.New("no"))
+	})
+	if _, err := NewKubeServiceAccountTokens(denied, "argocd", "zea").Token(ctx, "a"); err == nil || !strings.Contains(err.Error(), "registries.tokenRequest") {
+		t.Fatalf("forbidden: %v", err)
 	}
 }

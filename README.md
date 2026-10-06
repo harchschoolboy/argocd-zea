@@ -48,7 +48,7 @@ prints a ready-to-merge values snippet for the argo-cd chart.
   `argocd-server` to `github.com` to download the UI extension at startup.
 
 In the commands below the Argo CD namespace is `argocd`, the Helm release and
-the anchor Application are both called `zea`, and the release is `v0.1.9`.
+the anchor Application are both called `zea`, and the release is `v0.1.10`.
 
 ### Step 1. Install the backend
 
@@ -101,7 +101,7 @@ set `image.tag`.
 #### Option B: with the Helm CLI
 
 ```bash
-helm install zea oci://ghcr.io/harchschoolboy/charts/zea --version 0.1.9 \
+helm install zea oci://ghcr.io/harchschoolboy/charts/zea --version 0.1.10 \
   -n argocd \
   --set anchorApplication=argocd:<existing-app> \
   --set 'admins.users={admin}'
@@ -152,11 +152,11 @@ server:
           - name: EXTENSION_NAME
             value: zea
           - name: EXTENSION_VERSION
-            value: v0.1.9
+            value: v0.1.10
           - name: EXTENSION_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.9/extension-zea.tar.gz
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.10/extension-zea.tar.gz
           - name: EXTENSION_CHECKSUM_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.9/extension-zea_checksums.txt
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.10/extension-zea_checksums.txt
 
 configs:
   params:
@@ -244,11 +244,11 @@ one Zea installation.
                - name: EXTENSION_NAME
                  value: zea
                - name: EXTENSION_VERSION
-                 value: v0.1.9
+                 value: v0.1.10
                - name: EXTENSION_URL
-                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.9/extension-zea.tar.gz
+                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.10/extension-zea.tar.gz
                - name: EXTENSION_CHECKSUM_URL
-                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.9/extension-zea_checksums.txt
+                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.10/extension-zea_checksums.txt
              securityContext:
                runAsNonRoot: true
                runAsUser: 1000
@@ -404,8 +404,8 @@ reference.
      Docker Hub do not, and are not supported yet.
    - **Google Artifact Registry**: URL
      `<location>-docker.pkg.dev/<project>/<repository>` (a longer path lists
-     only images below it); the pod's Google identity, a service account JSON
-     key, or a pull secret. See [Cloud registries](#cloud-registries).
+     only images below it); Workload Identity Federation, the pod's Google
+     identity, a pull secret or a service account JSON key. See [Cloud registries](#cloud-registries).
    - Any kind except plain-token DigitalOcean can also use **Existing pull
      secret**: an image pull Secret that is already in the cluster, read on
      every use. Only Secrets listed in the chart value `registries.pullSecrets`
@@ -436,8 +436,62 @@ reloads them.
 
 Zea reads registries with its own identity, not the nodes': node credentials
 (GKE node service account, ECR node role, AKS kubelet identity) are not
-reachable from a pod. Use one of:
+reachable from a pod. For Artifact Registry, in order of preference:
 
+- **Workload Identity Federation** (recommended, no keys) - each registry
+  names a Google workload identity provider and, optionally, a Google service
+  account to impersonate. Zea requests a short-lived token for its own
+  Kubernetes service account (`argocd/zea`, chart value
+  `registries.tokenRequest`, on by default) and exchanges it with Google STS.
+  Works on any cluster, including GKE. One-time setup per cluster: a pool and
+  an OIDC provider that trusts the cluster's service account issuer.
+  Uploading the JWKS works for issuers that are not public (DOKS, on-premises):
+
+  ```bash
+  kubectl get --raw /.well-known/openid-configuration   # "issuer"
+  kubectl get --raw /openid/v1/jwks > jwks.json
+  gcloud iam workload-identity-pools create k8s --location=global
+  gcloud iam workload-identity-pools providers create-oidc my-cluster \
+    --location=global --workload-identity-pool=k8s \
+    --issuer-uri=<issuer> --jwk-json-path=jwks.json \
+    --attribute-mapping=google.subject=assertion.sub \
+    --attribute-condition="assertion.sub == 'system:serviceaccount:argocd:zea'"
+  ```
+
+  Keep the provider's default allowed audience: Zea requests tokens for
+  `https://iam.googleapis.com/projects/<number>/locations/global/workloadIdentityPools/k8s/providers/my-cluster`.
+  Then either impersonate a service account (enter it in the registry form):
+
+  ```bash
+  gcloud iam service-accounts add-iam-policy-binding zea-reader@<project>.iam.gserviceaccount.com \
+    --role=roles/iam.workloadIdentityUser \
+    --member="principal://iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/k8s/subject/system:serviceaccount:argocd:zea"
+  gcloud artifacts repositories add-iam-policy-binding <repository> \
+    --location=<location> --role=roles/artifactregistry.reader \
+    --member=serviceAccount:zea-reader@<project>.iam.gserviceaccount.com
+  ```
+
+  or leave the service account empty and grant the reader role to the
+  `principal://.../subject/system:serviceaccount:argocd:zea` member directly.
+  In the registry form enter the provider as
+  `//iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/k8s/providers/my-cluster`.
+  When the cluster rotates its signing keys, upload the new JWKS
+  (`gcloud iam workload-identity-pools providers update-oidc ... --jwk-json-path`).
+- **Pod identity** - one Google identity for the whole pod:
+  - GKE with Workload Identity: grant the role to
+    `principal://iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<project>.svc.id.goog/subject/ns/argocd/sa/zea`,
+    or annotate the service account through `serviceAccount.annotations`
+    (`iam.gke.io/gcp-service-account`).
+  - Elsewhere: the same pool and provider as above, configured once in the
+    chart:
+
+    ```yaml
+    gcp:
+      workloadIdentityFederation:
+        enabled: true
+        audience: //iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/k8s/providers/my-cluster
+        serviceAccountEmail: zea-reader@<project>.iam.gserviceaccount.com   # optional
+    ```
 - **Existing pull secret** - if workloads already pull with an image pull
   Secret, list it in the chart values and pick it in the registry form:
 
@@ -452,50 +506,10 @@ reachable from a pod. Use one of:
   destination, because the chart creates a Role there. For Artifact Registry
   the Secret must log in as `_json_key` / `_json_key_base64` (password is a
   service account key) or `oauth2accesstoken` (a short-lived access token,
-  which whoever writes the Secret must keep fresh).
-- **Workload identity** (Artifact Registry) - grant the Zea service account
-  (`argocd/zea`) `roles/artifactregistry.reader`:
-  - GKE with Workload Identity: bind the Kubernetes service account directly,
-
-    ```bash
-    gcloud artifacts repositories add-iam-policy-binding <repository> \
-      --location=<location> --role=roles/artifactregistry.reader \
-      --member="principal://iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<project>.svc.id.goog/subject/ns/argocd/sa/zea"
-    ```
-
-    or annotate it with a Google service account through
-    `serviceAccount.annotations` (`iam.gke.io/gcp-service-account`).
-  - Other clusters (DOKS, EKS, on-premises): Workload Identity Federation.
-    Create a pool and an OIDC provider from the cluster's service account
-    issuer; uploading the JWKS works for issuers that are not public:
-
-    ```bash
-    kubectl get --raw /.well-known/openid-configuration   # "issuer"
-    kubectl get --raw /openid/v1/jwks > jwks.json
-    gcloud iam workload-identity-pools create k8s --location=global
-    gcloud iam workload-identity-pools providers create-oidc my-cluster \
-      --location=global --workload-identity-pool=k8s \
-      --issuer-uri=<issuer> --jwk-json-path=jwks.json \
-      --attribute-mapping=google.subject=assertion.sub
-    gcloud artifacts repositories add-iam-policy-binding <repository> \
-      --location=<location> --role=roles/artifactregistry.reader \
-      --member="principal://iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/k8s/subject/system:serviceaccount:argocd:zea"
-    ```
-
-    and enable it in the chart values:
-
-    ```yaml
-    gcp:
-      workloadIdentityFederation:
-        enabled: true
-        audience: //iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/k8s/providers/my-cluster
-    ```
-
-    When the cluster rotates its signing keys, upload the new JWKS
-    (`gcloud iam workload-identity-pools providers update-oidc ... --jwk-json-path`).
-- **Service account key** (Artifact Registry) - a JSON key stored in the
-  registry Secret. Simple, but it is a long-lived secret.
-
+  which whoever writes the Secret must keep fresh). Pull secrets work for
+  every registry kind except token-only DigitalOcean.
+- **Service account key** - a JSON key stored in the registry Secret. Simple,
+  but a long-lived secret; avoid it where Workload Identity Federation works.
 ### Upgrade
 
 Bump the version in both places, so the UI and the backend match:
@@ -547,6 +561,7 @@ kubectl -n argocd rollout restart deploy/zea deploy/argocd-server
 | `proxyToken.source` | `generate` | `generate`: hook Job creates it; `value`: rendered from `proxyToken.value`; `existing`: you create it ([example](deploy/examples/zea-proxy-secret.yaml)) |
 | `proxyToken.secretName` / `proxyToken.key` | `zea-proxy` / `token` | Must match `$<secret>:<key>` in `extension.config.zea` |
 | `httpTimeout` | `20s` | Timeout for GitHub and GitLab API calls |
+| `registries.tokenRequest` | `true` | Allow Zea to request tokens for its own service account (Artifact Registry Workload Identity Federation) |
 | `registries.pullSecrets` | `[]` | `{namespace, name}` of image pull Secrets that registries may use; the chart grants `get` on exactly these |
 | `gcp.workloadIdentityFederation.*` | disabled | Google Workload Identity Federation for Artifact Registry outside GKE: `enabled`, `audience`, optional `serviceAccountEmail` to impersonate, `tokenAudience`, `tokenExpirationSeconds` |
 | `serviceAccount.annotations` / `podLabels` | `{}` | E.g. `iam.gke.io/gcp-service-account` for GKE Workload Identity |
@@ -576,7 +591,8 @@ security contexts, scheduling).
 | `registry does not support the catalog API` | The OCI registry has no `/v2/_catalog` (GHCR, Docker Hub); not supported yet |
 | `no Google credentials found for the Zea pod` | Workload identity is not set up for `argocd/zea` (see [Cloud registries](#cloud-registries)); retried after a minute |
 | `Artifact Registry API returned 403` | The identity lacks `roles/artifactregistry.reader` on the repository, or (Workload Identity Federation) the principal in the IAM binding does not match `system:serviceaccount:argocd:zea` |
-| `getting a Google access token failed` | Workload Identity Federation: the provider `audience`, the issuer, or outdated JWKS |
+| `getting a Google access token failed` | Workload Identity Federation: the provider name, its allowed audience, the issuer or outdated JWKS (`invalid_grant`); with impersonation, `roles/iam.workloadIdentityUser` on the service account (`403` from iamcredentials) |
+| `may not request tokens for service account` | Enable `registries.tokenRequest` in the Zea chart |
 | `pull secret ... is not listed` / `may not read` | Add the Secret to `registries.pullSecrets` and sync the Zea Application |
 | Images tab is empty for a branch | **Preview** in the Connection form with an empty branch shows the repository names; check the `branch` group of the pattern against the branch slug |
 

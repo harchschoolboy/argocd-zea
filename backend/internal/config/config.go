@@ -34,6 +34,11 @@ type Config struct {
 	// RegistryPullSecrets lists the "<namespace>/<name>" image pull Secrets a
 	// registry may reference instead of storing its own credentials.
 	RegistryPullSecrets []string
+	// ServiceAccountNamespace and ServiceAccountName identify the pod's own
+	// service account. When set, Zea may request tokens for it (registry
+	// Workload Identity Federation).
+	ServiceAccountNamespace string
+	ServiceAccountName      string
 	// HTTPTimeout bounds calls to CI providers.
 	HTTPTimeout time.Duration
 	// LogLevel controls log verbosity.
@@ -45,15 +50,17 @@ type Config struct {
 // Load reads configuration from the environment and validates it.
 func Load() (*Config, error) {
 	cfg := &Config{
-		ListenAddr:           getEnv("ZEA_LISTEN_ADDR", ":8080"),
-		ProxyToken:           strings.TrimSpace(os.Getenv("ZEA_PROXY_TOKEN")),
-		AnchorApp:            strings.TrimSpace(os.Getenv("ZEA_ANCHOR_APP")),
-		AdminGroups:          SplitList(os.Getenv("ZEA_ADMIN_GROUPS")),
-		AdminUsers:           SplitList(os.Getenv("ZEA_ADMIN_USERS")),
-		ConnectionsNamespace: strings.TrimSpace(os.Getenv("ZEA_CONNECTIONS_NAMESPACE")),
-		RegistryPullSecrets:  SplitList(os.Getenv("ZEA_REGISTRY_PULL_SECRETS")),
-		HTTPTimeout:          20 * time.Second,
-		ShutdownTimeout:      10 * time.Second,
+		ListenAddr:              getEnv("ZEA_LISTEN_ADDR", ":8080"),
+		ProxyToken:              strings.TrimSpace(os.Getenv("ZEA_PROXY_TOKEN")),
+		AnchorApp:               strings.TrimSpace(os.Getenv("ZEA_ANCHOR_APP")),
+		AdminGroups:             SplitList(os.Getenv("ZEA_ADMIN_GROUPS")),
+		AdminUsers:              SplitList(os.Getenv("ZEA_ADMIN_USERS")),
+		ConnectionsNamespace:    strings.TrimSpace(os.Getenv("ZEA_CONNECTIONS_NAMESPACE")),
+		RegistryPullSecrets:     SplitList(os.Getenv("ZEA_REGISTRY_PULL_SECRETS")),
+		ServiceAccountNamespace: strings.TrimSpace(os.Getenv("ZEA_SERVICE_ACCOUNT_NAMESPACE")),
+		ServiceAccountName:      strings.TrimSpace(os.Getenv("ZEA_SERVICE_ACCOUNT_NAME")),
+		HTTPTimeout:             20 * time.Second,
+		ShutdownTimeout:         10 * time.Second,
 	}
 
 	skip, err := parseBool("ZEA_INSECURE_SKIP_PROXY_AUTH", false)
