@@ -67,7 +67,7 @@ spec:
     chart: zea
     # Chart version = release tag without "v"; it also selects the backend
     # image tag.
-    targetRevision: 0.1.7
+    targetRevision: 0.1.8
     helm:
       valuesObject:
         admins:
