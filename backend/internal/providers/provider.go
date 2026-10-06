@@ -121,6 +121,10 @@ type RunForm struct {
 	// Variables is true when arbitrary key/value variables are accepted
 	// in addition to declared inputs (GitLab pipeline variables).
 	Variables bool `json:"variables"`
+	// PrefilledVariables are variables the pipeline definition offers in
+	// its run form (GitLab variables with a description). They are passed
+	// as variables, not inputs.
+	PrefilledVariables []Input `json:"prefilledVariables"`
 	// Warning explains why declared inputs could not be read.
 	Warning string `json:"warning,omitempty"`
 }

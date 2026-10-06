@@ -80,10 +80,22 @@ type target struct {
 	apiBase string
 	// project is the URL-encoded "group/subgroup/project" path.
 	project string
+	// fullPath is the plain "group/subgroup/project" path.
+	fullPath string
 }
 
 func (t *target) projectURL(format string, args ...any) string {
 	return fmt.Sprintf("%s/projects/%s", t.apiBase, t.project) + fmt.Sprintf(format, args...)
+}
+
+// graphQLURL is the GraphQL endpoint next to the REST API, or "" when the
+// REST base does not end with /api/v4.
+func (t *target) graphQLURL() string {
+	base, ok := strings.CutSuffix(t.apiBase, "/api/v4")
+	if !ok {
+		return ""
+	}
+	return base + "/api/graphql"
 }
 
 func resolve(c *connections.Connection) (*target, error) {
@@ -105,7 +117,7 @@ func resolve(c *connections.Connection) (*target, error) {
 	if !strings.Contains(path, "/") {
 		return nil, fmt.Errorf("GitLab url must look like https://<host>/<group>/<project>, got %q", c.URL)
 	}
-	return &target{apiBase: apiBase, project: url.PathEscape(path)}, nil
+	return &target{apiBase: apiBase, project: url.PathEscape(path), fullPath: path}, nil
 }
 
 func (p *Provider) do(ctx context.Context, c *connections.Connection, req providers.Request) (http.Header, error) {

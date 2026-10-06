@@ -73,7 +73,7 @@ func (p *Provider) GetRunForm(ctx context.Context, c *connections.Connection, pi
 	if inputs == nil {
 		inputs = []providers.Input{}
 	}
-	return &providers.RunForm{Inputs: inputs}, nil
+	return &providers.RunForm{Inputs: inputs, PrefilledVariables: []providers.Input{}}, nil
 }
 
 type dispatchResponse struct {

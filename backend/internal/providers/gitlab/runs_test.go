@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/harchschoolboy/argocd-zea/backend/internal/connections"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/providers"
@@ -62,6 +63,46 @@ const pipelineFixture = `{"id":900,"iid":12,"name":"Deploy","ref":"main","sha":"
 type fakeRuns struct {
 	created map[string]any
 	posted  []string
+	// gqlNulls is how many GraphQL calls answer with a cache miss.
+	gqlNulls int
+	gqlError bool
+	gqlCalls int
+}
+
+const ciWithVariables = `variables:
+  DEPLOY_ENV:
+    value: staging
+    options: [staging, production]
+    description: Target environment
+  DEBUG:
+    value: "false"
+    description: Verbose logs
+  INTERNAL: x
+  PLAIN:
+    value: y
+build:
+  script: echo
+`
+
+func TestFileVariables(t *testing.T) {
+	for _, src := range []string{ciWithVariables, "spec:\n  inputs: {}\n---\n" + ciWithVariables} {
+		vars, err := fileVariables([]byte(src))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, _ := json.Marshal(vars)
+		want := `[{"name":"DEPLOY_ENV","description":"Target environment","type":"choice","required":false,"default":"staging","options":["staging","production"]},` +
+			`{"name":"DEBUG","description":"Verbose logs","type":"string","required":false,"default":"false"}]`
+		if string(got) != want {
+			t.Fatalf("vars =\n%s\nwant\n%s", got, want)
+		}
+	}
+	for _, src := range []string{"", ciWithInputs, "variables: [a]\n"} {
+		vars, err := fileVariables([]byte(src))
+		if err != nil || len(vars) != 0 {
+			t.Errorf("%q: %v %v", src, vars, err)
+		}
+	}
 }
 
 func (f *fakeRuns) server(t *testing.T) *httptest.Server {
@@ -72,6 +113,25 @@ func (f *fakeRuns) server(t *testing.T) *httptest.Server {
 		}
 		path, query, _ := strings.Cut(r.RequestURI, "?")
 		switch {
+		case r.Method == http.MethodPost && path == "/api/graphql":
+			var req struct {
+				Variables map[string]string `json:"variables"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			if req.Variables["fullPath"] != "grp/sub/proj" || req.Variables["ref"] != "main" {
+				t.Errorf("graphql variables = %v", req.Variables)
+			}
+			f.gqlCalls++
+			switch {
+			case f.gqlError:
+				fmt.Fprint(w, `{"data":{"project":null},"errors":[{"message":"denied"}]}`)
+			case f.gqlCalls <= f.gqlNulls:
+				fmt.Fprint(w, `{"data":{"project":{"ciConfigVariables":null}}}`)
+			default:
+				fmt.Fprint(w, `{"data":{"project":{"ciConfigVariables":[`+
+					`{"key":"DEPLOY_ENV","value":"staging","description":"Target environment","valueOptions":["staging","production"]},`+
+					`{"key":"FROM_INCLUDE","value":"1","description":null,"valueOptions":null}]}}}`)
+			}
 		case r.Method == http.MethodGet && path == projectPath:
 			fmt.Fprint(w, `{"path_with_namespace":"grp/sub/proj","default_branch":"main","ci_config_path":""}`)
 		case r.Method == http.MethodGet && path == projectPath+"/repository/files/.gitlab-ci.yml/raw":
@@ -104,7 +164,10 @@ func (f *fakeRuns) server(t *testing.T) *httptest.Server {
 }
 
 func TestGitLabRuns(t *testing.T) {
-	f := &fakeRuns{}
+	wait := configVariablesWait
+	configVariablesWait = []time.Duration{time.Millisecond, time.Millisecond}
+	defer func() { configVariablesWait = wait }()
+	f := &fakeRuns{gqlNulls: 1}
 	srv := f.server(t)
 	defer srv.Close()
 	p := New(srv.Client())
@@ -112,13 +175,33 @@ func TestGitLabRuns(t *testing.T) {
 	ctx := context.Background()
 
 	form, err := p.GetRunForm(ctx, c, projectPipelineID, "")
-	if err != nil || !form.Variables || len(form.Inputs) != 5 {
+	if err != nil || !form.Variables || len(form.Inputs) != 5 || form.Warning != "" {
 		t.Fatalf("form: %+v %v", form, err)
 	}
+	prefilled, _ := json.Marshal(form.PrefilledVariables)
+	wantPrefilled := `[{"name":"DEPLOY_ENV","description":"Target environment","type":"choice","required":false,"default":"staging","options":["staging","production"]},` +
+		`{"name":"FROM_INCLUDE","type":"string","required":false,"default":"1"}]`
+	if string(prefilled) != wantPrefilled || f.gqlCalls != 2 {
+		t.Fatalf("prefilled after %d calls =\n%s\nwant\n%s", f.gqlCalls, prefilled, wantPrefilled)
+	}
+
+	// GraphQL stays on a cache miss: the form still opens with a warning.
+	f.gqlCalls, f.gqlNulls = 0, 10
+	form, err = p.GetRunForm(ctx, c, projectPipelineID, "main")
+	if err != nil || len(form.PrefilledVariables) != 0 || !strings.Contains(form.Warning, "not prepared") || f.gqlCalls != 3 {
+		t.Fatalf("cache miss form after %d calls: %+v %v", f.gqlCalls, form, err)
+	}
+	f.gqlError = true
+	form, err = p.GetRunForm(ctx, c, projectPipelineID, "main")
+	if err != nil || len(form.Inputs) != 5 || !strings.Contains(form.Warning, "denied") {
+		t.Fatalf("graphql error form: %+v %v", form, err)
+	}
+	f.gqlError, f.gqlNulls = false, 0
 	if _, err := p.GetRunForm(ctx, c, "other", "main"); err == nil {
 		t.Fatal("unknown pipeline id accepted")
 	}
 
+	calls := f.gqlCalls
 	run, err := p.Trigger(ctx, c, providers.TriggerRequest{
 		PipelineID: projectPipelineID,
 		Ref:        "main",
@@ -132,6 +215,9 @@ func TestGitLabRuns(t *testing.T) {
 	want := `{"inputs":{"debug":true,"image":"v1","replicas":3,"tags":["x"]},"ref":"main","variables":[{"key":"APP_BRANCH","value":"dev","variable_type":"env_var"}]}`
 	if string(body) != want {
 		t.Fatalf("create body =\n%s\nwant\n%s", body, want)
+	}
+	if f.gqlCalls != calls {
+		t.Fatal("trigger queried prefilled variables")
 	}
 	for _, bad := range []providers.TriggerRequest{
 		{PipelineID: projectPipelineID, Ref: "main", Inputs: map[string]string{"unknown": "1"}},

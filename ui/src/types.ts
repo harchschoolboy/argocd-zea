@@ -208,6 +208,9 @@ export interface RunForm {
   inputs: RunInput[];
   // True when free key/value variables are accepted (GitLab).
   variables: boolean;
+  // Variables the pipeline offers in its run form (GitLab variables with a
+  // description); sent as variables.
+  prefilledVariables?: RunInput[];
   warning?: string;
 }
 

@@ -51,17 +51,26 @@ function initialValues(inputs: RunInput[]): Record<string, string> {
 export const RunFormPanel = ({ client, connection, pipeline, gitRef, branches, defaultBranch, onStarted, onClose }: Props) => {
   const [form] = useLoad(() => client.runForm(connection, pipeline.id, gitRef), [client, connection, pipeline.id, gitRef]);
   const [values, setValues] = React.useState<Record<string, string>>({});
+  const [preVals, setPreVals] = React.useState<Record<string, string>>({});
   const [vars, setVars] = React.useState<VarRow[]>([]);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState('');
 
+  const prefilled = form.state === 'ok' ? form.data.prefilledVariables ?? [] : [];
+
   React.useEffect(() => {
     if (form.state === 'ok') {
       setValues(initialValues(form.data.inputs));
+      const pre: Record<string, string> = {};
+      for (const v of form.data.prefilledVariables ?? []) {
+        pre[v.name] = v.default ?? '';
+      }
+      setPreVals(pre);
     }
   }, [form]);
 
   const setValue = (name: string, v: string) => setValues(prev => ({ ...prev, [name]: v }));
+  const setPreVal = (name: string, v: string) => setPreVals(prev => ({ ...prev, [name]: v }));
   const setVar = (idx: number, patch: Partial<VarRow>) =>
     setVars(prev => prev.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
 
@@ -83,12 +92,19 @@ export const RunFormPanel = ({ client, connection, pipeline, gitRef, branches, d
       }
     }
     const variables: Record<string, string> = {};
+    // Unchanged prefilled variables already have these values in the pipeline.
+    for (const p of prefilled) {
+      const v = preVals[p.name] ?? '';
+      if (v !== (p.default ?? '')) {
+        variables[p.name] = v;
+      }
+    }
     for (const r of vars) {
       const k = r.key.trim();
       if (!k) {
         continue;
       }
-      if (k in variables) {
+      if (k in variables || prefilled.some(p => p.name === k)) {
         setError(`Variable "${k}" is set twice.`);
         return;
       }
@@ -104,20 +120,19 @@ export const RunFormPanel = ({ client, connection, pipeline, gitRef, branches, d
     }
   };
 
-  const renderInput = (i: RunInput) => {
-    const v = values[i.name] ?? '';
+  const renderInput = (i: RunInput, v: string, set: (name: string, v: string) => void, allowDefault: boolean) => {
     switch (i.type) {
       case 'boolean':
         return (
           <label style={{ display: 'flex', alignItems: 'center', gap: '0.4em', cursor: 'pointer' }}>
-            <input type='checkbox' checked={v === 'true'} onChange={e => setValue(i.name, e.target.checked ? 'true' : 'false')} />
+            <input type='checkbox' checked={v === 'true'} onChange={e => set(i.name, e.target.checked ? 'true' : 'false')} />
             <span>{v === 'true' ? 'true' : 'false'}</span>
           </label>
         );
       case 'choice':
         return (
-          <select className='argo-field' style={fieldStyle} value={v} onChange={e => setValue(i.name, e.target.value)}>
-            {!i.required && <option value=''>(default)</option>}
+          <select className='argo-field' style={fieldStyle} value={v} onChange={e => set(i.name, e.target.value)}>
+            {allowDefault && !i.required && <option value=''>(default)</option>}
             {(i.options ?? []).map(o => (
               <option key={o} value={o}>
                 {o}
@@ -126,12 +141,10 @@ export const RunFormPanel = ({ client, connection, pipeline, gitRef, branches, d
           </select>
         );
       case 'number':
-        return (
-          <input className='argo-field' style={fieldStyle} type='number' value={v} onChange={e => setValue(i.name, e.target.value)} />
-        );
+        return <input className='argo-field' style={fieldStyle} type='number' value={v} onChange={e => set(i.name, e.target.value)} />;
       default:
         if (isBranchInput(i) && branches.length > 0) {
-          return <BranchPicker value={v} branches={branches} defaultBranch={defaultBranch} onChange={nv => setValue(i.name, nv)} />;
+          return <BranchPicker value={v} branches={branches} defaultBranch={defaultBranch} onChange={nv => set(i.name, nv)} />;
         }
         return (
           <input
@@ -139,7 +152,7 @@ export const RunFormPanel = ({ client, connection, pipeline, gitRef, branches, d
             style={{ ...fieldStyle, fontFamily: i.type === 'array' ? 'monospace' : undefined }}
             value={v}
             placeholder={i.type === 'array' ? '["a", "b"]' : i.type === 'environment' ? 'environment name' : ''}
-            onChange={e => setValue(i.name, e.target.value)}
+            onChange={e => set(i.name, e.target.value)}
           />
         );
     }
@@ -161,7 +174,7 @@ export const RunFormPanel = ({ client, connection, pipeline, gitRef, branches, d
               <i className='fa fa-exclamation-triangle' /> {form.data.warning}
             </div>
           )}
-          {form.data.inputs.length === 0 && !form.data.variables && <Muted>This workflow has no inputs.</Muted>}
+          {form.data.inputs.length === 0 && prefilled.length === 0 && !form.data.variables && <Muted>This workflow has no inputs.</Muted>}
           {form.data.inputs.map(i => (
             <div key={i.name} style={{ marginBottom: '0.6em' }}>
               <label style={{ display: 'block', fontWeight: 600, marginBottom: '0.2em' }}>
@@ -169,13 +182,25 @@ export const RunFormPanel = ({ client, connection, pipeline, gitRef, branches, d
                 {i.required && <span style={{ color: COLORS.error }}> *</span>}
                 <span style={{ fontWeight: 400, color: COLORS.muted, fontSize: '0.85em' }}> {i.type}</span>
               </label>
-              {renderInput(i)}
+              {renderInput(i, values[i.name] ?? '', setValue, true)}
               {i.description && <div style={{ fontSize: '0.85em', color: COLORS.muted, marginTop: '0.2em' }}>{i.description}</div>}
             </div>
           ))}
+          {prefilled.length > 0 && (
+            <div style={{ marginBottom: '0.6em' }}>
+              <div style={{ fontWeight: 600, marginBottom: '0.3em' }}>Pipeline variables</div>
+              {prefilled.map(p => (
+                <div key={p.name} style={{ marginBottom: '0.5em' }}>
+                  <label style={{ display: 'block', fontFamily: 'monospace', marginBottom: '0.2em' }}>{p.name}</label>
+                  {renderInput(p, preVals[p.name] ?? '', setPreVal, false)}
+                  {p.description && <div style={{ fontSize: '0.85em', color: COLORS.muted, marginTop: '0.2em' }}>{p.description}</div>}
+                </div>
+              ))}
+            </div>
+          )}
           {form.data.variables && (
             <div style={{ marginBottom: '0.6em' }}>
-              <div style={{ fontWeight: 600, marginBottom: '0.2em' }}>Variables</div>
+              <div style={{ fontWeight: 600, marginBottom: '0.2em' }}>{prefilled.length > 0 ? 'Other variables' : 'Variables'}</div>
               {vars.length === 0 && (
                 <div style={{ fontSize: '0.85em', color: COLORS.muted }}>Optional CI/CD variables passed to this pipeline.</div>
               )}

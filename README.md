@@ -358,11 +358,14 @@ reads the parameters from the pipeline file at that branch and shows a form.
   `git-ref`, `gitRef`) get the branch list of the Connection's repository;
   any other value can still be typed.
 - **GitLab CI**: the form is built from the `spec:inputs` header of
-  `.gitlab-ci.yml` (inputs without a default are required). In addition, any
-  CI/CD variables can be passed as key/value pairs; they arrive in jobs as
-  regular environment variables. Passing variables needs the Developer role
-  or higher, and the project setting "Minimum role to use pipeline
-  variables" must allow it.
+  `.gitlab-ci.yml` (inputs without a default are required). Below them come
+  the prefilled variables GitLab shows in its own "Run pipeline" form: global
+  `variables` that have a `description` (with `options` as a dropdown),
+  including those from included files. Only changed values are sent. In
+  addition, any other CI/CD variables can be passed as key/value pairs; they
+  arrive in jobs as regular environment variables. Passing variables needs
+  the Developer role or higher, and the project setting "Minimum role to use
+  pipeline variables" must allow it.
 
 Each card shows the last run of the selected branch. Click the card (or its
 name, or the last run) to open the Connection view: it keeps the branch and

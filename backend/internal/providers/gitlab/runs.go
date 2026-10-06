@@ -32,7 +32,13 @@ func checkPipelineID(id string) error {
 	return nil
 }
 
-// GetRunForm reads spec:inputs from the CI configuration header at ref.
+// configVariablesWait are the pauses between GraphQL attempts while GitLab
+// computes prefilled variables in the background (the first request after
+// a change returns null).
+var configVariablesWait = []time.Duration{500 * time.Millisecond, time.Second, 1500 * time.Millisecond}
+
+// GetRunForm reads spec:inputs from the CI configuration header at ref and
+// the prefilled variables GitLab shows in its Run pipeline form.
 // Free variables are always accepted.
 func (p *Provider) GetRunForm(ctx context.Context, c *connections.Connection, pipelineID, ref string) (*providers.RunForm, error) {
 	if err := checkPipelineID(pipelineID); err != nil {
@@ -49,33 +55,206 @@ func (p *Provider) GetRunForm(ctx context.Context, c *connections.Connection, pi
 	if ref == "" {
 		ref = pj.DefaultBranch
 	}
+	form := &providers.RunForm{Inputs: []providers.Input{}, Variables: true, PrefilledVariables: []providers.Input{}}
+	// GitLab resolves includes for prefilled variables; the local file is
+	// only a fallback when GraphQL is unavailable or not ready yet.
+	prefilled, prefilledErr := p.configVariables(ctx, c, t, ref)
+	if prefilled != nil {
+		form.PrefilledVariables = prefilled
+	}
+	ciPath, raw, err := p.ciFile(ctx, c, t, pj, ref)
+	if err != nil {
+		return nil, err
+	}
+	var warnings []string
+	if raw == nil {
+		warnings = append(warnings, "CI configuration is outside the repository; declared inputs are not shown")
+	} else {
+		inputs, err := specInputs(raw)
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("cannot read spec:inputs from %s: %v", ciPath, err))
+		} else {
+			form.Inputs = inputs
+		}
+		if prefilled == nil {
+			if local, err := fileVariables(raw); err == nil {
+				form.PrefilledVariables = local
+			}
+		}
+	}
+	if prefilled == nil {
+		reason := "GitLab has not prepared them yet; reopen the form in a few seconds"
+		if prefilledErr != nil {
+			reason = prefilledErr.Error()
+		}
+		warnings = append(warnings, "prefilled variables from included files are not shown: "+reason)
+	}
+	form.Warning = strings.Join(warnings, "; ")
+	return form, nil
+}
+
+// ciFile returns the CI configuration at ref, or a nil body when it is
+// stored outside the repository.
+func (p *Provider) ciFile(ctx context.Context, c *connections.Connection, t *target, pj *projectJSON, ref string) (string, []byte, error) {
 	ciPath := pj.CIConfigPath
 	if ciPath == "" {
 		ciPath = defaultCIPath
 	}
-	form := &providers.RunForm{Inputs: []providers.Input{}, Variables: true}
 	if strings.Contains(ciPath, "@") || strings.Contains(ciPath, "://") {
-		form.Warning = "CI configuration is outside the repository; declared inputs are not shown"
-		return form, nil
+		return ciPath, nil, nil
 	}
-	var raw []byte
-	_, err = p.do(ctx, c, providers.Request{
+	raw := []byte{}
+	_, err := p.do(ctx, c, providers.Request{
 		URL:     t.projectURL("/repository/files/%s/raw?ref=%s", url.PathEscape(ciPath), url.QueryEscape(ref)),
 		RawBody: &raw,
 	})
 	if providers.IsStatus(err, http.StatusNotFound) {
-		return nil, providers.Invalidf("%s does not exist on %s", ciPath, ref)
+		return ciPath, nil, providers.Invalidf("%s does not exist on %s", ciPath, ref)
 	}
+	if err != nil {
+		return ciPath, nil, err
+	}
+	if raw == nil {
+		raw = []byte{}
+	}
+	return ciPath, raw, nil
+}
+
+// declaredInputs returns spec:inputs of the CI configuration at ref.
+func (p *Provider) declaredInputs(ctx context.Context, c *connections.Connection, t *target, ref string) ([]providers.Input, error) {
+	pj, err := p.project(ctx, c, t)
 	if err != nil {
 		return nil, err
 	}
+	ciPath, raw, err := p.ciFile(ctx, c, t, pj, ref)
+	if err != nil {
+		return nil, err
+	}
+	if raw == nil {
+		return []providers.Input{}, nil
+	}
 	inputs, err := specInputs(raw)
 	if err != nil {
-		form.Warning = fmt.Sprintf("cannot read spec:inputs from %s: %v", ciPath, err)
-		return form, nil
+		return nil, providers.Invalidf("cannot read spec:inputs from %s: %v", ciPath, err)
 	}
-	form.Inputs = inputs
-	return form, nil
+	return inputs, nil
+}
+
+type configVariablesJSON struct {
+	Data *struct {
+		Project *struct {
+			CIConfigVariables *[]struct {
+				Key          string   `json:"key"`
+				Value        *string  `json:"value"`
+				Description  *string  `json:"description"`
+				ValueOptions []string `json:"valueOptions"`
+			} `json:"ciConfigVariables"`
+		} `json:"project"`
+	} `json:"data"`
+	Errors []struct {
+		Message string `json:"message"`
+	} `json:"errors"`
+}
+
+const configVariablesQuery = `query($fullPath: ID!, $ref: String!) {
+  project(fullPath: $fullPath) { ciConfigVariables(ref: $ref) { key value description valueOptions } }
+}`
+
+// configVariables asks GitLab for the prefilled variables of the merged CI
+// configuration at ref. It returns nil without an error when GitLab is
+// still computing them.
+func (p *Provider) configVariables(ctx context.Context, c *connections.Connection, t *target, ref string) ([]providers.Input, error) {
+	endpoint := t.graphQLURL()
+	if endpoint == "" {
+		return nil, errors.New("the API URL does not end with /api/v4, so GraphQL is not used")
+	}
+	body := map[string]any{
+		"query":     configVariablesQuery,
+		"variables": map[string]string{"fullPath": t.fullPath, "ref": ref},
+	}
+	for attempt := 0; ; attempt++ {
+		var res configVariablesJSON
+		if _, err := p.do(ctx, c, providers.Request{Method: http.MethodPost, URL: endpoint, Body: body, Out: &res}); err != nil {
+			return nil, err
+		}
+		if len(res.Errors) > 0 {
+			return nil, fmt.Errorf("GitLab GraphQL: %s", res.Errors[0].Message)
+		}
+		if res.Data == nil || res.Data.Project == nil {
+			return nil, errors.New("GitLab GraphQL did not return the project")
+		}
+		if vars := res.Data.Project.CIConfigVariables; vars != nil {
+			out := make([]providers.Input, 0, len(*vars))
+			for _, v := range *vars {
+				in := providers.Input{Name: v.Key, Type: providers.InputString}
+				if v.Value != nil {
+					in.Default = *v.Value
+				}
+				if v.Description != nil {
+					in.Description = *v.Description
+				}
+				if len(v.ValueOptions) > 0 {
+					in.Type = providers.InputChoice
+					in.Options = v.ValueOptions
+				}
+				out = append(out, in)
+			}
+			return out, nil
+		}
+		if attempt >= len(configVariablesWait) {
+			return nil, nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(configVariablesWait[attempt]):
+		}
+	}
+}
+
+// fileVariables returns top-level variables with a description from the
+// main CI configuration document; GitLab prefills exactly those.
+func fileVariables(data []byte) ([]providers.Input, error) {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	out := []providers.Input{}
+	for i := 0; ; i++ {
+		var doc yaml.Node
+		if err := dec.Decode(&doc); err != nil {
+			if errors.Is(err, io.EOF) {
+				return out, nil
+			}
+			return nil, err
+		}
+		if len(doc.Content) == 0 {
+			continue
+		}
+		root := doc.Content[0]
+		// The first document is a header when it declares spec.
+		if i == 0 && mapValue(root, "spec") != nil {
+			continue
+		}
+		vars := mapValue(root, "variables")
+		if vars == nil || vars.Kind != yaml.MappingNode {
+			return out, nil
+		}
+		for j := 0; j+1 < len(vars.Content); j += 2 {
+			def := vars.Content[j+1]
+			desc := scalar(mapValue(def, "description"))
+			if desc == "" {
+				continue
+			}
+			in := providers.Input{Name: vars.Content[j].Value, Type: providers.InputString, Description: desc}
+			in.Default = scalar(mapValue(def, "value"))
+			if opts := mapValue(def, "options"); opts != nil && opts.Kind == yaml.SequenceNode {
+				for _, o := range opts.Content {
+					in.Options = append(in.Options, scalar(o))
+				}
+				in.Type = providers.InputChoice
+			}
+			out = append(out, in)
+		}
+		return out, nil
+	}
 }
 
 // specInputs parses the optional "spec: inputs:" header document of a
@@ -229,11 +408,15 @@ func (p *Provider) Trigger(ctx context.Context, c *connections.Connection, req p
 		body["variables"] = vars
 	}
 	if len(req.Inputs) > 0 {
-		form, err := p.GetRunForm(ctx, c, req.PipelineID, req.Ref)
+		t, err := resolve(c)
 		if err != nil {
 			return nil, err
 		}
-		inputs, err := typedInputs(form.Inputs, req.Inputs)
+		declared, err := p.declaredInputs(ctx, c, t, req.Ref)
+		if err != nil {
+			return nil, err
+		}
+		inputs, err := typedInputs(declared, req.Inputs)
 		if err != nil {
 			return nil, err
 		}

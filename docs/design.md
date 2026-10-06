@@ -228,7 +228,7 @@ with user, Connection, pipeline, ref and parameter names (not values).
 | Status | `GET /projects/:id/pipelines/:pid`, `GET .../pipelines/:pid/jobs` |
 | Logs | `GET /projects/:id/jobs/:jid/trace` - live, incremental |
 | Control | cancel, retry (failed and canceled jobs only); retry job and play manual job later |
-| Form | `spec:inputs` header of `.gitlab-ci.yml` at the selected ref, plus free key/value variables (up to 50, key `[A-Za-z0-9_]`) |
+| Form | `spec:inputs` header of `.gitlab-ci.yml` at the selected ref; prefilled variables (global `variables` with a `description`) from GraphQL `Project.ciConfigVariables(ref)`, which resolves includes, retried briefly while GitLab computes them, with the main file as a fallback; plus free key/value variables (up to 50, key `[A-Za-z0-9_]`). Only changed prefilled values are sent |
 
 Later providers: Gitea/Forgejo Actions, Bitbucket Pipelines, Jenkins.
 
