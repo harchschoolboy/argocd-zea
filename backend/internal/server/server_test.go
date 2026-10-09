@@ -18,6 +18,7 @@ import (
 	"github.com/harchschoolboy/argocd-zea/backend/internal/images"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/providers"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/registries"
+	"github.com/harchschoolboy/argocd-zea/backend/internal/streams"
 )
 
 const anchor = "argocd:zea"
@@ -94,10 +95,12 @@ type testEnv struct {
 	h     http.Handler
 	store *connections.MemoryStore
 	regs  *registries.MemoryStore
+	strms *streams.MemoryStore
+	eng   *streams.Engine
 }
 
 func newEnv(skip bool) *testEnv {
-	cfg := &config.Config{ProxyToken: "s3cret", InsecureSkipProxyAuth: skip, AnchorApp: anchor}
+	cfg := &config.Config{ProxyToken: "s3cret", InsecureSkipProxyAuth: skip, AnchorApp: anchor, ConnectionsNamespace: "zea-connections"}
 	store := connections.NewMemoryStore(
 		&connections.Connection{Name: "shared", Provider: "fake", URL: "https://x/o/r", AllowedGroups: []string{"devs"},
 			Credentials: map[string]string{"token": "good"}, Editable: true, SecretName: "zea-conn-shared",
@@ -114,15 +117,20 @@ func newEnv(skip bool) *testEnv {
 			Credentials: map[string]string{"token": "regtok"}, Editable: false},
 	)
 	kinds := registries.NewKinds(fakeRegistryKind{})
+	strms := streams.NewMemoryStore(testStreams()...)
+	provs := providers.NewRegistry(fakeProvider{})
+	eng := streams.NewEngine(streams.NewMemoryRunStore(), store, provs, streams.EngineConfig{}, nil)
 	deps := Deps{
 		Store:         store,
-		Providers:     providers.NewRegistry(fakeProvider{}),
+		Providers:     provs,
 		Authz:         authz.New([]string{"admin"}, []string{"zea-admins"}),
 		Registries:    regs,
 		RegistryKinds: kinds,
 		Images:        images.NewResolver(regs, kinds, 0),
+		Streams:       strms,
+		StreamRuns:    eng,
 	}
-	return &testEnv{h: New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), deps), store: store, regs: regs}
+	return &testEnv{h: New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), deps), store: store, regs: regs, strms: strms, eng: eng}
 }
 
 type reqOpt func(*http.Request)

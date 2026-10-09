@@ -330,6 +330,180 @@ images: |
 Per-source registry errors do not fail the request: they are returned in
 `errors` next to the repositories that did resolve.
 
+## Streams
+
+A Stream runs pipelines of several Connections in a fixed order with shared
+parameters. It is a list of **stages**: the steps of a stage run in
+parallel, a stage starts when the previous one is done. Internally every
+step has dependencies (`needs`); a step without `needs` waits for all steps
+of the closest earlier non-empty stage, a step with `needs` waits only for
+the named steps (which must be in earlier stages). This keeps the editor
+simple (columns) while the engine works on a graph, so a free-form graph
+editor can be added later without changing the format.
+
+```yaml
+description: Build and deploy
+params:
+  - {name: branch, type: branch, connection: api, default: main, required: true}
+  - {name: env, type: choice, options: [dev, prod], default: dev}
+stages:
+  - name: Build
+    steps:
+      - {id: api, connection: api, pipeline: "101", ref: "${{ params.branch }}"}
+      - {id: web, connection: web, pipeline: "202", ref: "${{ params.branch }}",
+         inputs: {env: "${{ params.env }}"}}
+  - name: Deploy
+    steps:
+      - id: deploy
+        connection: deploy
+        pipeline: "303"
+        ref: main
+        variables: {API_SHA: "${{ steps.api.sha }}"}
+        when: success          # success (default) | failure | always
+        timeout: 90m           # 1m..72h, empty = engine default
+        continueOnError: false
+```
+
+- **Params** are asked when the Stream starts: `string`, `choice`
+  (`options`), `boolean`, `branch` (branches of `connection`, picked from a
+  list). Later: `image` (tags from a registry).
+- **References** `${{ ... }}` are allowed in `ref`, `inputs` and
+  `variables`: `params.<name>`, `steps.<id>.status|runId|url|sha|ref` (only
+  steps that finish before this one), `zea.user`, `stream.name`,
+  `stream.run`.
+- Limits: 20 stages, 20 steps per stage, 50 steps, 30 params, 50 inputs and
+  variables per step, 256 KiB of YAML.
+
+### Storage and GitOps
+
+Streams are ConfigMaps labelled `argocd-zea.io/type: stream` in the
+Connections namespace, named `zea-stream-<name>`, with keys `name`,
+`stream.yaml` and, for drafts, `draftOf`. Like Connections, only
+ConfigMaps labelled `argocd-zea.io/managed-by: zea` and not tracked by Argo
+CD (`argocd.argoproj.io/tracking-id` annotation or
+`app.kubernetes.io/instance` label) are editable in the UI.
+
+GitOps flow: "Edit as draft" copies any Stream into an editable draft
+(`<name>-draft`, `draftOf: <name>`); a draft can be run to try it out.
+"Export" returns a declarative ConfigMap (no managed-by label, named after
+`draftOf` for drafts) to commit to git. Once Argo CD syncs it, the Stream is
+read-only in Zea and the draft can be deleted. Import accepts an exported
+ConfigMap or a plain document (`name` plus the spec) and creates a
+UI-managed Stream.
+
+Incomplete Streams can be saved; `problems` lists what keeps a Stream from
+running (unknown params or steps, missing Connections, invalid ids,
+durations, variable names). Updates carry `version` (the ConfigMap
+resourceVersion) and fail with 409 when someone else changed the Stream.
+
+### Access rules
+
+Only Zea admins create, edit, delete, draft and import Streams. Other users
+see and run a Stream only when they may use every Connection it
+references; other Streams answer 404. Runs follow the same rule, applied to
+the Connections of the run's own snapshot, so editing a Stream does not
+change who sees its past runs. Anyone who sees a run may cancel it.
+
+### Runs
+
+A run is a snapshot of the Spec plus resolved params and the state of every
+step, stored as JSON (`run.json`) in a ConfigMap
+`zea-srun-<stream>-<run id>` labelled `argocd-zea.io/type: stream-run`,
+`argocd-zea.io/stream: <name>` and `argocd-zea.io/phase: active|finished`.
+A run starts only when the Stream has no problems (409 otherwise); params
+are checked against their definitions (required, choice options, boolean
+`true`/`false`) and get their defaults.
+
+The engine is a reconcile loop in the backend (every
+`ZEA_STREAM_POLL_INTERVAL`, default 10s, and immediately after a start or
+cancel). Each pass, for every active run:
+
+1. Cancel requested: cancel the provider runs of running steps, mark them
+   `cancelled`, pending steps `skipped`, the run `cancelled`.
+2. Follow running steps with `GetRun` (`success` -> `succeeded`, `failed`,
+   `canceled` -> `cancelled`, provider `skipped` -> `skipped`, `manual`
+   keeps running with a message). A step running longer than its `timeout`
+   (default `ZEA_STREAM_STEP_TIMEOUT`, 6h) is cancelled and fails.
+3. Start pending steps whose dependencies have finished:
+   - `success`: every direct dependency succeeded (a failure with
+     `continueOnError` counts as success); otherwise the step is skipped and
+     the skip cascades.
+   - `failure`: some step upstream (direct or not) failed or was cancelled
+     without `continueOnError`; otherwise skipped.
+   - `always`: runs once the dependencies have finished.
+
+   `ref`, `inputs` and `variables` are rendered, the step is saved as
+   `starting` and only then triggered, so a crash cannot trigger it twice.
+   A trigger error fails the step.
+4. When every step has finished, the run is `failed` if a step failed or was
+   cancelled without `continueOnError`, otherwise `succeeded`. Older
+   finished runs beyond `ZEA_STREAM_RUN_HISTORY` (default 30) are deleted.
+
+A `starting` step without a provider run id (old GHES, or a crash right
+after the trigger) is matched with `ListRuns`: the earliest run of the same
+pipeline and ref created after the trigger and not owned by another step.
+If none appears within 3 minutes the step fails.
+
+All state lives in the ConfigMaps, so a restarted backend resumes active
+runs. Writes use the ConfigMap resourceVersion, and a step changes only if
+it is still in the state the engine saw, so two backends overlapping during
+a rolling update do not trigger a step twice. The engine is still meant for
+one replica (`replicaCount: 1`).
+
+### UI (S3)
+
+The page has two tabs: **Connections** and **Streams**
+(`?view=streams[&stream=<name>][&mode=edit|new][&srun=<id>]`).
+
+- **List** - cards with badges (draft, managed in git, problems), stages and
+  steps count, Connections used and the last run. Admins get **New stream**
+  and **Import** (paste YAML).
+- **Detail** - read-only stage columns, problems, run history (polled while a
+  run is active) and the actions **Run**, **Edit** (UI-managed only),
+  **Edit as draft**, **Export** (copy or download the ConfigMap) and
+  **Delete**.
+- **Editor** - name, description and params; a palette of Connections that
+  are dragged (or clicked) into stage columns; stages and steps are
+  reordered by drag-and-drop, and a drop on the last zone creates a stage.
+  The step panel picks the branch and pipeline of the Connection, prefills
+  inputs and variables from the provider run form, and inserts
+  `${{ ... }}` references to params and upstream steps. Renaming a step or
+  a param rewrites its references. The Stream is validated while it is
+  edited; it can be saved with problems but not run.
+- **Run** - a form for the params (branch params get the branch picker),
+  then the run view: stage columns with live step statuses, links to the
+  provider runs, and **Cancel**.
+
+### Backend API (phase 7, stages S1-S2)
+
+| Method and path | Who | Purpose |
+|-----------------|-----|---------|
+| `GET /api/v1/streams` | user | Visible Streams with `editable`, `version`, `connections`, `problems` |
+| `GET /api/v1/streams/{name}` | user | One Stream |
+| `POST /api/v1/streams` | admin | Create `{name, description, params, stages}` |
+| `PUT /api/v1/streams/{name}` | admin | Replace (UI-managed only); `version` detects concurrent edits |
+| `DELETE /api/v1/streams/{name}` | admin | Delete (UI-managed only) |
+| `POST /api/v1/streams/{name}/draft` | admin | Copy into a draft `{name?}` |
+| `GET /api/v1/streams/{name}/export` | user | `{name, fileName, yaml}` - declarative ConfigMap |
+| `POST /api/v1/streams/import` | admin | `{yaml, replace?}` - create, or replace a UI-managed Stream |
+| `POST /api/v1/streams/validate` | admin | Problems of an unsaved Stream |
+| `POST /api/v1/streams/{name}/runs` | user | Start a run `{params}`; 409 when the Stream has problems |
+| `GET /api/v1/streams/{name}/runs` | user | Visible runs, newest first, without the Spec snapshot |
+| `GET /api/v1/streams/{name}/runs/{run}` | user | One run with its Spec snapshot |
+| `POST /api/v1/streams/{name}/runs/{run}/cancel` | user | Request cancellation (202); 409 when finished |
+
+### Plan
+
+- **S1** model, storage, API, validation *(done)*.
+- **S2** engine: reconcile loop, run storage, conditions, cancel,
+  timeouts, run API *(done)*.
+- **S3** UI: Streams tab, drag-and-drop editor, run form, live run view,
+  history, import/export *(done)*.
+- **S4** retry from the failed step, history filters and pruning UI.
+- **S5** `if` expressions, `image` params.
+- Later: passing outputs between steps (an artifact such as
+  `zea-outputs.json`; neither provider exposes job outputs through the API).
+
 ## Deploy
 
 *Open topic - to be planned after phase 4. The notes below are the original
@@ -374,5 +548,7 @@ with selfHeal would revert them.
    Docker Hub *(later)*.
 5. **Deploy** - plain-YAML app-of-apps write-back, parent refresh/sync.
 6. **Hardening** - caching, rate limits, audit log, error UX.
+7. **Streams** - multi-Connection pipelines, see [Streams](#streams)
+   *(S1-S3 done)*.
 
 Later: more providers, Helm-generated parents, ApplicationSet generators.

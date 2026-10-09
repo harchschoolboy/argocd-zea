@@ -8,10 +8,10 @@ repositories (GitHub Actions, GitLab CI), pick a branch, start a pipeline,
 follow its jobs and logs, and deploy a built image the GitOps way (a commit to
 the app-of-apps repo).
 
-> Status: phase 4. Connections (GitHub and GitLab), branches, starting
+> Status: phase 4 and Streams. Connections (GitHub and GitLab), branches, starting
 > pipelines with parameters, run status and jobs, cancel and rerun, and
 > container images per branch (DigitalOcean, Google Artifact Registry and OCI
-> registries) work. Logs
+> registries) and Streams (multi-repo pipelines) work. Logs
 > and Deploy are in progress - see [docs/design.md](docs/design.md).
 
 ## How it fits into Argo CD
@@ -48,7 +48,7 @@ prints a ready-to-merge values snippet for the argo-cd chart.
   `argocd-server` to `github.com` to download the UI extension at startup.
 
 In the commands below the Argo CD namespace is `argocd`, the Helm release and
-the anchor Application are both called `zea`, and the release is `v0.1.10`.
+the anchor Application are both called `zea`, and the release is `v0.2.0`.
 
 ### Step 1. Install the backend
 
@@ -84,8 +84,8 @@ What the chart does on sync:
    an existing token. The Job, its ServiceAccount and its Role are deleted
    once it succeeds.
 2. Creates the `zea-connections` namespace (kept on uninstall), a Role that
-   only allows the backend to manage Secrets there, and the backend
-   Deployment and Service.
+   only allows the backend to manage Secrets (Connections, registries) and
+   ConfigMaps (Streams) there, and the backend Deployment and Service.
 
 The anchor defaults to `<release namespace>:<release name>`, which is
 `argocd:zea` here. Set `anchorApplication` explicitly if you use
@@ -101,7 +101,7 @@ set `image.tag`.
 #### Option B: with the Helm CLI
 
 ```bash
-helm install zea oci://ghcr.io/harchschoolboy/charts/zea --version 0.1.10 \
+helm install zea oci://ghcr.io/harchschoolboy/charts/zea --version 0.2.0 \
   -n argocd \
   --set anchorApplication=argocd:<existing-app> \
   --set 'admins.users={admin}'
@@ -152,11 +152,11 @@ server:
           - name: EXTENSION_NAME
             value: zea
           - name: EXTENSION_VERSION
-            value: v0.1.10
+            value: v0.2.0
           - name: EXTENSION_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.10/extension-zea.tar.gz
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.2.0/extension-zea.tar.gz
           - name: EXTENSION_CHECKSUM_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.10/extension-zea_checksums.txt
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.2.0/extension-zea_checksums.txt
 
 configs:
   params:
@@ -244,11 +244,11 @@ one Zea installation.
                - name: EXTENSION_NAME
                  value: zea
                - name: EXTENSION_VERSION
-                 value: v0.1.10
+                 value: v0.2.0
                - name: EXTENSION_URL
-                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.10/extension-zea.tar.gz
+                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.2.0/extension-zea.tar.gz
                - name: EXTENSION_CHECKSUM_URL
-                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.1.10/extension-zea_checksums.txt
+                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.2.0/extension-zea_checksums.txt
              securityContext:
                runAsNonRoot: true
                runAsUser: 1000
@@ -510,6 +510,27 @@ reachable from a pod. For Artifact Registry, in order of preference:
   every registry kind except token-only DigitalOcean.
 - **Service account key** - a JSON key stored in the registry Secret. Simple,
   but a long-lived secret; avoid it where Workload Identity Federation works.
+### Streams
+
+A Stream chains pipelines of several Connections: stages run one after
+another, the steps of a stage run in parallel. Open the **Streams** tab:
+
+- **New stream** (admins): drag Connections into stage columns, pick the
+  branch and pipeline of each step, fill its inputs. Values may use
+  `${{ params.<name> }}` (params asked when the Stream starts) and
+  `${{ steps.<id>.ref|sha|runId|url|status }}` of upstream steps. A step can
+  wait for specific steps (`needs`), run only on success, failure or always,
+  and continue on error.
+- **Run**: fill the params and follow the steps live; **Cancel** stops the
+  active provider runs.
+- **Export** gives a ConfigMap to keep the Stream in git; once Argo CD syncs
+  it, the Stream is read-only in Zea. **Edit as draft** makes an editable
+  copy to change and export again. **Import** creates a Stream from YAML.
+
+A user sees a Stream only when they may use every Connection it runs. Polling
+interval, step timeout and run history are set under `streams:` in the chart
+values.
+
 ### Upgrade
 
 Bump the version in both places, so the UI and the backend match:

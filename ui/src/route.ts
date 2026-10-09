@@ -3,16 +3,21 @@ import * as React from 'react';
 // Route is the Zea page state kept in the URL query, so a connection view
 // can be linked to and the browser Back button returns to the list.
 export interface Route {
-  // "registries" opens the registries admin page.
+  // "registries" opens the registries admin page, "streams" the Streams.
   view?: string;
   connection?: string;
   ref?: string;
   run?: string;
   // Connection view tab: "images"; runs by default.
   tab?: string;
+  // Selected Stream; with mode "edit" its editor, with srun one of its runs.
+  stream?: string;
+  // "edit" opens the Stream editor, "new" a new Stream.
+  mode?: string;
+  srun?: string;
 }
 
-const KEYS: (keyof Route)[] = ['view', 'connection', 'ref', 'run', 'tab'];
+const KEYS: (keyof Route)[] = ['view', 'connection', 'ref', 'run', 'tab', 'stream', 'mode', 'srun'];
 const NAVIGATE_EVENT = 'zea:navigate';
 
 export function readRoute(): Route {

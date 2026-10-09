@@ -261,3 +261,110 @@ export interface Job {
 export interface RunDetail extends Run {
   jobs: Job[];
 }
+export type StreamParamType = 'string' | 'choice' | 'boolean' | 'branch';
+
+// StreamParam is asked when a Stream starts and referenced in steps as
+// ${{ params.<name> }}.
+export interface StreamParam {
+  name: string;
+  type: StreamParamType | string;
+  description?: string;
+  default?: string;
+  required?: boolean;
+  options?: string[];
+  // Lists the branches of a branch param.
+  connection?: string;
+}
+
+export type StepWhen = 'success' | 'failure' | 'always';
+
+export interface StreamStep {
+  id: string;
+  name?: string;
+  connection: string;
+  pipeline: string;
+  ref: string;
+  inputs?: Record<string, string>;
+  variables?: Record<string, string>;
+  // Empty: every step of the previous non-empty stage.
+  needs?: string[];
+  when?: StepWhen | string;
+  timeout?: string;
+  continueOnError?: boolean;
+}
+
+export interface StreamStage {
+  name?: string;
+  steps: StreamStep[];
+}
+
+export interface StreamSpec {
+  description?: string;
+  params: StreamParam[];
+  stages: StreamStage[];
+}
+
+export interface StreamProblem {
+  step?: string;
+  param?: string;
+  message: string;
+}
+
+export interface Stream extends StreamSpec {
+  name: string;
+  draftOf?: string;
+  // False for Streams managed declaratively (git).
+  editable: boolean;
+  version: string;
+  connections: string[];
+  problems: StreamProblem[];
+}
+
+export interface StreamInput extends StreamSpec {
+  name: string;
+  version?: string;
+}
+
+export interface StreamExport {
+  name: string;
+  fileName: string;
+  yaml: string;
+}
+
+export type StreamRunStatus = 'running' | 'succeeded' | 'failed' | 'cancelled';
+
+export type StreamStepStatus = 'pending' | 'starting' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'skipped';
+
+export interface StreamRunStep {
+  id: string;
+  status: StreamStepStatus;
+  ref?: string;
+  runId?: string;
+  runNumber?: number;
+  url?: string;
+  sha?: string;
+  providerStatus?: string;
+  triggeredAt?: string;
+  finishedAt?: string;
+  message?: string;
+  name?: string;
+  stage: number;
+  connection: string;
+  pipeline: string;
+}
+
+export interface StreamRun {
+  id: string;
+  stream: string;
+  user: string;
+  params: Record<string, string>;
+  status: StreamRunStatus;
+  message?: string;
+  cancelRequested?: boolean;
+  cancelledBy?: string;
+  createdAt: string;
+  finishedAt?: string;
+  steps: StreamRunStep[];
+  // The Spec snapshot; only present for a single run.
+  spec?: StreamSpec;
+}

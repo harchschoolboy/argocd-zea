@@ -45,6 +45,12 @@ type Config struct {
 	LogLevel slog.Level
 	// ShutdownTimeout bounds graceful shutdown.
 	ShutdownTimeout time.Duration
+	// StreamPollInterval is how often the Stream engine checks active runs.
+	StreamPollInterval time.Duration
+	// StreamStepTimeout is the default limit of one Stream step.
+	StreamStepTimeout time.Duration
+	// StreamRunHistory is how many finished runs are kept per Stream.
+	StreamRunHistory int
 }
 
 // Load reads configuration from the environment and validates it.
@@ -61,6 +67,9 @@ func Load() (*Config, error) {
 		ServiceAccountName:      strings.TrimSpace(os.Getenv("ZEA_SERVICE_ACCOUNT_NAME")),
 		HTTPTimeout:             20 * time.Second,
 		ShutdownTimeout:         10 * time.Second,
+		StreamPollInterval:      10 * time.Second,
+		StreamStepTimeout:       6 * time.Hour,
+		StreamRunHistory:        30,
 	}
 
 	skip, err := parseBool("ZEA_INSECURE_SKIP_PROXY_AUTH", false)
@@ -79,6 +88,20 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("invalid ZEA_HTTP_TIMEOUT %q: expected a positive duration such as 20s", v)
 		}
 		cfg.HTTPTimeout = d
+	}
+
+	if err := parseDuration("ZEA_STREAM_POLL_INTERVAL", 2*time.Second, time.Hour, &cfg.StreamPollInterval); err != nil {
+		return nil, err
+	}
+	if err := parseDuration("ZEA_STREAM_STEP_TIMEOUT", time.Minute, 72*time.Hour, &cfg.StreamStepTimeout); err != nil {
+		return nil, err
+	}
+	if v := getEnv("ZEA_STREAM_RUN_HISTORY", ""); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 500 {
+			return nil, fmt.Errorf("invalid ZEA_STREAM_RUN_HISTORY %q: expected a number between 1 and 500", v)
+		}
+		cfg.StreamRunHistory = n
 	}
 
 	if _, _, ok := strings.Cut(cfg.AnchorApp, ":"); cfg.AnchorApp != "" && !ok {
@@ -114,6 +137,20 @@ func getEnv(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// parseDuration reads an optional duration bounded by [lo, hi].
+func parseDuration(key string, lo, hi time.Duration, dst *time.Duration) error {
+	v := getEnv(key, "")
+	if v == "" {
+		return nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d < lo || d > hi {
+		return fmt.Errorf("invalid %s %q: expected a duration between %s and %s", key, v, lo, hi)
+	}
+	*dst = d
+	return nil
 }
 
 func parseBool(key string, def bool) (bool, error) {

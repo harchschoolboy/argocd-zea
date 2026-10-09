@@ -66,18 +66,30 @@ admins:
 
 # Connection Secrets live in a dedicated namespace so the backend never needs
 # access to Secrets in the Argo CD namespace (Kubernetes RBAC cannot restrict
-# list/create to labelled Secrets).
+# list/create to labelled Secrets). Streams are ConfigMaps in the same
+# namespace.
 connections:
   namespace: zea-connections
   # Create the namespace with this chart. It is annotated so that neither
   # Helm nor Argo CD deletes it (and the Connections in it) on uninstall.
   createNamespace: true
-  # Create a Role + RoleBinding granting the backend access to Secrets in
-  # that namespace.
+  # Create a Role + RoleBinding granting the backend access to Secrets and
+  # ConfigMaps in that namespace.
   rbac: true
 
 # Timeout for calls to GitHub / GitLab APIs.
 httpTimeout: 20s
+
+# Stream runs are executed by the backend and stored as ConfigMaps in
+# connections.namespace. Keep replicaCount at 1: only one backend may
+# execute runs.
+streams:
+  # How often active runs are checked against GitHub / GitLab.
+  pollInterval: 10s
+  # Default limit of one step; a step may set its own timeout (1m-72h).
+  stepTimeout: 6h
+  # Finished runs kept per Stream.
+  runHistory: 30
 
 # Registries can reuse existing image pull Secrets (authentication "Existing
 # pull secret") instead of storing their own credentials. Only the Secrets

@@ -26,6 +26,7 @@ import (
 	"github.com/harchschoolboy/argocd-zea/backend/internal/proxytoken"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/registries"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/server"
+	"github.com/harchschoolboy/argocd-zea/backend/internal/streams"
 )
 
 // imagesCacheTTL is how long registry listings are reused.
@@ -99,13 +100,22 @@ func run() error {
 		}
 	}
 	regKinds.SetPullSecrets(registries.NewKubePullSecrets(kube, cfg.RegistryPullSecrets))
+	connStore := connections.NewSecretStore(kube, cfg.ConnectionsNamespace)
+	provs := providers.NewRegistry(github.New(httpClient), gitlab.New(httpClient))
+	engine := streams.NewEngine(streams.NewConfigMapRunStore(kube, cfg.ConnectionsNamespace), connStore, provs, streams.EngineConfig{
+		PollInterval: cfg.StreamPollInterval,
+		StepTimeout:  cfg.StreamStepTimeout,
+		History:      cfg.StreamRunHistory,
+	}, log)
 	deps := server.Deps{
-		Store:         connections.NewSecretStore(kube, cfg.ConnectionsNamespace),
-		Providers:     providers.NewRegistry(github.New(httpClient), gitlab.New(httpClient)),
+		Store:         connStore,
+		Providers:     provs,
 		Authz:         authz.New(cfg.AdminUsers, cfg.AdminGroups),
 		Registries:    regStore,
 		RegistryKinds: regKinds,
 		Images:        images.NewResolver(regStore, regKinds, imagesCacheTTL),
+		Streams:       streams.NewConfigMapStore(kube, cfg.ConnectionsNamespace),
+		StreamRuns:    engine,
 	}
 	if len(cfg.AdminUsers) == 0 && len(cfg.AdminGroups) == 0 {
 		log.Warn("no Zea admins configured (ZEA_ADMIN_USERS / ZEA_ADMIN_GROUPS); connections can only be managed declaratively")
@@ -122,6 +132,12 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	engineDone := make(chan struct{})
+	go func() {
+		engine.Run(ctx)
+		close(engineDone)
+	}()
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -141,7 +157,12 @@ func run() error {
 	log.Info("shutting down")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
-	return srv.Shutdown(shutdownCtx)
+	err = srv.Shutdown(shutdownCtx)
+	select {
+	case <-engineDone:
+	case <-shutdownCtx.Done():
+	}
+	return err
 }
 
 // kubeClient uses the in-cluster service account, falling back to the

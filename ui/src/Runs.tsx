@@ -42,7 +42,7 @@ export function ago(iso?: string): string {
   return `${Math.floor(sec / 86400)}d ago`;
 }
 
-function duration(from?: string, to?: string): string {
+export function duration(from?: string, to?: string): string {
   if (!from) {
     return '';
   }
@@ -53,7 +53,7 @@ function duration(from?: string, to?: string): string {
 
 // usePoll loads data, keeps the previous result while refreshing, and
 // repeats every intervalMs while shouldPoll(data) is true.
-function usePoll<T>(
+export function usePoll<T>(
   fn: () => Promise<T>,
   deps: React.DependencyList,
   intervalMs: number,

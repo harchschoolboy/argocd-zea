@@ -60,6 +60,14 @@ spec:
               value: {{ required "connections.namespace is required" .Values.connections.namespace | quote }}
             - name: ZEA_HTTP_TIMEOUT
               value: {{ .Values.httpTimeout | quote }}
+            {{- with .Values.streams }}
+            - name: ZEA_STREAM_POLL_INTERVAL
+              value: {{ .pollInterval | default "10s" | quote }}
+            - name: ZEA_STREAM_STEP_TIMEOUT
+              value: {{ .stepTimeout | default "6h" | quote }}
+            - name: ZEA_STREAM_RUN_HISTORY
+              value: {{ .runHistory | default 30 | quote }}
+            {{- end }}
             {{- if (.Values.registries | default dict).tokenRequest }}
             - name: ZEA_SERVICE_ACCOUNT_NAMESPACE
               valueFrom:

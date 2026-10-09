@@ -11,6 +11,7 @@ import (
 	"github.com/harchschoolboy/argocd-zea/backend/internal/images"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/providers"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/registries"
+	"github.com/harchschoolboy/argocd-zea/backend/internal/streams"
 )
 
 // Version is overridden at build time via -ldflags.
@@ -24,6 +25,10 @@ type Deps struct {
 	Registries    registries.Store
 	RegistryKinds *registries.Kinds
 	Images        *images.Resolver
+	// Streams stores Zea Streams; nil disables the streams API.
+	Streams streams.Store
+	// StreamRuns executes Streams; nil disables the stream runs API.
+	StreamRuns *streams.Engine
 }
 
 type api struct {
@@ -66,6 +71,19 @@ func New(cfg *config.Config, log *slog.Logger, deps Deps) http.Handler {
 	mux.HandleFunc("DELETE /api/v1/registries/{name}", a.adminOnly(a.handleDeleteRegistry))
 	mux.HandleFunc("POST /api/v1/registries/{name}/test", a.adminOnly(a.handleTestRegistry))
 	mux.HandleFunc("POST /api/v1/test-registry", a.adminOnly(a.handleTestRegistryDraft))
+	mux.HandleFunc("GET /api/v1/streams", a.handleListStreams)
+	mux.HandleFunc("POST /api/v1/streams", a.adminOnly(a.handleCreateStream))
+	mux.HandleFunc("POST /api/v1/streams/import", a.adminOnly(a.handleImportStream))
+	mux.HandleFunc("POST /api/v1/streams/validate", a.adminOnly(a.handleValidateStream))
+	mux.HandleFunc("GET /api/v1/streams/{name}", a.handleGetStream)
+	mux.HandleFunc("PUT /api/v1/streams/{name}", a.adminOnly(a.handleUpdateStream))
+	mux.HandleFunc("DELETE /api/v1/streams/{name}", a.adminOnly(a.handleDeleteStream))
+	mux.HandleFunc("POST /api/v1/streams/{name}/draft", a.adminOnly(a.handleDraftStream))
+	mux.HandleFunc("GET /api/v1/streams/{name}/export", a.handleExportStream)
+	mux.HandleFunc("GET /api/v1/streams/{name}/runs", a.handleListStreamRuns)
+	mux.HandleFunc("POST /api/v1/streams/{name}/runs", a.handleStartStreamRun)
+	mux.HandleFunc("GET /api/v1/streams/{name}/runs/{run}", a.handleGetStreamRun)
+	mux.HandleFunc("POST /api/v1/streams/{name}/runs/{run}/cancel", a.handleCancelStreamRun)
 
 	protected := requireProxyToken(cfg.ProxyToken, cfg.InsecureSkipProxyAuth, log,
 		requireIdentity(requireAnchor(cfg.AnchorApp, mux)))
@@ -104,7 +122,7 @@ func (a *api) handleProviders(w http.ResponseWriter, _ *http.Request) {
 func (a *api) adminOnly(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !a.deps.Authz.IsAdmin(IdentityFrom(r.Context())) {
-			writeError(w, http.StatusForbidden, "only Zea admins can manage connections and registries")
+			writeError(w, http.StatusForbidden, "only Zea admins can manage connections, registries and streams")
 			return
 		}
 		next(w, r)

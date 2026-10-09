@@ -12,6 +12,7 @@ import (
 	"github.com/harchschoolboy/argocd-zea/backend/internal/connections"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/providers"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/registries"
+	"github.com/harchschoolboy/argocd-zea/backend/internal/streams"
 )
 
 // maxBodyBytes caps JSON request bodies.
@@ -302,12 +303,15 @@ func (a *api) writeErr(w http.ResponseWriter, err error) {
 	var ue *providers.UpstreamError
 	var urlErr *url.Error
 	switch {
-	case errors.Is(err, connections.ErrNotFound), errors.Is(err, registries.ErrNotFound):
+	case errors.Is(err, connections.ErrNotFound), errors.Is(err, registries.ErrNotFound), errors.Is(err, streams.ErrNotFound),
+		errors.Is(err, streams.ErrRunNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, connections.ErrAlreadyExists), errors.Is(err, connections.ErrReadOnly),
-		errors.Is(err, registries.ErrAlreadyExists), errors.Is(err, registries.ErrReadOnly):
+		errors.Is(err, registries.ErrAlreadyExists), errors.Is(err, registries.ErrReadOnly),
+		errors.Is(err, streams.ErrAlreadyExists), errors.Is(err, streams.ErrReadOnly), errors.Is(err, streams.ErrConflict),
+		errors.Is(err, streams.ErrRunFinished), errors.Is(err, streams.ErrRunConflict), errors.Is(err, streams.ErrNotRunnable):
 		writeError(w, http.StatusConflict, err.Error())
-	case errors.Is(err, providers.ErrInvalidRequest), errors.Is(err, providers.ErrUnsupported):
+	case errors.Is(err, providers.ErrInvalidRequest), errors.Is(err, providers.ErrUnsupported), errors.Is(err, streams.ErrInvalidParams):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.As(err, &ue) && (ue.Status == http.StatusBadRequest || ue.Status == http.StatusUnprocessableEntity):
 		// The provider rejected user input (unknown workflow input, bad ref).
@@ -325,7 +329,11 @@ func (a *api) writeErr(w http.ResponseWriter, err error) {
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	return decodeJSONMax(w, r, v, maxBodyBytes)
+}
+
+func decodeJSONMax(w http.ResponseWriter, r *http.Request, v any, limit int64) bool {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())

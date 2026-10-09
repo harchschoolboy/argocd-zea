@@ -4,6 +4,7 @@ import { ConnectionCard } from './ConnectionCard';
 import { ConnectionForm } from './ConnectionForm';
 import { RegistriesView } from './Registries';
 import { navigate, useRoute } from './route';
+import { StreamsView } from './Streams';
 import { Connection, Me, ProviderInfo } from './types';
 import { COLORS, ErrorText, Muted, useLoad } from './ui';
 
@@ -139,12 +140,49 @@ const Workspace = ({ client }: { client: ZeaClient }) => {
   return <Pages client={client} ctx={ctx.data} />;
 };
 
+const TABS: { view: string; label: string; icon: string }[] = [
+  { view: '', label: 'Connections', icon: 'fa fa-plug' },
+  { view: 'streams', label: 'Streams', icon: 'fa fa-stream' },
+];
+
+const Tabs = ({ view }: { view: string }) => (
+  <div style={{ display: 'flex', gap: '1.5em', borderBottom: `1px solid ${COLORS.border}`, marginBottom: '1em' }}>
+    {TABS.map(t => {
+      const active = t.view === view;
+      return (
+        <a
+          key={t.label}
+          onClick={() => navigate(t.view ? { view: t.view } : {})}
+          style={{
+            padding: '0.4em 0.2em',
+            marginBottom: -1,
+            cursor: 'pointer',
+            borderBottom: `2px solid ${active ? '#0dadea' : 'transparent'}`,
+            color: active ? undefined : COLORS.muted,
+            fontWeight: active ? 600 : 400,
+          }}>
+          <i className={t.icon} /> {t.label}
+        </a>
+      );
+    })}
+  </div>
+);
+
 const Pages = ({ client, ctx }: { client: ZeaClient; ctx: Context }) => {
   const route = useRoute();
-  if (route.view === 'registries' && ctx.me.isAdmin) {
-    return <RegistriesView client={client} />;
-  }
-  return <Connections client={client} ctx={ctx} />;
+  const streams = route.view === 'streams';
+  return (
+    <>
+      <Tabs view={streams ? 'streams' : ''} />
+      {streams ? (
+        <StreamsView client={client} me={ctx.me} />
+      ) : route.view === 'registries' && ctx.me.isAdmin ? (
+        <RegistriesView client={client} />
+      ) : (
+        <Connections client={client} ctx={ctx} />
+      )}
+    </>
+  );
 };
 
 export const ZeaPage = () => {

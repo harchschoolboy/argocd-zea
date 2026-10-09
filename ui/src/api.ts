@@ -16,6 +16,11 @@ import {
   Run,
   RunDetail,
   RunForm,
+  Stream,
+  StreamExport,
+  StreamInput,
+  StreamProblem,
+  StreamRun,
   TestResult,
   TriggerInput,
 } from './types';
@@ -202,6 +207,62 @@ export class ZeaClient {
 
   testRegistryDraft(input: RegistryInput): Promise<RegistryTestResult> {
     return this.call<RegistryTestResult>('api/v1/test-registry', { method: 'POST', json: input });
+  }
+  async streams(): Promise<Stream[]> {
+    return (await this.call<{ streams: Stream[] }>('api/v1/streams')).streams;
+  }
+
+  stream(name: string): Promise<Stream> {
+    return this.call<Stream>(`api/v1/streams/${encodeURIComponent(name)}`);
+  }
+
+  createStream(input: StreamInput): Promise<Stream> {
+    return this.call<Stream>('api/v1/streams', { method: 'POST', json: input });
+  }
+
+  updateStream(input: StreamInput): Promise<Stream> {
+    return this.call<Stream>(`api/v1/streams/${encodeURIComponent(input.name)}`, { method: 'PUT', json: input });
+  }
+
+  deleteStream(name: string): Promise<void> {
+    return this.call<void>(`api/v1/streams/${encodeURIComponent(name)}`, { method: 'DELETE' });
+  }
+
+  draftStream(name: string, draftName?: string): Promise<Stream> {
+    return this.call<Stream>(`api/v1/streams/${encodeURIComponent(name)}/draft`, {
+      method: 'POST',
+      json: { name: draftName ?? '' },
+    });
+  }
+
+  exportStream(name: string): Promise<StreamExport> {
+    return this.call<StreamExport>(`api/v1/streams/${encodeURIComponent(name)}/export`);
+  }
+
+  importStream(yaml: string, replace: boolean): Promise<Stream> {
+    return this.call<Stream>('api/v1/streams/import', { method: 'POST', json: { yaml, replace } });
+  }
+
+  async validateStream(input: StreamInput): Promise<StreamProblem[]> {
+    return (await this.call<{ problems: StreamProblem[] }>('api/v1/streams/validate', { method: 'POST', json: input })).problems;
+  }
+
+  async streamRuns(name: string): Promise<StreamRun[]> {
+    return (await this.call<{ runs: StreamRun[] }>(`api/v1/streams/${encodeURIComponent(name)}/runs`)).runs;
+  }
+
+  streamRun(name: string, id: string): Promise<StreamRun> {
+    return this.call<StreamRun>(`api/v1/streams/${encodeURIComponent(name)}/runs/${encodeURIComponent(id)}`);
+  }
+
+  startStream(name: string, params: Record<string, string>): Promise<StreamRun> {
+    return this.call<StreamRun>(`api/v1/streams/${encodeURIComponent(name)}/runs`, { method: 'POST', json: { params } });
+  }
+
+  async cancelStreamRun(name: string, id: string): Promise<void> {
+    await this.call<void>(`api/v1/streams/${encodeURIComponent(name)}/runs/${encodeURIComponent(id)}/cancel`, {
+      method: 'POST',
+    });
   }
 }
 
