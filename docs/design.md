@@ -362,6 +362,8 @@ stages:
         when: success          # success (default) | failure | always
         timeout: 90m           # 1m..72h, empty = engine default
         continueOnError: false
+        retries: 0             # 0..5 automatic retries, 0 = manual only
+        retryDelay: 30s        # 0s..1h, empty = 30s
 ```
 
 - **Params** are asked when the Stream starts: `string`, `choice`
@@ -402,7 +404,7 @@ Only Zea admins create, edit, delete, draft and import Streams. Other users
 see and run a Stream only when they may use every Connection it
 references; other Streams answer 404. Runs follow the same rule, applied to
 the Connections of the run's own snapshot, so editing a Stream does not
-change who sees its past runs. Anyone who sees a run may cancel it.
+change who sees its past runs. Anyone who sees a run may cancel or retry it.
 
 ### Runs
 
@@ -434,7 +436,8 @@ cancel). Each pass, for every active run:
 
    `ref`, `inputs` and `variables` are rendered, the step is saved as
    `starting` and only then triggered, so a crash cannot trigger it twice.
-   A trigger error fails the step.
+   A trigger error fails the step. A pending step waiting for its retry
+   delay is not started yet.
 4. When every step has finished, the run is `failed` if a step failed or was
    cancelled without `continueOnError`, otherwise `succeeded`. Older
    finished runs beyond `ZEA_STREAM_RUN_HISTORY` (default 30) are deleted.
@@ -450,14 +453,37 @@ it is still in the state the engine saw, so two backends overlapping during
 a rolling update do not trigger a step twice. The engine is still meant for
 one replica (`replicaCount: 1`).
 
-### UI (S3)
+**Retry.** A finished run that failed or was cancelled can be retried in
+place: steps that succeeded keep their state (and their `steps.<id>.*`
+values), every other step goes back to `pending`, and the run becomes
+`running` again. The run keeps its Spec snapshot, so edits of the Stream do
+not apply; **Run again** starts a new run of the current Stream with the
+same params instead. The replaced step states are kept in `attempts`
+(number, user, status, start and finish), up to 20 attempts per run.
 
-The page has two tabs: **Connections** and **Streams**
-(`?view=streams[&stream=<name>][&mode=edit|new][&srun=<id>]`).
+**Automatic retries.** Retrying is manual by default. A step with
+`retries: N` (up to 5) is started again when its pipeline fails, times out
+or cannot be triggered; a pipeline cancelled in the provider, a missing
+Connection, a rendering error or a run that could not be identified are not
+retried. The failed state is appended to the run's `tries` (with the
+attempt it belongs to), and the step goes back to `pending` with `try`
+increased and `retryAt` set `retryDelay` (default 30s) ahead. Dependants
+keep waiting, so they only see the final result. A manual retry starts the
+step's automatic retries over.
+
+### UI (S3-S4)
+
+The page has the tabs **Streams** (default), **Connections** and, for
+admins, **Registries**
+(`?view=streams[&stream=<name>][&mode=edit|new|run][&srun=<id>]`,
+`?view=connections`, `?connection=<name>`, `?view=registries`).
 
 - **List** - cards with badges (draft, managed in git, problems), stages and
-  steps count, Connections used and the last run. Admins get **New stream**
-  and **Import** (paste YAML).
+  steps count, Connections used and the last run (polled while it runs).
+  **Run** on a card asks for confirmation (listing the default params) and
+  starts the Stream with its defaults; when a required param has no
+  default it opens the run form instead. Admins get **New stream** and
+  **Import** (paste YAML).
 - **Detail** - read-only stage columns, problems, run history (polled while a
   run is active) and the actions **Run**, **Edit** (UI-managed only),
   **Edit as draft**, **Export** (copy or download the ConfigMap) and
@@ -472,9 +498,15 @@ The page has two tabs: **Connections** and **Streams**
   edited; it can be saved with problems but not run.
 - **Run** - a form for the params (branch params get the branch picker),
   then the run view: stage columns with live step statuses, links to the
-  provider runs, and **Cancel**.
+  provider runs, **Cancel**, **Retry failed** and **Run again** (the params
+  form prefilled from the run). Clicking a step opens its provider jobs and
+  job steps (as in the Connection view; the active or failed step opens by
+  default) and its earlier tries: automatic retries and earlier attempts.
+  A step waiting for a retry shows when it starts again.
+- **History** - runs of the Stream with status filters, a step status strip,
+  params, attempt number and paging.
 
-### Backend API (phase 7, stages S1-S2)
+### Backend API (phase 7)
 
 | Method and path | Who | Purpose |
 |-----------------|-----|---------|
@@ -491,6 +523,7 @@ The page has two tabs: **Connections** and **Streams**
 | `GET /api/v1/streams/{name}/runs` | user | Visible runs, newest first, without the Spec snapshot |
 | `GET /api/v1/streams/{name}/runs/{run}` | user | One run with its Spec snapshot |
 | `POST /api/v1/streams/{name}/runs/{run}/cancel` | user | Request cancellation (202); 409 when finished |
+| `POST /api/v1/streams/{name}/runs/{run}/retry` | user | Run the steps that did not succeed again; 409 when running, succeeded, or retried too often |
 
 ### Plan
 
@@ -499,7 +532,8 @@ The page has two tabs: **Connections** and **Streams**
   timeouts, run API *(done)*.
 - **S3** UI: Streams tab, drag-and-drop editor, run form, live run view,
   history, import/export *(done)*.
-- **S4** retry from the failed step, history filters and pruning UI.
+- **S4** retry of failed steps, run again, step jobs in the run view,
+  history filters *(done)*.
 - **S5** `if` expressions, `image` params.
 - Later: passing outputs between steps (an artifact such as
   `zea-outputs.json`; neither provider exposes job outputs through the API).
@@ -549,6 +583,6 @@ with selfHeal would revert them.
 5. **Deploy** - plain-YAML app-of-apps write-back, parent refresh/sync.
 6. **Hardening** - caching, rate limits, audit log, error UX.
 7. **Streams** - multi-Connection pipelines, see [Streams](#streams)
-   *(S1-S3 done)*.
+   *(S1-S4 done)*.
 
 Later: more providers, Helm-generated parents, ApplicationSet generators.

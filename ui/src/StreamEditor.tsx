@@ -92,12 +92,13 @@ const StepCard = ({ data, step, problems, selected, onSelect, onDragStart, onDra
       {' · '}
       <i className='fa fa-code-branch' /> {step.ref || 'no ref'}
     </div>
-    {(step.when && step.when !== 'success') || (step.needs?.length ?? 0) > 0 || step.continueOnError || step.timeout ? (
+    {(step.when && step.when !== 'success') || (step.needs?.length ?? 0) > 0 || step.continueOnError || step.timeout || step.retries ? (
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25em', marginTop: '0.3em' }}>
         {step.when && step.when !== 'success' && <Badge color={COLORS.warn}>on {step.when}</Badge>}
         {(step.needs?.length ?? 0) > 0 && <Badge title='Waits only for these steps'>needs {step.needs?.join(', ')}</Badge>}
         {step.continueOnError && <Badge>continue on error</Badge>}
         {step.timeout && <Badge>timeout {step.timeout}</Badge>}
+        {!!step.retries && <Badge title='Automatic retries of a failed pipeline'>retry x{step.retries}</Badge>}
       </div>
     ) : null}
   </div>
@@ -381,6 +382,43 @@ const StepPanel = ({ data, spec, step, pos, connections, problems, onChange, onR
           </div>
         </div>
         <Help>{WHEN_HELP[step.when || 'success']} Timeout: e.g. 90m or 2h.</Help>
+        <div style={{ display: 'flex', gap: '0.6em', marginTop: '0.6em' }}>
+          <div style={{ flex: 1 }}>
+            <Field label='Retries'>
+              <select
+                className='argo-field'
+                style={{ width: '100%' }}
+                value={step.retries ?? 0}
+                onChange={e => {
+                  const n = Number(e.target.value);
+                  set(n > 0 ? { retries: n } : { retries: undefined, retryDelay: undefined });
+                }}>
+                <option value={0}>manual only</option>
+                {[1, 2, 3, 4, 5].map(n => (
+                  <option key={n} value={n}>
+                    {n} automatic
+                  </option>
+                ))}
+              </select>
+            </Field>
+          </div>
+          <div style={{ flex: '0 0 35%' }}>
+            <Field label='Retry delay'>
+              <input
+                className='argo-field'
+                style={{ width: '100%' }}
+                value={step.retryDelay ?? ''}
+                placeholder='30s'
+                disabled={!step.retries}
+                onChange={e => set({ retryDelay: e.target.value.trim() || undefined })}
+              />
+            </Field>
+          </div>
+        </div>
+        <Help>
+          A failed or timed out pipeline, or a failed trigger, is started again before the steps after it react. A pipeline
+          cancelled in the provider is not retried. Without retries, use Retry failed on the run.
+        </Help>
         <label style={{ display: 'block', cursor: 'pointer', marginTop: '0.6em' }}>
           <input
             type='checkbox'

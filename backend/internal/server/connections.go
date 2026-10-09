@@ -309,7 +309,7 @@ func (a *api) writeErr(w http.ResponseWriter, err error) {
 	case errors.Is(err, connections.ErrAlreadyExists), errors.Is(err, connections.ErrReadOnly),
 		errors.Is(err, registries.ErrAlreadyExists), errors.Is(err, registries.ErrReadOnly),
 		errors.Is(err, streams.ErrAlreadyExists), errors.Is(err, streams.ErrReadOnly), errors.Is(err, streams.ErrConflict),
-		errors.Is(err, streams.ErrRunFinished), errors.Is(err, streams.ErrRunConflict), errors.Is(err, streams.ErrNotRunnable):
+		errors.Is(err, streams.ErrRunFinished), errors.Is(err, streams.ErrNotRetryable), errors.Is(err, streams.ErrRunConflict), errors.Is(err, streams.ErrNotRunnable):
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, providers.ErrInvalidRequest), errors.Is(err, providers.ErrUnsupported), errors.Is(err, streams.ErrInvalidParams):
 		writeError(w, http.StatusBadRequest, err.Error())

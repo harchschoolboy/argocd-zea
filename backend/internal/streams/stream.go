@@ -31,6 +31,13 @@ const (
 	maxParamDefaultLen = 1024
 	minTimeout         = time.Minute
 	maxTimeout         = 72 * time.Hour
+	maxRetryDelay      = time.Hour
+)
+
+// Step retry limits.
+const (
+	MaxStepRetries    = 5
+	DefaultRetryDelay = 30 * time.Second
 )
 
 // Parameter types.
@@ -114,6 +121,12 @@ type Step struct {
 	Timeout string `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 	// ContinueOnError lets dependants treat a failure of this step as success.
 	ContinueOnError bool `json:"continueOnError,omitempty" yaml:"continueOnError,omitempty"`
+	// Retries is how often a failed pipeline is started again before the
+	// step fails; 0 leaves retrying to the user.
+	Retries int `json:"retries,omitempty" yaml:"retries,omitempty"`
+	// RetryDelay is a Go duration to wait before a retry; empty uses
+	// DefaultRetryDelay.
+	RetryDelay string `json:"retryDelay,omitempty" yaml:"retryDelay,omitempty"`
 }
 
 // Stream is a named Spec with storage metadata.
@@ -226,8 +239,8 @@ func (s *Stream) Validate() error {
 
 func validateStepSize(step Step) error {
 	if len(step.ID) > maxKeyLen || len(step.Connection) > maxKeyLen || len(step.Pipeline) > maxKeyLen ||
-		len(step.When) > maxKeyLen || len(step.Timeout) > maxKeyLen {
-		return errors.New("step id, connection, pipeline, when or timeout is too long")
+		len(step.When) > maxKeyLen || len(step.Timeout) > maxKeyLen || len(step.RetryDelay) > maxKeyLen {
+		return errors.New("step id, connection, pipeline, when, timeout or retry delay is too long")
 	}
 	if len(step.Name) > maxStepNameLen {
 		return fmt.Errorf("step %q: name is longer than %d characters", step.ID, maxStepNameLen)
@@ -367,6 +380,14 @@ func stepProblems(step Step, earlier, upstream, params map[string]bool) []string
 		d, err := time.ParseDuration(step.Timeout)
 		if err != nil || d < minTimeout || d > maxTimeout {
 			out = append(out, fmt.Sprintf("timeout %q must be a duration between %s and %s, e.g. 90m", step.Timeout, minTimeout, maxTimeout))
+		}
+	}
+	if step.Retries < 0 || step.Retries > MaxStepRetries {
+		out = append(out, fmt.Sprintf("retries must be between 0 and %d", MaxStepRetries))
+	}
+	if step.RetryDelay != "" {
+		if d, err := time.ParseDuration(step.RetryDelay); err != nil || d < 0 || d > maxRetryDelay {
+			out = append(out, fmt.Sprintf("retry delay %q must be a duration up to %s, e.g. 30s or 5m", step.RetryDelay, maxRetryDelay))
 		}
 	}
 	for _, k := range sortedKeys(step.Variables) {

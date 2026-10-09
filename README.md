@@ -48,7 +48,7 @@ prints a ready-to-merge values snippet for the argo-cd chart.
   `argocd-server` to `github.com` to download the UI extension at startup.
 
 In the commands below the Argo CD namespace is `argocd`, the Helm release and
-the anchor Application are both called `zea`, and the release is `v0.2.0`.
+the anchor Application are both called `zea`, and the release is `v0.2.1`.
 
 ### Step 1. Install the backend
 
@@ -101,7 +101,7 @@ set `image.tag`.
 #### Option B: with the Helm CLI
 
 ```bash
-helm install zea oci://ghcr.io/harchschoolboy/charts/zea --version 0.2.0 \
+helm install zea oci://ghcr.io/harchschoolboy/charts/zea --version 0.2.1 \
   -n argocd \
   --set anchorApplication=argocd:<existing-app> \
   --set 'admins.users={admin}'
@@ -152,11 +152,11 @@ server:
           - name: EXTENSION_NAME
             value: zea
           - name: EXTENSION_VERSION
-            value: v0.2.0
+            value: v0.2.1
           - name: EXTENSION_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.2.0/extension-zea.tar.gz
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.2.1/extension-zea.tar.gz
           - name: EXTENSION_CHECKSUM_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.2.0/extension-zea_checksums.txt
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.2.1/extension-zea_checksums.txt
 
 configs:
   params:
@@ -244,11 +244,11 @@ one Zea installation.
                - name: EXTENSION_NAME
                  value: zea
                - name: EXTENSION_VERSION
-                 value: v0.2.0
+                 value: v0.2.1
                - name: EXTENSION_URL
-                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.2.0/extension-zea.tar.gz
+                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.2.1/extension-zea.tar.gz
                - name: EXTENSION_CHECKSUM_URL
-                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.2.0/extension-zea_checksums.txt
+                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.2.1/extension-zea_checksums.txt
              securityContext:
                runAsNonRoot: true
                runAsUser: 1000
@@ -390,7 +390,7 @@ for the selected branch (or all branches), with tags, push time, size,
 digest, a link to the commit and a button that copies the full image
 reference.
 
-1. **Add a registry.** As an admin open **Registries** on the Zea page and
+1. **Add a registry.** As an admin open the **Registries** tab and
    add one; **Test registry** lists what the credentials can see. Or commit a
    Secret, see
    [deploy/examples/registry-secret.yaml](deploy/examples/registry-secret.yaml).
@@ -513,16 +513,22 @@ reachable from a pod. For Artifact Registry, in order of preference:
 ### Streams
 
 A Stream chains pipelines of several Connections: stages run one after
-another, the steps of a stage run in parallel. Open the **Streams** tab:
+another, the steps of a stage run in parallel. The **Streams** tab opens
+first:
 
 - **New stream** (admins): drag Connections into stage columns, pick the
   branch and pipeline of each step, fill its inputs. Values may use
   `${{ params.<name> }}` (params asked when the Stream starts) and
   `${{ steps.<id>.ref|sha|runId|url|status }}` of upstream steps. A step can
   wait for specific steps (`needs`), run only on success, failure or always,
-  and continue on error.
-- **Run**: fill the params and follow the steps live; **Cancel** stops the
-  active provider runs.
+  continue on error, and retry a failed pipeline automatically (`retries`,
+  up to 5, with `retryDelay`; manual retry by default).
+- **Run** on a stream card starts it with the default params after a
+  confirmation.
+- **Run**: fill the params and follow the steps live; click a step to see
+  its jobs. **Cancel** stops the active provider runs. **Retry failed**
+  reruns the steps that did not succeed in the same run (succeeded steps are
+  kept); **Run again** starts a new run with the same params.
 - **Export** gives a ConfigMap to keep the Stream in git; once Argo CD syncs
   it, the Stream is read-only in Zea. **Edit as draft** makes an editable
   copy to change and export again. **Import** creates a Stream from YAML.

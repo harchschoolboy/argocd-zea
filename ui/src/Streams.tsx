@@ -1,12 +1,12 @@
 import * as React from 'react';
 import { describeError, ZeaClient } from './api';
 import { navigate, useRoute } from './route';
-import { ago } from './Runs';
+import { ago, usePoll } from './Runs';
 import { Badge, ellipsis, Help, ProblemList, StreamStatusIcon, StreamStatusLabel } from './StreamFields';
 import { StreamEditor } from './StreamEditor';
 import { ConnData } from './streamModel';
 import { StagesBoard, StreamRunForm, StreamRunHistory, StreamRunView } from './StreamRun';
-import { Connection, Me, Stream, StreamExport } from './types';
+import { Connection, Me, Stream, StreamExport, StreamRun } from './types';
 import { COLORS, ErrorText, Muted, useLoad } from './ui';
 
 const StreamBadges = ({ stream }: { stream: Stream }) => (
@@ -25,13 +25,14 @@ const StreamBadges = ({ stream }: { stream: Stream }) => (
   </>
 );
 
-const LastStreamRun = ({ client, stream }: { client: ZeaClient; stream: string }) => {
-  const [runs] = useLoad(() => client.streamRuns(stream), [client, stream]);
-  if (runs.state === 'loading') {
-    return <Muted>...</Muted>;
-  }
-  if (runs.state === 'error') {
+const CARD_POLL_MS = 10_000;
+
+const LastStreamRun = ({ stream, runs }: { stream: string; runs: { data?: StreamRun[]; error: string } }) => {
+  if (runs.error && !runs.data) {
     return <Muted>runs unavailable</Muted>;
+  }
+  if (!runs.data) {
+    return <Muted>...</Muted>;
   }
   const r = runs.data[0];
   if (!r) {
@@ -52,22 +53,85 @@ const LastStreamRun = ({ client, stream }: { client: ZeaClient; stream: string }
   );
 };
 
+// paramDefaults are the values a run started without input gets, or
+// undefined when a required param has no default.
+function paramDefaults(stream: Stream): Record<string, string> | undefined {
+  const out: Record<string, string> = {};
+  for (const p of stream.params) {
+    const v = p.default ?? (p.type === 'boolean' ? 'false' : '');
+    if (p.required && v.trim() === '') {
+      return undefined;
+    }
+    out[p.name] = v;
+  }
+  return out;
+}
+
 const StreamCard = ({ client, stream }: { client: ZeaClient; stream: Stream }) => {
   const steps = stream.stages.reduce((n, s) => n + s.steps.length, 0);
+  const runs = usePoll(
+    () => client.streamRuns(stream.name),
+    [client, stream.name],
+    CARD_POLL_MS,
+    d => (d ?? []).some(r => r.status === 'running'),
+  );
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState('');
+  const blocked = stream.problems.length > 0;
+
+  const run = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const defaults = paramDefaults(stream);
+    if (!defaults) {
+      // Required params without defaults need the run form.
+      navigate({ view: 'streams', stream: stream.name, mode: 'run' });
+      return;
+    }
+    const lines = Object.entries(defaults).map(([k, v]) => `  ${k} = ${v === '' ? '(empty)' : v}`);
+    if (!window.confirm(`Run stream ${stream.name}?${lines.length > 0 ? `\n\nParams:\n${lines.join('\n')}` : ''}`)) {
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      await client.startStream(stream.name, defaults);
+      runs.reload();
+    } catch (err) {
+      setError(describeError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className='white-box' style={{ padding: '0.8em 1em', cursor: 'pointer', margin: 0 }} onClick={() => navigate({ view: 'streams', stream: stream.name })}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4em', flexWrap: 'wrap' }}>
-        <i className='fa fa-stream' style={{ color: COLORS.muted }} />
-        <b style={{ ...ellipsis, fontSize: '1.05em' }}>{stream.name}</b>
-        <StreamBadges stream={stream} />
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4em' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4em', flexWrap: 'wrap', flex: 1, minWidth: 0 }}>
+          <i className='fa fa-stream' style={{ color: COLORS.muted }} />
+          <b style={{ ...ellipsis, fontSize: '1.05em' }}>{stream.name}</b>
+          <StreamBadges stream={stream} />
+        </div>
+        <button
+          className='argo-button argo-button--base'
+          style={{ flex: '0 0 auto' }}
+          disabled={busy || blocked}
+          title={blocked ? 'Fix the problems first' : paramDefaults(stream) ? 'Run with the default params' : 'Some params need a value'}
+          onClick={run}>
+          <i className={busy ? 'fa fa-circle-notch fa-spin' : 'fa fa-play'} /> Run
+        </button>
       </div>
       {stream.description && <div style={{ marginTop: '0.3em', wordBreak: 'break-word' }}>{stream.description}</div>}
       <div style={{ fontSize: '0.85em', color: COLORS.muted, marginTop: '0.3em', wordBreak: 'break-word' }}>
-        {stream.stages.length} stage{stream.stages.length === 1 ? '' : 's'} · {steps} step{steps === 1 ? '' : 's'}
-        {stream.connections.length > 0 && <> · {stream.connections.join(', ')}</>}
+        {stream.stages.length} stage{stream.stages.length === 1 ? '' : 's'} ? {steps} step{steps === 1 ? '' : 's'}
+        {stream.connections.length > 0 && <> ? {stream.connections.join(', ')}</>}
       </div>
+      {error && (
+        <div onClick={e => e.stopPropagation()}>
+          <ErrorText text={error} />
+        </div>
+      )}
       <div style={{ marginTop: '0.5em', paddingTop: '0.4em', borderTop: `1px solid ${COLORS.border}` }}>
-        <LastStreamRun client={client} stream={stream.name} />
+        <LastStreamRun stream={stream.name} runs={runs} />
       </div>
     </div>
   );
@@ -218,9 +282,9 @@ const StreamList = ({ client, me }: { client: ZeaClient; me: Me }) => {
 
 type Panel = 'none' | 'run' | 'export';
 
-const StreamDetail = ({ client, data, me, name }: { client: ZeaClient; data: ConnData; me: Me; name: string }) => {
+const StreamDetail = ({ client, data, me, name, openRun }: { client: ZeaClient; data: ConnData; me: Me; name: string; openRun?: boolean }) => {
   const [st, reload] = useLoad(() => client.stream(name), [client, name]);
-  const [panel, setPanel] = React.useState<Panel>('none');
+  const [panel, setPanel] = React.useState<Panel>(openRun ? 'run' : 'none');
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState('');
   const [runsKey, setRunsKey] = React.useState(0);
@@ -389,7 +453,7 @@ export const StreamsView = ({ client, me }: { client: ZeaClient; me: Me }) => {
     if (route.srun) {
       return <StreamRunView client={client} data={data} stream={route.stream} runID={route.srun} />;
     }
-    return <StreamDetail key={route.stream} client={client} data={data} me={me} name={route.stream} />;
+    return <StreamDetail key={route.stream} client={client} data={data} me={me} name={route.stream} openRun={route.mode === 'run'} />;
   }
   return <StreamList client={client} me={me} />;
 };

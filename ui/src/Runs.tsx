@@ -317,7 +317,7 @@ const RunRow = ({ client, connection, run, capabilities, expanded, onToggle, onC
   );
 };
 
-const RunJobs = ({ client, connection, runID, refreshKey }: { client: ZeaClient; connection: string; runID: string; refreshKey: number }) => {
+export const RunJobs = ({ client, connection, runID, refreshKey }: { client: ZeaClient; connection: string; runID: string; refreshKey: number }) => {
   const detail = usePoll<RunDetail>(
     () => client.run(connection, runID),
     [client, connection, runID, refreshKey],

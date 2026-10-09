@@ -84,6 +84,7 @@ func New(cfg *config.Config, log *slog.Logger, deps Deps) http.Handler {
 	mux.HandleFunc("POST /api/v1/streams/{name}/runs", a.handleStartStreamRun)
 	mux.HandleFunc("GET /api/v1/streams/{name}/runs/{run}", a.handleGetStreamRun)
 	mux.HandleFunc("POST /api/v1/streams/{name}/runs/{run}/cancel", a.handleCancelStreamRun)
+	mux.HandleFunc("POST /api/v1/streams/{name}/runs/{run}/retry", a.handleRetryStreamRun)
 
 	protected := requireProxyToken(cfg.ProxyToken, cfg.InsecureSkipProxyAuth, log,
 		requireIdentity(requireAnchor(cfg.AnchorApp, mux)))

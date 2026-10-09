@@ -291,6 +291,9 @@ export interface StreamStep {
   when?: StepWhen | string;
   timeout?: string;
   continueOnError?: boolean;
+  // Automatic retries of a failed pipeline; 0 or empty leaves it to the user.
+  retries?: number;
+  retryDelay?: string;
 }
 
 export interface StreamStage {
@@ -347,11 +350,33 @@ export interface StreamRunStep {
   triggeredAt?: string;
   finishedAt?: string;
   message?: string;
+  // Automatic retries so far in the current attempt.
+  try?: number;
+  // When a pending step that is retried starts again.
+  retryAt?: string;
   name?: string;
   stage: number;
   connection: string;
   pipeline: string;
 }
+
+// A finished attempt of a run that was retried; steps are the states the
+// retry replaced (succeeded steps are kept and not listed).
+export interface StreamAttempt {
+  number: number;
+  user: string;
+  status: StreamRunStatus;
+  message?: string;
+  startedAt: string;
+  finishedAt?: string;
+  steps: Omit<StreamRunStep, 'name' | 'stage' | 'connection' | 'pipeline'>[];
+}
+
+// A failed try of a step that was retried automatically.
+export type StreamStepTry = Omit<StreamRunStep, 'name' | 'stage' | 'connection' | 'pipeline'> & {
+  // The run attempt the try belongs to.
+  attempt: number;
+};
 
 export interface StreamRun {
   id: string;
@@ -365,6 +390,14 @@ export interface StreamRun {
   createdAt: string;
   finishedAt?: string;
   steps: StreamRunStep[];
+  // Current attempt, starting at 1.
+  attempt: number;
+  retriedBy?: string;
+  retriedAt?: string;
+  // Earlier attempts; only present for a single run.
+  attempts?: StreamAttempt[];
+  // Automatically retried step tries; only present for a single run.
+  tries?: StreamStepTry[];
   // The Spec snapshot; only present for a single run.
   spec?: StreamSpec;
 }

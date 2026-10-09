@@ -560,3 +560,177 @@ func TestRunIDs(t *testing.T) {
 		t.Fatalf("ids %q %q", a, b)
 	}
 }
+
+func TestEngineRetry(t *testing.T) {
+	env := newEngineEnv(EngineConfig{})
+	ctx := context.Background()
+	deploy := step("deploy", "infra", "deploy.yml")
+	deploy.Inputs = map[string]string{"lint": "${{ steps.lint.sha }}"}
+	st := flow(Stage{Steps: []Step{step("lint", "app", "lint.yml"), step("build", "app", "build.yml")}}, Stage{Steps: []Step{deploy}})
+	r := env.start(t, st, nil)
+	r = env.tick(t, r)
+	if _, err := env.e.Retry(ctx, r.Stream, r.ID, "bob"); !errors.Is(err, ErrNotRetryable) {
+		t.Fatalf("retry of a running run: %v", err)
+	}
+	env.ci.finish(t, "lint.yml", providers.StatusSuccess)
+	env.ci.finish(t, "build.yml", providers.StatusFailed)
+	r = env.tick(t, r)
+	wantSteps(t, r, map[string]string{"lint": StepSucceeded, "build": StepFailed, "deploy": StepSkipped})
+	if r.Status != RunFailed {
+		t.Fatalf("run = %s", r.Status)
+	}
+	failedRun := stepStatus(r, "build").RunID
+
+	env.advance(time.Minute)
+	got, err := env.e.Retry(ctx, r.Stream, r.ID, "bob")
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	wantSteps(t, got, map[string]string{"lint": StepSucceeded, "build": StepPending, "deploy": StepPending})
+	if got.Status != RunRunning || got.RetriedBy != "bob" || !got.FinishedAt.IsZero() || len(got.Attempts) != 1 {
+		t.Fatalf("after retry = %+v", got)
+	}
+	a := got.Attempts[0]
+	if a.Number != 1 || a.User != "alice" || a.Status != RunFailed || len(a.Steps) != 2 || a.Steps[0].ID != "build" || a.Steps[0].RunID != failedRun {
+		t.Fatalf("attempt = %+v", a)
+	}
+
+	r = env.tick(t, r)
+	wantSteps(t, r, map[string]string{"lint": StepSucceeded, "build": StepRunning, "deploy": StepPending})
+	if n := strings.Count(strings.Join(env.ci.triggered(), ","), "lint.yml"); n != 1 {
+		t.Fatalf("lint triggered %d times", n)
+	}
+	if stepStatus(r, "build").RunID == failedRun {
+		t.Fatal("build kept the failed run id")
+	}
+	env.ci.finish(t, "build.yml", providers.StatusSuccess)
+	r = env.tick(t, r)
+	if in := env.ci.lastTrigger("deploy.yml").Inputs; in["lint"] != stepStatus(r, "lint").SHA {
+		t.Fatalf("deploy inputs = %v", in)
+	}
+	env.ci.finish(t, "deploy.yml", providers.StatusSuccess)
+	r = env.tick(t, r)
+	if r.Status != RunSucceeded {
+		t.Fatalf("run = %s %q", r.Status, r.Message)
+	}
+	if _, err := env.e.Retry(ctx, r.Stream, r.ID, "bob"); !errors.Is(err, ErrNotRetryable) {
+		t.Fatalf("retry of a succeeded run: %v", err)
+	}
+}
+
+func TestEngineRetryCancelled(t *testing.T) {
+	env := newEngineEnv(EngineConfig{})
+	ctx := context.Background()
+	r := env.start(t, flow(Stage{Steps: []Step{step("build", "app", "build.yml")}}, Stage{Steps: []Step{step("deploy", "app", "deploy.yml")}}), nil)
+	r = env.tick(t, r)
+	if _, err := env.e.Cancel(ctx, r.Stream, r.ID, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	r = env.tick(t, r)
+	if r.Status != RunCancelled {
+		t.Fatalf("run = %s", r.Status)
+	}
+	got, err := env.e.Retry(ctx, r.Stream, r.ID, "alice")
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if got.CancelRequested || got.CancelledBy != "" || got.Attempts[0].Status != RunCancelled {
+		t.Fatalf("after retry = %+v", got)
+	}
+	r = env.tick(t, r)
+	wantSteps(t, r, map[string]string{"build": StepRunning, "deploy": StepPending})
+}
+
+func TestEngineAutoRetry(t *testing.T) {
+	env := newEngineEnv(EngineConfig{})
+	build := step("build", "app", "build.yml")
+	build.Retries, build.RetryDelay = 2, "1m"
+	r := env.start(t, flow(Stage{Steps: []Step{build}}, Stage{Steps: []Step{step("deploy", "app", "deploy.yml")}}), nil)
+	r = env.tick(t, r)
+	env.ci.finish(t, "build.yml", providers.StatusFailed)
+	r = env.tick(t, r)
+	s := stepStatus(r, "build")
+	if s.Status != StepPending || s.Try != 1 || !s.RetryAt.Equal(env.clock.Add(time.Minute)) || !strings.Contains(s.Message, "retry 1 of 2") {
+		t.Fatalf("build after failure = %+v", s)
+	}
+	wantSteps(t, r, map[string]string{"deploy": StepPending})
+	if len(r.Tries) != 1 || r.Tries[0].Attempt != 1 || r.Tries[0].RunID != "1" || r.Tries[0].Status != StepFailed {
+		t.Fatalf("tries = %+v", r.Tries)
+	}
+
+	r = env.tick(t, r)
+	if n := len(env.ci.triggered()); n != 1 || r.Status != RunRunning {
+		t.Fatalf("retried before the delay: triggers = %d, run = %s", n, r.Status)
+	}
+	env.advance(61 * time.Second)
+	r = env.tick(t, r)
+	if s := stepStatus(r, "build"); s.Status != StepRunning || s.RunID != "2" || s.Try != 1 || !s.RetryAt.IsZero() {
+		t.Fatalf("build after retry = %+v", s)
+	}
+
+	env.ci.finish(t, "build.yml", providers.StatusSuccess)
+	r = env.tick(t, r)
+	wantSteps(t, r, map[string]string{"build": StepSucceeded, "deploy": StepRunning})
+}
+
+func TestEngineAutoRetryExhausted(t *testing.T) {
+	env := newEngineEnv(EngineConfig{})
+	build := step("build", "app", "build.yml")
+	build.Retries, build.RetryDelay = 1, "0s"
+	r := env.start(t, flow(Stage{Steps: []Step{build}}, Stage{Steps: []Step{step("deploy", "app", "deploy.yml")}}), nil)
+	r = env.tick(t, r)
+	env.ci.finish(t, "build.yml", providers.StatusFailed)
+	r = env.tick(t, r)
+	if s := stepStatus(r, "build"); s.Status != StepRunning || s.RunID != "2" {
+		t.Fatalf("build after immediate retry = %+v", s)
+	}
+	env.ci.finish(t, "build.yml", providers.StatusFailed)
+	r = env.tick(t, r)
+	wantSteps(t, r, map[string]string{"build": StepFailed, "deploy": StepSkipped})
+	if r.Status != RunFailed || len(r.Tries) != 1 {
+		t.Fatalf("run = %s, tries = %d", r.Status, len(r.Tries))
+	}
+
+	// A manual retry starts the step's automatic retries over.
+	if _, err := env.e.Retry(context.Background(), r.Stream, r.ID, "bob"); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	r = env.tick(t, r)
+	env.ci.finish(t, "build.yml", providers.StatusFailed)
+	r = env.tick(t, r)
+	if s := stepStatus(r, "build"); s.Status != StepRunning || s.Try != 1 {
+		t.Fatalf("build in attempt 2 = %+v", s)
+	}
+	if len(r.Tries) != 2 || r.Tries[1].Attempt != 2 {
+		t.Fatalf("tries = %+v", r.Tries)
+	}
+}
+
+func TestEngineAutoRetryTrigger(t *testing.T) {
+	env := newEngineEnv(EngineConfig{})
+	env.ci.failTrigger["build.yml"] = true
+	build := step("build", "app", "build.yml")
+	build.Retries, build.RetryDelay = 1, "0s"
+	r := env.start(t, flow(Stage{Steps: []Step{build}}), nil)
+	r = env.tick(t, r)
+	r = env.tick(t, r)
+	if n := len(env.ci.triggered()); n != 2 {
+		t.Fatalf("triggers = %d", n)
+	}
+	if s := stepStatus(r, "build"); s.Status != StepFailed || !strings.Contains(s.Message, "trigger failed") || r.Status != RunFailed {
+		t.Fatalf("build = %+v, run = %s", s, r.Status)
+	}
+}
+
+func TestEngineAutoRetrySkipsCancelledPipeline(t *testing.T) {
+	env := newEngineEnv(EngineConfig{})
+	build := step("build", "app", "build.yml")
+	build.Retries = 3
+	r := env.start(t, flow(Stage{Steps: []Step{build}}), nil)
+	r = env.tick(t, r)
+	env.ci.finish(t, "build.yml", providers.StatusCanceled)
+	r = env.tick(t, r)
+	if s := stepStatus(r, "build"); s.Status != StepCancelled || len(r.Tries) != 0 || r.Status != RunFailed {
+		t.Fatalf("build = %+v, tries = %d, run = %s", s, len(r.Tries), r.Status)
+	}
+}

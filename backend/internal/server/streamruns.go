@@ -33,6 +33,15 @@ type runView struct {
 	CreatedAt       time.Time         `json:"createdAt"`
 	FinishedAt      time.Time         `json:"finishedAt,omitzero"`
 	Steps           []runStepView     `json:"steps"`
+	// Attempt is the number of the current attempt, starting at 1.
+	Attempt   int       `json:"attempt"`
+	RetriedBy string    `json:"retriedBy,omitempty"`
+	RetriedAt time.Time `json:"retriedAt,omitzero"`
+	// Attempts are the earlier attempts; only sent for a single run.
+	Attempts []streams.Attempt `json:"attempts,omitempty"`
+	// Tries are the automatically retried step tries; only sent for a
+	// single run.
+	Tries []streams.StepTry `json:"tries,omitempty"`
 	// Spec is the snapshot the run executes; only sent for a single run.
 	Spec *streams.Spec `json:"spec,omitempty"`
 }
@@ -50,6 +59,9 @@ func runViewOf(r *streams.Run, withSpec bool) runView {
 		CreatedAt:       r.CreatedAt,
 		FinishedAt:      r.FinishedAt,
 		Steps:           []runStepView{},
+		Attempt:         len(r.Attempts) + 1,
+		RetriedBy:       r.RetriedBy,
+		RetriedAt:       r.RetriedAt,
 	}
 	if v.Params == nil {
 		v.Params = map[string]string{}
@@ -71,6 +83,8 @@ func runViewOf(r *streams.Run, withSpec bool) runView {
 	if withSpec {
 		spec := r.Spec
 		v.Spec = &spec
+		v.Attempts = r.Attempts
+		v.Tries = r.Tries
 	}
 	return v
 }
@@ -188,4 +202,17 @@ func (a *api) handleCancelStreamRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, runViewOf(updated, false))
+}
+
+func (a *api) handleRetryStreamRun(w http.ResponseWriter, r *http.Request) {
+	run, ok := a.visibleRun(w, r)
+	if !ok {
+		return
+	}
+	updated, err := a.deps.StreamRuns.Retry(r.Context(), run.Stream, run.ID, IdentityFrom(r.Context()).Username)
+	if err != nil {
+		a.writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, runViewOf(updated, true))
 }

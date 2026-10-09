@@ -271,10 +271,6 @@ export const RegistriesView = ({ client }: { client: ZeaClient }) => {
   return (
     <>
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', marginBottom: '1em' }}>
-        <button className='argo-button argo-button--base-o' onClick={() => navigate({})}>
-          <i className='fa fa-arrow-left' /> Connections
-        </button>
-        <b style={{ fontSize: '1.2em' }}>Registries</b>
         <div style={{ flex: 1 }} />
         {editing.mode === 'none' && data.state === 'ok' && (
           <button className='argo-button argo-button--base' onClick={() => setEditing({ mode: 'create' })}>

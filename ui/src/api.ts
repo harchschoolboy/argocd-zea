@@ -264,6 +264,10 @@ export class ZeaClient {
       method: 'POST',
     });
   }
+
+  retryStreamRun(name: string, id: string): Promise<StreamRun> {
+    return this.call<StreamRun>(`api/v1/streams/${encodeURIComponent(name)}/runs/${encodeURIComponent(id)}/retry`, { method: 'POST' });
+  }
 }
 
 export function describeError(err: unknown): string {

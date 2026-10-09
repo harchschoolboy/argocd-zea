@@ -120,6 +120,22 @@ func (e *Engine) Cancel(ctx context.Context, stream, id, user string) (*Run, err
 	return r, nil
 }
 
+// Retry runs the steps of a finished run that did not succeed again.
+func (e *Engine) Retry(ctx context.Context, stream, id, user string) (*Run, error) {
+	now := e.now()
+	r, err := Mutate(ctx, e.runs, stream, id, func(r *Run) error { return r.retry(user, now) })
+	if err != nil {
+		return nil, err
+	}
+	retried := []string{}
+	for _, s := range r.Attempts[len(r.Attempts)-1].Steps {
+		retried = append(retried, s.ID)
+	}
+	e.log.Info("stream run retried", "stream", stream, "run", id, "user", user, "attempt", len(r.Attempts)+1, "steps", retried)
+	e.Kick()
+	return r, nil
+}
+
 // Kick makes the Engine reconcile soon.
 func (e *Engine) Kick() {
 	select {
@@ -185,7 +201,8 @@ func (e *Engine) reconcile(ctx context.Context, run *Run) {
 	for progressed := true; progressed; {
 		progressed = false
 		for i := range run.Steps {
-			if run.Steps[i].Status != StepPending {
+			// A step waiting for its retry delay is not started yet.
+			if run.Steps[i].Status != StepPending || e.now().Before(run.Steps[i].RetryAt) {
 				continue
 			}
 			ready, start, reason := decide(run, run.Steps[i].ID, g, defs)
@@ -301,7 +318,7 @@ func (e *Engine) start(ctx context.Context, run *Run, i int, def Step) {
 	}
 	now := e.now()
 	if !e.setStep(ctx, run, i, func(s *StepState) {
-		s.Status, s.Ref, s.TriggeredAt, s.Message = StepStarting, ref, now, ""
+		s.Status, s.Ref, s.TriggeredAt, s.Message, s.RetryAt = StepStarting, ref, now, "", time.Time{}
 	}) {
 		return
 	}
@@ -312,7 +329,9 @@ func (e *Engine) start(ctx context.Context, run *Run, i int, def Step) {
 			return
 		}
 		e.log.Warn("stream step trigger failed", "stream", run.Stream, "run", run.ID, "step", def.ID, "connection", def.Connection, "error", err)
-		fail("trigger failed: " + err.Error())
+		failed := run.Steps[i]
+		failed.Status, failed.Message, failed.FinishedAt = StepFailed, "trigger failed: "+err.Error(), e.now()
+		e.failStep(ctx, run, i, def, failed, true)
 		return
 	}
 	e.log.Info("stream step triggered", "stream", run.Stream, "run", run.ID, "step", def.ID, "connection", def.Connection,
@@ -424,6 +443,8 @@ func (e *Engine) poll(ctx context.Context, run *Run, i int, def Step) {
 	cur := run.Steps[i]
 	next := cur
 	now := e.now()
+	// retryable marks failures that another try may fix.
+	retryable := false
 	conn, prov, err := e.provider(ctx, def.Connection)
 	switch {
 	case errors.Is(err, connections.ErrNotFound):
@@ -450,6 +471,7 @@ func (e *Engine) poll(ctx context.Context, run *Run, i int, def Step) {
 			next.Status, next.FinishedAt = StepSucceeded, now
 		case providers.StatusFailed:
 			next.Status, next.FinishedAt, next.Message = StepFailed, now, "the pipeline failed"
+			retryable = true
 		case providers.StatusCanceled:
 			next.Status, next.FinishedAt, next.Message = StepCancelled, now, "the pipeline was cancelled"
 		case providers.StatusSkipped:
@@ -467,11 +489,57 @@ func (e *Engine) poll(ctx context.Context, run *Run, i int, def Step) {
 			}
 			next.Status, next.FinishedAt = StepFailed, now
 			next.Message = fmt.Sprintf("timed out after %s", limit)
+			retryable = true
 		}
+	}
+	if next.Status == StepFailed {
+		e.failStep(ctx, run, i, def, next, retryable)
+		return
 	}
 	if next != cur {
 		e.setStep(ctx, run, i, func(s *StepState) { *s = next })
 	}
+}
+
+// failStep saves a failed step, or schedules another try when the failure
+// may be transient and the step has retries left. Dependants keep waiting
+// while the step waits for its retry.
+func (e *Engine) failStep(ctx context.Context, run *Run, i int, def Step, failed StepState, retryable bool) {
+	if !retryable || failed.Try >= def.Retries {
+		e.setStep(ctx, run, i, func(s *StepState) { *s = failed })
+		return
+	}
+	delay := retryDelay(def)
+	at := e.now().Add(delay).UTC()
+	seen := run.Steps[i]
+	err := e.save(ctx, run, func(r *Run) error {
+		if r.Status != RunRunning || r.Steps[i] != seen {
+			return errStale
+		}
+		r.Tries = append(r.Tries, StepTry{Attempt: len(r.Attempts) + 1, StepState: failed})
+		r.Steps[i] = StepState{
+			ID:      failed.ID,
+			Status:  StepPending,
+			Try:     failed.Try + 1,
+			RetryAt: at,
+			Message: fmt.Sprintf("retry %d of %d after: %s", failed.Try+1, def.Retries, failed.Message),
+		}
+		return nil
+	})
+	if err != nil {
+		e.logSaveError(ctx, run, err)
+		return
+	}
+	e.log.Info("stream step retry scheduled", "stream", run.Stream, "run", run.ID, "step", def.ID,
+		"retry", failed.Try+1, "retries", def.Retries, "delay", delay.String(), "reason", failed.Message)
+	time.AfterFunc(delay, e.Kick)
+}
+
+func retryDelay(def Step) time.Duration {
+	if d, err := time.ParseDuration(def.RetryDelay); err == nil && d >= 0 {
+		return d
+	}
+	return DefaultRetryDelay
 }
 
 func stepTimeout(def Step, fallback time.Duration) time.Duration {
@@ -509,7 +577,7 @@ func (e *Engine) cancelRun(ctx context.Context, run *Run, defs map[string]Step) 
 					s.Message = "the stream run was cancelled; the pipeline run was not identified and may still be running"
 				}
 			case StepPending:
-				s.Status, s.FinishedAt, s.Message = StepSkipped, now, "the stream run was cancelled"
+				s.Status, s.FinishedAt, s.Message, s.RetryAt = StepSkipped, now, "the stream run was cancelled", time.Time{}
 			}
 		}
 		r.Status, r.FinishedAt = RunCancelled, now

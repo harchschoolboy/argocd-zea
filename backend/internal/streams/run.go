@@ -45,7 +45,12 @@ var (
 	ErrInvalidParams = errors.New("invalid stream params")
 	// ErrNotRunnable is returned when a Stream has problems.
 	ErrNotRunnable = errors.New("stream cannot run")
+	// ErrNotRetryable is returned when a run cannot be retried.
+	ErrNotRetryable = errors.New("stream run cannot be retried")
 )
+
+// MaxAttempts limits how often one run may be retried.
+const MaxAttempts = 20
 
 var runIDRe = regexp.MustCompile(`^[0-9a-z]{1,13}-[0-9a-z]{1,10}$`)
 
@@ -64,6 +69,13 @@ type Run struct {
 	CreatedAt       time.Time         `json:"createdAt"`
 	FinishedAt      time.Time         `json:"finishedAt,omitzero"`
 	Steps           []StepState       `json:"steps"`
+	// Attempts are the earlier, retried attempts of the run, oldest first.
+	Attempts  []Attempt `json:"attempts,omitempty"`
+	RetriedBy string    `json:"retriedBy,omitempty"`
+	RetriedAt time.Time `json:"retriedAt,omitzero"`
+	// Tries are the failed tries of steps that were retried automatically,
+	// oldest first.
+	Tries []StepTry `json:"tries,omitempty"`
 	// ResourceVersion guards updates against concurrent writers.
 	ResourceVersion string `json:"-"`
 }
@@ -83,6 +95,30 @@ type StepState struct {
 	TriggeredAt    time.Time `json:"triggeredAt,omitzero"`
 	FinishedAt     time.Time `json:"finishedAt,omitzero"`
 	Message        string    `json:"message,omitempty"`
+	// Try counts the automatic retries of the step in the current attempt.
+	Try int `json:"try,omitempty"`
+	// RetryAt delays the start of a pending step that is retried.
+	RetryAt time.Time `json:"retryAt,omitzero"`
+}
+
+// StepTry is a failed try of a step that was retried automatically.
+type StepTry struct {
+	// Attempt is the run attempt the try belongs to.
+	Attempt int `json:"attempt"`
+	StepState
+}
+
+// Attempt is a finished attempt of a run that was retried afterwards.
+type Attempt struct {
+	Number     int       `json:"number"`
+	User       string    `json:"user"`
+	Status     string    `json:"status"`
+	Message    string    `json:"message,omitempty"`
+	StartedAt  time.Time `json:"startedAt"`
+	FinishedAt time.Time `json:"finishedAt,omitzero"`
+	// Steps are the step states the retry replaced; steps that succeeded
+	// are kept by the retry and are not listed.
+	Steps []StepState `json:"steps"`
 }
 
 // StepFinished reports whether a step status is final.
@@ -224,4 +260,45 @@ func (r *Run) values() map[string]string {
 // ignore.
 func failedHard(s StepState, def Step) bool {
 	return (s.Status == StepFailed || s.Status == StepCancelled) && !def.ContinueOnError
+}
+
+// retry resets the steps that did not succeed so the Engine runs them
+// again; succeeded steps and their values are kept. The run's snapshot is
+// reused, so later edits of the Stream do not apply.
+func (r *Run) retry(user string, now time.Time) error {
+	if r.Status == RunRunning {
+		return fmt.Errorf("%w: it is still running", ErrNotRetryable)
+	}
+	if len(r.Attempts)+1 >= MaxAttempts {
+		return fmt.Errorf("%w: it was retried %d times; start a new run", ErrNotRetryable, len(r.Attempts))
+	}
+	var replaced []StepState
+	for i := range r.Steps {
+		s := &r.Steps[i]
+		if s.Status == StepSucceeded {
+			continue
+		}
+		replaced = append(replaced, *s)
+		*s = StepState{ID: s.ID, Status: StepPending}
+	}
+	if len(replaced) == 0 {
+		return fmt.Errorf("%w: every step succeeded", ErrNotRetryable)
+	}
+	started, by := r.CreatedAt, r.User
+	if n := len(r.Attempts); n > 0 {
+		started, by = r.RetriedAt, r.RetriedBy
+	}
+	r.Attempts = append(r.Attempts, Attempt{
+		Number:     len(r.Attempts) + 1,
+		User:       by,
+		Status:     r.Status,
+		Message:    r.Message,
+		StartedAt:  started,
+		FinishedAt: r.FinishedAt,
+		Steps:      replaced,
+	})
+	r.Status, r.Message, r.FinishedAt = RunRunning, "", time.Time{}
+	r.CancelRequested, r.CancelledBy = false, ""
+	r.RetriedBy, r.RetriedAt = user, now.UTC()
+	return nil
 }

@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { describeError, ZeaClient } from './api';
 import { navigate } from './route';
-import { ago, duration, usePoll } from './Runs';
+import { ago, duration, RunJobs, usePoll } from './Runs';
 import {
   Badge,
   ellipsis,
@@ -13,30 +13,113 @@ import {
   ValueField,
 } from './StreamFields';
 import { ConnData } from './streamModel';
-import { Stream, StreamRun, StreamRunStep, StreamSpec, StreamStep } from './types';
+import { Stream, StreamAttempt, StreamRun, StreamRunStatus, StreamSpec, StreamStep } from './types';
 import { COLORS, ErrorText, Muted, useLoad } from './ui';
 
 const RUN_POLL_MS = 4_000;
 const HISTORY_POLL_MS = 10_000;
+const HISTORY_PAGE = 10;
+const ACCENT = '#0dadea';
 
-const BoardStep = ({ data, step, state }: { data: ConnData; step: StreamStep; state?: StreamRunStep }) => {
+type StepState = StreamAttempt['steps'][number];
+
+const ACTIVE_STEP = ['starting', 'running'];
+
+interface EarlierTry {
+  key: string;
+  label: string;
+  by: string;
+  startedAt?: string;
+  state: StepState;
+}
+
+const tryLabel = (attempt: number, t?: number) => (t ? `Attempt ${attempt} ? try ${t + 1}` : `Attempt ${attempt}`);
+
+// earlierTries returns the earlier states of a step, newest first: its
+// automatic retries and its states in earlier (manually retried) attempts.
+function earlierTries(run: StreamRun | undefined, id: string): EarlierTry[] {
+  if (!run) {
+    return [];
+  }
+  const attempts: StreamAttempt[] = run.attempts ?? [];
+  const startOf = (a: number) =>
+    a <= attempts.length
+      ? { by: attempts[a - 1].user, at: attempts[a - 1].startedAt }
+      : { by: run.retriedBy || run.user, at: run.retriedAt || run.createdAt };
+  const out: EarlierTry[] = [];
+  for (let a = 1; a <= run.attempt; a++) {
+    const start = startOf(a);
+    for (const t of run.tries ?? []) {
+      if (t.attempt === a && t.id === id) {
+        out.push({ key: `${a}.${t.try ?? 0}`, label: tryLabel(a, t.try), by: t.try ? 'automatic retry' : start.by, startedAt: start.at, state: t });
+      }
+    }
+    const final = a < run.attempt ? attempts[a - 1]?.steps.find(x => x.id === id) : undefined;
+    if (final) {
+      out.push({ key: `${a}.end`, label: tryLabel(a, final.try), by: final.try ? 'automatic retry' : start.by, startedAt: start.at, state: final });
+    }
+  }
+  return out.reverse();
+}
+
+const RetryWait = ({ at }: { at: string }) => (
+  <span style={{ color: COLORS.muted }} title={`The retry starts at ${new Date(at).toLocaleString()}`}>
+    <i className='fa fa-redo' /> retry at {new Date(at).toLocaleTimeString()}
+  </span>
+);
+
+const RunLink = ({ state }: { state: StepState }) => (
+  <>
+    {state.url ? (
+      <a href={state.url} target='_blank' rel='noopener noreferrer' title='Open in the CI provider' onClick={e => e.stopPropagation()}>
+        <i className='fa fa-external-link-alt' /> {state.runNumber ? `#${state.runNumber}` : 'Open'}
+      </a>
+    ) : (
+      state.runNumber && <span>#{state.runNumber}</span>
+    )}
+    {state.sha && <code style={{ color: COLORS.muted }}>{state.sha.slice(0, 7)}</code>}
+  </>
+);
+
+interface BoardStepProps {
+  data: ConnData;
+  step: StreamStep;
+  state?: StepState;
+  retries: number;
+  selected: boolean;
+  onSelect?: () => void;
+}
+
+const BoardStep = ({ data, step, state, retries, selected, onSelect }: BoardStepProps) => {
   const failed = state?.status === 'failed';
   const ref = state?.ref || step.ref;
   return (
     <div
+      onClick={onSelect}
+      title={onSelect ? 'Show jobs and attempts' : undefined}
       style={{
-        border: `1px solid ${failed ? COLORS.error : COLORS.border}`,
+        border: `1px solid ${selected ? ACCENT : failed ? COLORS.error : COLORS.border}`,
+        boxShadow: selected ? `0 0 0 1px ${ACCENT}` : undefined,
         borderRadius: 4,
         padding: '0.4em 0.55em',
         background: 'rgba(128, 128, 128, 0.06)',
+        cursor: onSelect ? 'pointer' : undefined,
       }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.4em' }}>
         {state && <StreamStatusIcon status={state.status} />}
         <code style={{ ...ellipsis, flex: 1 }}>{step.id}</code>
-        {state?.triggeredAt && (
-          <span style={{ fontSize: '0.85em', color: COLORS.muted, whiteSpace: 'nowrap' }}>
-            {duration(state.triggeredAt, state.finishedAt)}
+        {retries > 0 && (
+          <span style={{ fontSize: '0.8em', color: COLORS.muted }} title={`Retried ${retries} time${retries > 1 ? 's' : ''}`}>
+            <i className='fa fa-redo' /> {retries}
           </span>
+        )}
+        {!state && !!step.retries && (
+          <span style={{ fontSize: '0.8em', color: COLORS.muted }} title='Automatic retries of a failed pipeline'>
+            <i className='fa fa-redo' /> x{step.retries}
+          </span>
+        )}
+        {state?.triggeredAt && (
+          <span style={{ fontSize: '0.85em', color: COLORS.muted, whiteSpace: 'nowrap' }}>{duration(state.triggeredAt, state.finishedAt)}</span>
         )}
       </div>
       <div style={{ ...ellipsis, fontWeight: 600, margin: '0.15em 0' }}>
@@ -47,30 +130,23 @@ const BoardStep = ({ data, step, state }: { data: ConnData; step: StreamStep; st
       </div>
       {state && (state.url || state.runNumber || state.sha) && (
         <div style={{ fontSize: '0.85em', marginTop: '0.2em', display: 'flex', gap: '0.5em', flexWrap: 'wrap' }}>
-          {state.url ? (
-            <a href={state.url} target='_blank' rel='noopener noreferrer' title='Open in the CI provider'>
-              <i className='fa fa-external-link-alt' /> {state.runNumber ? `#${state.runNumber}` : 'Open'}
-            </a>
-          ) : (
-            state.runNumber && <span>#{state.runNumber}</span>
-          )}
-          {state.sha && <code style={{ color: COLORS.muted }}>{state.sha.slice(0, 7)}</code>}
+          <RunLink state={state} />
         </div>
       )}
       {state && (
         <div style={{ fontSize: '0.85em', marginTop: '0.2em' }}>
-          <StreamStatusLabel status={state.status} />
+          {state.status === 'pending' && state.retryAt ? <RetryWait at={state.retryAt} /> : <StreamStatusLabel status={state.status} />}
         </div>
       )}
       {state?.message && (
         <div
           style={{
+            ...ellipsis,
             fontSize: '0.85em',
             marginTop: '0.2em',
             color: failed ? COLORS.error : COLORS.muted,
-            wordBreak: 'break-word',
-            whiteSpace: 'pre-wrap',
-          }}>
+          }}
+          title={state.message}>
           {state.message}
         </div>
       )}
@@ -78,8 +154,16 @@ const BoardStep = ({ data, step, state }: { data: ConnData; step: StreamStep; st
   );
 };
 
+interface BoardProps {
+  data: ConnData;
+  spec: StreamSpec;
+  run?: StreamRun;
+  selected?: string;
+  onSelect?: (id: string) => void;
+}
+
 // StagesBoard shows a Stream as stage columns, with run states when given.
-export const StagesBoard = ({ data, spec, run }: { data: ConnData; spec: StreamSpec; run?: StreamRun }) => {
+export const StagesBoard = ({ data, spec, run, selected, onSelect }: BoardProps) => {
   if (spec.stages.length === 0) {
     return <Muted>This stream has no stages yet.</Muted>;
   }
@@ -107,7 +191,15 @@ export const StagesBoard = ({ data, spec, run }: { data: ConnData; spec: StreamS
               }}>
               <div style={{ ...ellipsis, fontWeight: 600 }}>{stage.name || `Stage ${s + 1}`}</div>
               {stage.steps.map(step => (
-                <BoardStep key={step.id} data={data} step={step} state={run?.steps.find(x => x.id === step.id)} />
+                <BoardStep
+                  key={step.id}
+                  data={data}
+                  step={step}
+                  state={run?.steps.find(x => x.id === step.id)}
+                  retries={earlierTries(run, step.id).length}
+                  selected={selected === step.id}
+                  onSelect={onSelect && (() => onSelect(step.id))}
+                />
               ))}
             </div>
           </React.Fragment>
@@ -117,10 +209,122 @@ export const StagesBoard = ({ data, spec, run }: { data: ConnData; spec: StreamS
   );
 };
 
+const AttemptRow = ({ client, connection, entry }: { client: ZeaClient; connection: string; entry: EarlierTry }) => {
+  const { state } = entry;
+  const [open, setOpen] = React.useState(false);
+  return (
+    <div style={{ borderTop: `1px solid ${COLORS.border}`, padding: '0.35em 0' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
+        <button
+          className='argo-button argo-button--base-o'
+          style={{ padding: '0 0.5em', minWidth: 0 }}
+          disabled={!state.runId}
+          title={open ? 'Hide jobs' : 'Show jobs'}
+          onClick={() => setOpen(!open)}>
+          <i className={open ? 'fa fa-angle-down' : 'fa fa-angle-right'} />
+        </button>
+        <StreamStatusIcon status={state.status} />
+        <b>{entry.label}</b>
+        <StreamStatusLabel status={state.status} />
+        <RunLink state={state} />
+        <Muted>
+          {[entry.by, ago(state.triggeredAt || entry.startedAt), state.triggeredAt && duration(state.triggeredAt, state.finishedAt)]
+            .filter(Boolean)
+            .join(' · ')}
+        </Muted>
+      </div>
+      {state.message && (
+        <div style={{ fontSize: '0.85em', color: state.status === 'failed' ? COLORS.error : COLORS.muted, wordBreak: 'break-word', marginLeft: '2.4em' }}>
+          {state.message}
+        </div>
+      )}
+      {open && state.runId && (
+        <div style={{ marginLeft: '2.4em' }}>
+          <RunJobs client={client} connection={connection} runID={state.runId} refreshKey={0} />
+        </div>
+      )}
+    </div>
+  );
+};
+
+const WAITING: Record<string, string> = {
+  pending: 'Waiting for the steps it depends on.',
+  starting: 'The pipeline was triggered; waiting for the provider to report its run.',
+};
+
+// StepDetails shows the provider jobs of a run step and its earlier attempts.
+const StepDetails = ({ client, data, run, stepID, onClose }: { client: ZeaClient; data: ConnData; run: StreamRun; stepID: string; onClose: () => void }) => {
+  const state = run.steps.find(s => s.id === stepID);
+  if (!state) {
+    return null;
+  }
+  const earlier = earlierTries(run, stepID);
+  const def = run.spec?.stages.flatMap(s => s.steps).find(s => s.id === stepID);
+  return (
+    <div className='white-box' style={{ padding: '0.8em 1em', marginTop: '0.8em' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
+        <StreamStatusIcon status={state.status} />
+        <code>{state.id}</code>
+        <b style={{ ...ellipsis }}>{state.name || <PipelineName data={data} connection={state.connection} id={state.pipeline} />}</b>
+        <Muted>
+          {state.connection}
+          {state.ref && (
+            <>
+              {' · '}
+              <i className='fa fa-code-branch' /> {state.ref}
+            </>
+          )}
+        </Muted>
+        {state.status === 'pending' && state.retryAt ? <RetryWait at={state.retryAt} /> : <StreamStatusLabel status={state.status} />}
+        {!!def?.retries && (
+          <Badge title='Automatic retries of a failed pipeline in this attempt'>
+            try {(state.try ?? 0) + 1} of {def.retries + 1}
+          </Badge>
+        )}
+        <RunLink state={state} />
+        {state.triggeredAt && <Muted>{duration(state.triggeredAt, state.finishedAt)}</Muted>}
+        <div style={{ flex: 1 }} />
+        <button className='argo-button argo-button--base-o' title='Close' onClick={onClose}>
+          <i className='fa fa-times' />
+        </button>
+      </div>
+      {state.message && (
+        <div
+          style={{
+            marginTop: '0.3em',
+            color: state.status === 'failed' ? COLORS.error : COLORS.muted,
+            wordBreak: 'break-word',
+            whiteSpace: 'pre-wrap',
+          }}>
+          {state.message}
+        </div>
+      )}
+      <div style={{ marginTop: '0.5em' }}>
+        {state.runId ? (
+          <RunJobs key={state.runId} client={client} connection={state.connection} runID={state.runId} refreshKey={0} />
+        ) : (
+          <Muted>{state.status === 'pending' && state.retryAt ? 'Waiting for the retry delay.' : WAITING[state.status] ?? 'The step has no pipeline run.'}</Muted>
+        )}
+      </div>
+      {earlier.length > 0 && (
+        <div style={{ marginTop: '0.8em' }}>
+          <div style={{ fontWeight: 600, marginBottom: '0.2em' }}>Earlier tries</div>
+          {earlier.map(entry => (
+            <AttemptRow key={entry.key} client={client} connection={state.connection} entry={entry} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
 interface RunFormProps {
   client: ZeaClient;
   data: ConnData;
   stream: Stream;
+  // Values to start from (e.g. the params of an earlier run).
+  initial?: Record<string, string>;
+  title?: string;
   onStarted: (run: StreamRun) => void;
   onClose: () => void;
 }
@@ -142,9 +346,11 @@ const BranchParam = ({ data, connection, value, onChange }: { data: ConnData; co
 };
 
 // StreamRunForm asks for the params of a Stream and starts it.
-export const StreamRunForm = ({ client, data, stream, onStarted, onClose }: RunFormProps) => {
+export const StreamRunForm = ({ client, data, stream, initial, title, onStarted, onClose }: RunFormProps) => {
   const [values, setValues] = React.useState<Record<string, string>>(() =>
-    Object.fromEntries(stream.params.map(p => [p.name, p.default ?? (p.type === 'boolean' ? 'false' : '')])),
+    Object.fromEntries(
+      stream.params.map(p => [p.name, initial?.[p.name] ?? p.default ?? (p.type === 'boolean' ? 'false' : '')]),
+    ),
   );
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState('');
@@ -168,12 +374,9 @@ export const StreamRunForm = ({ client, data, stream, onStarted, onClose }: RunF
   };
 
   return (
-    <form
-      onSubmit={submit}
-      className='white-box'
-      style={{ padding: '0.8em 1em', marginBottom: '1em', maxWidth: 640 }}>
+    <form onSubmit={submit} className='white-box' style={{ padding: '0.8em 1em', marginBottom: '1em', maxWidth: 640 }}>
       <div style={{ fontWeight: 600, marginBottom: '0.6em' }}>
-        Run <b>{stream.name}</b>
+        {title ?? 'Run'} <b>{stream.name}</b>
       </div>
       {stream.params.length === 0 && <Muted>This stream has no params.</Muted>}
       {stream.params.map(p => (
@@ -212,18 +415,55 @@ export const StreamRunForm = ({ client, data, stream, onStarted, onClose }: RunF
   );
 };
 
-function stepSummary(run: StreamRun): string {
-  const counts: Record<string, number> = {};
-  for (const s of run.steps) {
-    counts[s.status] = (counts[s.status] ?? 0) + 1;
+// RunAgain starts a new run of the current Stream with the params of an
+// earlier run.
+const RunAgain = ({ client, data, stream, params, onClose }: { client: ZeaClient; data: ConnData; stream: string; params: Record<string, string>; onClose: () => void }) => {
+  const [st] = useLoad(() => client.stream(stream), [client, stream]);
+  if (st.state === 'loading') {
+    return <Muted>Loading...</Muted>;
   }
-  return ['succeeded', 'running', 'starting', 'pending', 'failed', 'cancelled', 'skipped']
-    .filter(k => counts[k])
-    .map(k => `${counts[k]} ${k}`)
-    .join(', ');
-}
+  if (st.state === 'error') {
+    return <ErrorText text={st.error} />;
+  }
+  if (st.data.problems.length > 0) {
+    return <ErrorText text={`The stream cannot run: ${st.data.problems[0].message}`} />;
+  }
+  return (
+    <StreamRunForm
+      client={client}
+      data={data}
+      stream={st.data}
+      initial={params}
+      title='Run again'
+      onStarted={r => navigate({ view: 'streams', stream, srun: r.id })}
+      onClose={onClose}
+    />
+  );
+};
 
-// StreamRunHistory lists the recent runs of a Stream.
+// StepDots is a compact view of a run's step statuses, stage by stage.
+const StepDots = ({ run }: { run: StreamRun }) => (
+  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.15em', flexWrap: 'wrap' }}>
+    {run.steps.map((s, i) => (
+      <React.Fragment key={s.id}>
+        {i > 0 && s.stage !== run.steps[i - 1].stage && <i className='fa fa-angle-right' style={{ color: COLORS.muted, margin: '0 0.15em' }} />}
+        <span title={`${s.id}: ${s.status}${s.message ? ` - ${s.message}` : ''}`}>
+          <StreamStatusIcon status={s.status} />
+        </span>
+      </React.Fragment>
+    ))}
+  </span>
+);
+
+const FILTERS: { key: 'all' | StreamRunStatus; label: string }[] = [
+  { key: 'all', label: 'All' },
+  { key: 'running', label: 'Running' },
+  { key: 'failed', label: 'Failed' },
+  { key: 'succeeded', label: 'Succeeded' },
+  { key: 'cancelled', label: 'Cancelled' },
+];
+
+// StreamRunHistory lists the runs of a Stream.
 export const StreamRunHistory = ({ client, stream, refreshKey }: { client: ZeaClient; stream: string; refreshKey: number }) => {
   const runs = usePoll(
     () => client.streamRuns(stream),
@@ -231,41 +471,87 @@ export const StreamRunHistory = ({ client, stream, refreshKey }: { client: ZeaCl
     HISTORY_POLL_MS,
     d => (d ?? []).some(r => r.status === 'running'),
   );
+  const [filter, setFilter] = React.useState<'all' | StreamRunStatus>('all');
+  const [shown, setShown] = React.useState(HISTORY_PAGE);
+  const all = runs.data ?? [];
+  const list = filter === 'all' ? all : all.filter(r => r.status === filter);
+  const count = (k: 'all' | StreamRunStatus) => (k === 'all' ? all.length : all.filter(r => r.status === k).length);
+
   return (
     <div className='white-box' style={{ padding: '0.8em 1em' }}>
-      <div style={{ display: 'flex', alignItems: 'center', marginBottom: '0.4em' }}>
-        <b style={{ flex: 1 }}>Runs</b>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4em', marginBottom: '0.4em', flexWrap: 'wrap' }}>
+        <b style={{ marginRight: '0.6em' }}>Runs</b>
+        {FILTERS.filter(f => f.key === 'all' || count(f.key) > 0).map(f => (
+          <a
+            key={f.key}
+            onClick={() => {
+              setFilter(f.key);
+              setShown(HISTORY_PAGE);
+            }}
+            style={{
+              cursor: 'pointer',
+              padding: '0.05em 0.6em',
+              borderRadius: 10,
+              fontSize: '0.85em',
+              border: `1px solid ${filter === f.key ? ACCENT : COLORS.border}`,
+              color: filter === f.key ? undefined : COLORS.muted,
+            }}>
+            {f.label} {count(f.key)}
+          </a>
+        ))}
+        <div style={{ flex: 1 }} />
         <button className='argo-button argo-button--base-o' title='Reload runs' onClick={runs.reload}>
           <i className={runs.loading ? 'fa fa-redo fa-spin' : 'fa fa-redo'} />
         </button>
       </div>
       {runs.error && <ErrorText text={runs.error} />}
       {!runs.data && runs.loading && <Muted>Loading...</Muted>}
-      {runs.data && runs.data.length === 0 && <Muted>No runs yet.</Muted>}
-      {runs.data?.map(r => (
-        <div
-          key={r.id}
-          onClick={() => navigate({ view: 'streams', stream, srun: r.id })}
-          style={{ borderTop: `1px solid ${COLORS.border}`, padding: '0.45em 0', cursor: 'pointer', display: 'flex', gap: '0.6em', alignItems: 'baseline' }}>
-          <StreamStatusIcon status={r.status} />
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ display: 'flex', gap: '0.6em', alignItems: 'baseline', flexWrap: 'wrap' }}>
-              <StreamStatusLabel status={r.status} />
-              <code>{r.id}</code>
-              <Muted>
-                {[r.user, ago(r.createdAt), duration(r.createdAt, r.finishedAt)].filter(Boolean).join(' · ')}
-              </Muted>
-            </div>
-            <div style={{ fontSize: '0.85em', color: COLORS.muted, wordBreak: 'break-word' }}>
-              {stepSummary(r)}
-              {r.message && <> · {r.message}</>}
+      {runs.data && list.length === 0 && <Muted>{all.length === 0 ? 'No runs yet.' : 'No runs match.'}</Muted>}
+      {list.slice(0, shown).map(r => {
+        const params = Object.entries(r.params);
+        return (
+          <div
+            key={r.id}
+            onClick={() => navigate({ view: 'streams', stream, srun: r.id })}
+            style={{ borderTop: `1px solid ${COLORS.border}`, padding: '0.45em 0', cursor: 'pointer', display: 'flex', gap: '0.6em', alignItems: 'baseline' }}>
+            <StreamStatusIcon status={r.status} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: 'flex', gap: '0.6em', alignItems: 'baseline', flexWrap: 'wrap' }}>
+                <StreamStatusLabel status={r.status} />
+                <code>{r.id}</code>
+                {r.attempt > 1 && (
+                  <Badge title={r.retriedBy ? `Retried by ${r.retriedBy} ${ago(r.retriedAt)}` : undefined}>attempt {r.attempt}</Badge>
+                )}
+                <Muted>{[r.user, ago(r.createdAt), duration(r.retriedAt || r.createdAt, r.finishedAt)].filter(Boolean).join(' · ')}</Muted>
+                <StepDots run={r} />
+              </div>
+              {(params.length > 0 || r.message) && (
+                <div style={{ ...ellipsis, fontSize: '0.85em', color: COLORS.muted }}>
+                  {params.map(([k, v]) => `${k}=${v || '""'}`).join('  ')}
+                  {params.length > 0 && r.message && ' · '}
+                  {r.message}
+                </div>
+              )}
             </div>
           </div>
+        );
+      })}
+      {list.length > shown && (
+        <div style={{ borderTop: `1px solid ${COLORS.border}`, paddingTop: '0.5em' }}>
+          <a style={{ cursor: 'pointer' }} onClick={() => setShown(n => n + HISTORY_PAGE)}>
+            Show {Math.min(HISTORY_PAGE, list.length - shown)} more of {list.length - shown}
+          </a>
         </div>
-      ))}
+      )}
     </div>
   );
 };
+
+// focusStep picks the step to show when the user has not chosen one: the
+// first active step, otherwise the first failed one.
+function focusStep(run: StreamRun): string | undefined {
+  return (run.steps.find(s => ACTIVE_STEP.includes(s.status) || (s.status === 'pending' && s.retryAt)) ?? run.steps.find(s => s.status === 'failed'))?.id;
+}
 
 // StreamRunView follows one run until it finishes.
 export const StreamRunView = ({ client, data, stream, runID }: { client: ZeaClient; data: ConnData; stream: string; runID: string }) => {
@@ -277,16 +563,17 @@ export const StreamRunView = ({ client, data, stream, runID }: { client: ZeaClie
   );
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState('');
+  const [again, setAgain] = React.useState(false);
+  // undefined follows the active step; null means the panel was closed.
+  const [picked, setPicked] = React.useState<string | null>();
   const r = run.data;
+  const selected = picked === undefined ? r && focusStep(r) : picked ?? undefined;
 
-  const cancel = async () => {
-    if (!window.confirm(`Cancel run ${runID}? Running pipelines are cancelled, pending steps are skipped.`)) {
-      return;
-    }
+  const act = async (fn: () => Promise<unknown>) => {
     setBusy(true);
     setError('');
     try {
-      await client.cancelStreamRun(stream, runID);
+      await fn();
       run.reload();
     } catch (err) {
       setError(describeError(err));
@@ -295,6 +582,20 @@ export const StreamRunView = ({ client, data, stream, runID }: { client: ZeaClie
     }
   };
 
+  const cancel = () => {
+    if (window.confirm(`Cancel run ${runID}? Running pipelines are cancelled, pending steps are skipped.`)) {
+      act(() => client.cancelStreamRun(stream, runID));
+    }
+  };
+
+  const retry = () => {
+    if (window.confirm('Run the steps that did not succeed again? Succeeded steps are kept; the run uses the stream as it was when it started.')) {
+      setPicked(undefined);
+      act(() => client.retryStreamRun(stream, runID));
+    }
+  };
+
+  const retryable = r && (r.status === 'failed' || r.status === 'cancelled') && r.steps.some(s => s.status !== 'succeeded');
   const params = Object.entries(r?.params ?? {});
   return (
     <div>
@@ -309,8 +610,16 @@ export const StreamRunView = ({ client, data, stream, runID }: { client: ZeaClie
             <b>
               Run <code>{r.id}</code>
             </b>
+            {r.attempt > 1 && <Badge>attempt {r.attempt}</Badge>}
             <Muted>
-              {[`by ${r.user}`, ago(r.createdAt), duration(r.createdAt, r.finishedAt)].filter(Boolean).join(' · ')}
+              {[
+                `by ${r.user}`,
+                ago(r.createdAt),
+                r.retriedBy && `retried by ${r.retriedBy} ${ago(r.retriedAt)}`,
+                duration(r.retriedAt || r.createdAt, r.finishedAt),
+              ]
+                .filter(Boolean)
+                .join(' · ')}
             </Muted>
           </>
         )}
@@ -318,6 +627,16 @@ export const StreamRunView = ({ client, data, stream, runID }: { client: ZeaClie
         {r?.status === 'running' && (
           <button className='argo-button argo-button--base-o' disabled={busy || r.cancelRequested} onClick={cancel}>
             <i className={r.cancelRequested ? 'fa fa-circle-notch fa-spin' : 'fa fa-stop'} /> {r.cancelRequested ? 'Cancelling...' : 'Cancel'}
+          </button>
+        )}
+        {retryable && (
+          <button className='argo-button argo-button--base' disabled={busy} onClick={retry} title='Run the failed, cancelled and skipped steps again'>
+            <i className='fa fa-redo' /> Retry failed
+          </button>
+        )}
+        {r && r.status !== 'running' && (
+          <button className='argo-button argo-button--base-o' disabled={busy} onClick={() => setAgain(!again)} title='Start a new run with these params'>
+            <i className='fa fa-play' /> Run again
           </button>
         )}
         <button className='argo-button argo-button--base-o' title='Reload' onClick={run.reload}>
@@ -329,6 +648,9 @@ export const StreamRunView = ({ client, data, stream, runID }: { client: ZeaClie
       {!r && run.loading && <Muted>Loading...</Muted>}
       {r && (
         <>
+          {again && r.status !== 'running' && (
+            <RunAgain client={client} data={data} stream={stream} params={r.params} onClose={() => setAgain(false)} />
+          )}
           {r.message && (
             <div style={{ color: r.status === 'failed' ? COLORS.error : COLORS.muted, marginBottom: '0.6em', wordBreak: 'break-word' }}>
               {r.message}
@@ -343,7 +665,15 @@ export const StreamRunView = ({ client, data, stream, runID }: { client: ZeaClie
               ))}
             </div>
           )}
-          {r.spec ? <StagesBoard data={data} spec={r.spec} run={r} /> : <Help>The run has no stages.</Help>}
+          {r.spec ? (
+            <>
+              <StagesBoard data={data} spec={r.spec} run={r} selected={selected} onSelect={id => setPicked(id === selected ? null : id)} />
+              <Help>Click a step to see its jobs and earlier attempts.</Help>
+              {selected && <StepDetails client={client} data={data} run={r} stepID={selected} onClose={() => setPicked(null)} />}
+            </>
+          ) : (
+            <Help>The run has no stages.</Help>
+          )}
         </>
       )}
     </div>

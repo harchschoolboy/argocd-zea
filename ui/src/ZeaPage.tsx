@@ -30,7 +30,7 @@ const Connections = ({ client, ctx }: { client: ZeaClient; ctx: Context }) => {
 
   const back = () => {
     setEditing({ mode: 'none' });
-    navigate({});
+    navigate({ view: 'connections' });
   };
 
   const card = (c: Connection, detail: boolean) => (
@@ -49,7 +49,7 @@ const Connections = ({ client, ctx }: { client: ZeaClient; ctx: Context }) => {
       onEdit={() => setEditing({ mode: 'edit', connection: c })}
       onDeleted={() => {
         if (detail) {
-          navigate({});
+          navigate({ view: 'connections' });
         }
         reload();
       }}
@@ -74,14 +74,9 @@ const Connections = ({ client, ctx }: { client: ZeaClient; ctx: Context }) => {
         </Muted>
         <div style={{ flex: 1 }} />
         {me.isAdmin && editing.mode === 'none' && !selected && (
-          <>
-            <button className='argo-button argo-button--base-o' onClick={() => navigate({ view: 'registries' })}>
-              <i className='fa fa-database' /> Registries
-            </button>
-            <button className='argo-button argo-button--base' onClick={() => setEditing({ mode: 'create' })}>
-              <i className='fa fa-plus' /> Add connection
-            </button>
-          </>
+          <button className='argo-button argo-button--base' onClick={() => setEditing({ mode: 'create' })}>
+            <i className='fa fa-plus' /> Add connection
+          </button>
         )}
         <button className='argo-button argo-button--base-o' onClick={reload}>
           <i className='fa fa-redo' /> Refresh
@@ -140,19 +135,22 @@ const Workspace = ({ client }: { client: ZeaClient }) => {
   return <Pages client={client} ctx={ctx.data} />;
 };
 
-const TABS: { view: string; label: string; icon: string }[] = [
-  { view: '', label: 'Connections', icon: 'fa fa-plug' },
+type Page = 'streams' | 'connections' | 'registries';
+
+const TABS: { view: Page; label: string; icon: string; admin?: boolean }[] = [
   { view: 'streams', label: 'Streams', icon: 'fa fa-stream' },
+  { view: 'connections', label: 'Connections', icon: 'fa fa-plug' },
+  { view: 'registries', label: 'Registries', icon: 'fa fa-database', admin: true },
 ];
 
-const Tabs = ({ view }: { view: string }) => (
+const Tabs = ({ view, isAdmin }: { view: Page; isAdmin: boolean }) => (
   <div style={{ display: 'flex', gap: '1.5em', borderBottom: `1px solid ${COLORS.border}`, marginBottom: '1em' }}>
-    {TABS.map(t => {
+    {TABS.filter(t => !t.admin || isAdmin).map(t => {
       const active = t.view === view;
       return (
         <a
           key={t.label}
-          onClick={() => navigate(t.view ? { view: t.view } : {})}
+          onClick={() => navigate({ view: t.view })}
           style={{
             padding: '0.4em 0.2em',
             marginBottom: -1,
@@ -168,19 +166,27 @@ const Tabs = ({ view }: { view: string }) => (
   </div>
 );
 
+// pageOf picks the page for a route; Streams is the default, and links to a
+// connection open the Connections page.
+function pageOf(view: string | undefined, connection: string | undefined, isAdmin: boolean): Page {
+  if (connection || view === 'connections') {
+    return 'connections';
+  }
+  if (view === 'registries' && isAdmin) {
+    return 'registries';
+  }
+  return 'streams';
+}
+
 const Pages = ({ client, ctx }: { client: ZeaClient; ctx: Context }) => {
   const route = useRoute();
-  const streams = route.view === 'streams';
+  const page = pageOf(route.view, route.connection, ctx.me.isAdmin);
   return (
     <>
-      <Tabs view={streams ? 'streams' : ''} />
-      {streams ? (
-        <StreamsView client={client} me={ctx.me} />
-      ) : route.view === 'registries' && ctx.me.isAdmin ? (
-        <RegistriesView client={client} />
-      ) : (
-        <Connections client={client} ctx={ctx} />
-      )}
+      <Tabs view={page} isAdmin={ctx.me.isAdmin} />
+      {page === 'streams' && <StreamsView client={client} me={ctx.me} />}
+      {page === 'connections' && <Connections client={client} ctx={ctx} />}
+      {page === 'registries' && <RegistriesView client={client} />}
     </>
   );
 };

@@ -94,3 +94,30 @@ func TestStreamRunValidation(t *testing.T) {
 		t.Fatalf("missing connection: %d", code)
 	}
 }
+
+func TestStreamRunRetry(t *testing.T) {
+	e := newEnv(false)
+	_, body := e.do(t, "POST", "/api/v1/streams/pub/runs", map[string]any{"params": map[string]string{"branch": "dev"}})
+	id := body["id"].(string)
+	e.eng.ReconcileAll(context.Background())
+	if code, _ := e.do(t, "POST", "/api/v1/streams/pub/runs/"+id+"/retry", nil); code != http.StatusConflict {
+		t.Fatalf("retry while running: %d", code)
+	}
+	e.do(t, "POST", "/api/v1/streams/pub/runs/"+id+"/cancel", nil)
+	e.eng.ReconcileAll(context.Background())
+	if code, _ := e.do(t, "POST", "/api/v1/streams/pub/runs/"+id+"/retry", nil, as("bob", "others")); code != http.StatusNotFound {
+		t.Fatalf("bob retry: %d", code)
+	}
+	code, body := e.do(t, "POST", "/api/v1/streams/pub/runs/"+id+"/retry", nil)
+	if code != http.StatusOK {
+		t.Fatalf("retry: %d %v", code, body)
+	}
+	attempts, _ := body["attempts"].([]any)
+	if body["status"] != "running" || body["attempt"] != float64(2) || body["retriedBy"] != "alice" || len(attempts) != 1 {
+		t.Fatalf("retry body = %v", body)
+	}
+	_, body = e.do(t, "GET", "/api/v1/streams/pub/runs", nil)
+	if run := body["runs"].([]any)[0].(map[string]any); run["attempt"] != float64(2) || run["attempts"] != nil {
+		t.Fatalf("listed run = %v", run)
+	}
+}

@@ -94,7 +94,7 @@ func TestProblems(t *testing.T) {
 		Stages: []Stage{
 			{Steps: []Step{
 				{ID: "a", Connection: "api", Pipeline: "1", Ref: "${{ params.nope }}", Needs: []string{"b"}},
-				{ID: "b", Ref: " ", When: "sometimes", Timeout: "10s", Variables: map[string]string{"bad-name": "x"}},
+				{ID: "b", Ref: " ", When: "sometimes", Timeout: "10s", Retries: 9, RetryDelay: "2h", Variables: map[string]string{"bad-name": "x"}},
 				{ID: "a", Connection: "api", Pipeline: "1", Ref: "${{ steps.b.sha }}"},
 			}},
 			{},
@@ -125,6 +125,8 @@ func TestProblems(t *testing.T) {
 		`step "b": ref (branch or tag) is required`,
 		`step "b": unknown when "sometimes"`,
 		`step "b": timeout "10s" must be a duration`,
+		`step "b": retries must be between 0 and 5`,
+		`step "b": retry delay "2h" must be a duration up to 1h0m0s`,
 		`step "b": invalid variable name "bad-name"`,
 		`step "a": duplicate step id`,
 		`step "a": ref: step "b" does not finish before this step`,
