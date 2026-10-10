@@ -20,7 +20,6 @@ export const ConnectionForm = ({ client, providers, existing, onSaved, onCancel 
   const [providerID, setProviderID] = React.useState(existing?.provider ?? providers[0]?.id ?? '');
   const [url, setURL] = React.useState(existing?.url ?? '');
   const [apiURL, setAPIURL] = React.useState(existing?.apiURL ?? '');
-  const [groups, setGroups] = React.useState((existing?.allowedGroups ?? []).join(', '));
   const [images, setImages] = React.useState<ImageSource[]>(existing?.images ?? []);
   const [creds, setCreds] = React.useState<Record<string, string>>({});
   const provider = providers.find(p => p.id === providerID);
@@ -42,10 +41,6 @@ export const ConnectionForm = ({ client, providers, existing, onSaved, onCancel 
     provider: providerID,
     url: url.trim(),
     apiURL: apiURL.trim(),
-    allowedGroups: groups
-      .split(',')
-      .map(g => g.trim())
-      .filter(Boolean),
     images: cleanSources(images),
     credentials: buildCredentials(modes, modeID, creds, existing?.credentialKeys),
   });
@@ -122,12 +117,6 @@ export const ConnectionForm = ({ client, providers, existing, onSaved, onCancel 
             <input className='argo-field' style={inputStyle} value={apiURL} onChange={e => setAPIURL(e.target.value)} />
           </Row>
         </div>
-
-        <Row
-          label='Allowed groups'
-          help='Comma-separated Argo CD groups that may see and run this connection. "*" means everyone who can open Zea. Zea admins always can.'>
-          <input className='argo-field' style={inputStyle} value={groups} onChange={e => setGroups(e.target.value)} />
-        </Row>
 
         <CredentialsEditor
           modes={modes}

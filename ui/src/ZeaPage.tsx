@@ -1,11 +1,12 @@
 import * as React from 'react';
+import { AccessView } from './Access';
 import { ANCHOR_LABEL, findAnchors, ZeaClient } from './api';
 import { ConnectionCard } from './ConnectionCard';
 import { ConnectionForm } from './ConnectionForm';
 import { RegistriesView } from './Registries';
 import { navigate, useRoute } from './route';
 import { StreamsView } from './Streams';
-import { Connection, Me, ProviderInfo } from './types';
+import { can, Connection, Me, ProviderInfo } from './types';
 import { COLORS, ErrorText, Muted, useLoad } from './ui';
 
 const REPO_URL = 'https://github.com/harchschoolboy/argocd-zea';
@@ -22,6 +23,7 @@ const Connections = ({ client, ctx }: { client: ZeaClient; ctx: Context }) => {
   const [editing, setEditing] = React.useState<Editing>({ mode: 'none' });
   const route = useRoute();
   const { me, providers } = ctx;
+  const canCreate = can(me.permissions.connections, 'edit');
 
   const saved = () => {
     setEditing({ mode: 'none' });
@@ -39,7 +41,6 @@ const Connections = ({ client, ctx }: { client: ZeaClient; ctx: Context }) => {
       client={client}
       connection={c}
       provider={providers.find(p => p.id === c.provider)}
-      isAdmin={me.isAdmin}
       detail={detail}
       initialRef={detail ? route.ref : undefined}
       expandRunID={detail ? route.run : undefined}
@@ -73,7 +74,7 @@ const Connections = ({ client, ctx }: { client: ZeaClient; ctx: Context }) => {
           {me.isAdmin && <> - Zea admin</>}
         </Muted>
         <div style={{ flex: 1 }} />
-        {me.isAdmin && editing.mode === 'none' && !selected && (
+        {canCreate && editing.mode === 'none' && !selected && (
           <button className='argo-button argo-button--base' onClick={() => setEditing({ mode: 'create' })}>
             <i className='fa fa-plus' /> Add connection
           </button>
@@ -103,9 +104,9 @@ const Connections = ({ client, ctx }: { client: ZeaClient; ctx: Context }) => {
       {!selected && conns.state === 'ok' && conns.data.length === 0 && (
         <div className='white-box'>
           <div className='white-box__details'>
-            {me.isAdmin
+            {canCreate
               ? 'No connections yet. Use "Add connection" to connect a GitHub or GitLab repository.'
-              : 'No connections are shared with you. Ask a Zea admin to add your group to a connection.'}
+              : 'No connections are shared with you. Ask a Zea admin for access.'}
           </div>
         </div>
       )}
@@ -135,17 +136,20 @@ const Workspace = ({ client }: { client: ZeaClient }) => {
   return <Pages client={client} ctx={ctx.data} />;
 };
 
-type Page = 'streams' | 'connections' | 'registries';
+type Page = 'streams' | 'connections' | 'registries' | 'access';
 
-const TABS: { view: Page; label: string; icon: string; admin?: boolean }[] = [
+const TABS: { view: Page; label: string; icon: string; shown?: (me: Me) => boolean }[] = [
   { view: 'streams', label: 'Streams', icon: 'fa fa-stream' },
   { view: 'connections', label: 'Connections', icon: 'fa fa-plug' },
-  { view: 'registries', label: 'Registries', icon: 'fa fa-database', admin: true },
+  { view: 'registries', label: 'Registries', icon: 'fa fa-database', shown: me => can(me.permissions.registries, 'view') },
+  { view: 'access', label: 'Access', icon: 'fa fa-user-shield', shown: me => me.isAdmin },
 ];
 
-const Tabs = ({ view, isAdmin }: { view: Page; isAdmin: boolean }) => (
+const tabsFor = (me: Me) => TABS.filter(t => !t.shown || t.shown(me));
+
+const Tabs = ({ view, me }: { view: Page; me: Me }) => (
   <div style={{ display: 'flex', gap: '1.5em', borderBottom: `1px solid ${COLORS.border}`, marginBottom: '1em' }}>
-    {TABS.filter(t => !t.admin || isAdmin).map(t => {
+    {tabsFor(me).map(t => {
       const active = t.view === view;
       return (
         <a
@@ -168,25 +172,23 @@ const Tabs = ({ view, isAdmin }: { view: Page; isAdmin: boolean }) => (
 
 // pageOf picks the page for a route; Streams is the default, and links to a
 // connection open the Connections page.
-function pageOf(view: string | undefined, connection: string | undefined, isAdmin: boolean): Page {
+function pageOf(view: string | undefined, connection: string | undefined, me: Me): Page {
   if (connection || view === 'connections') {
     return 'connections';
   }
-  if (view === 'registries' && isAdmin) {
-    return 'registries';
-  }
-  return 'streams';
+  return tabsFor(me).find(t => t.view === view)?.view ?? 'streams';
 }
 
 const Pages = ({ client, ctx }: { client: ZeaClient; ctx: Context }) => {
   const route = useRoute();
-  const page = pageOf(route.view, route.connection, ctx.me.isAdmin);
+  const page = pageOf(route.view, route.connection, ctx.me);
   return (
     <>
-      <Tabs view={page} isAdmin={ctx.me.isAdmin} />
+      <Tabs view={page} me={ctx.me} />
       {page === 'streams' && <StreamsView client={client} me={ctx.me} />}
       {page === 'connections' && <Connections client={client} ctx={ctx} />}
-      {page === 'registries' && <RegistriesView client={client} />}
+      {page === 'registries' && <RegistriesView client={client} canCreate={can(ctx.me.permissions.registries, 'edit')} />}
+      {page === 'access' && <AccessView client={client} />}
     </>
   );
 };

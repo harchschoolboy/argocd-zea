@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/harchschoolboy/argocd-zea/backend/internal/authz"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/providers"
 )
 
@@ -18,7 +19,7 @@ const (
 )
 
 func (a *api) handleRunForm(w http.ResponseWriter, r *http.Request) {
-	c, p, ok := a.usableProvider(w, r)
+	c, p, ok := a.usableProvider(w, r, authz.ActionView)
 	if !ok {
 		return
 	}
@@ -54,7 +55,7 @@ func checkParams(kind string, m map[string]string) error {
 }
 
 func (a *api) handleTrigger(w http.ResponseWriter, r *http.Request) {
-	c, p, ok := a.usableProvider(w, r)
+	c, p, ok := a.usableProvider(w, r, authz.ActionRun)
 	if !ok {
 		return
 	}
@@ -95,7 +96,7 @@ func (a *api) handleTrigger(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *api) handleListRuns(w http.ResponseWriter, r *http.Request) {
-	c, p, ok := a.usableProvider(w, r)
+	c, p, ok := a.usableProvider(w, r, authz.ActionView)
 	if !ok {
 		return
 	}
@@ -121,7 +122,7 @@ func (a *api) handleListRuns(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *api) handleGetRun(w http.ResponseWriter, r *http.Request) {
-	c, p, ok := a.usableProvider(w, r)
+	c, p, ok := a.usableProvider(w, r, authz.ActionView)
 	if !ok {
 		return
 	}
@@ -134,7 +135,7 @@ func (a *api) handleGetRun(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *api) handleCancelRun(w http.ResponseWriter, r *http.Request) {
-	c, p, ok := a.usableProvider(w, r)
+	c, p, ok := a.usableProvider(w, r, authz.ActionRun)
 	if !ok {
 		return
 	}
@@ -152,7 +153,7 @@ type retryInput struct {
 }
 
 func (a *api) handleRetryRun(w http.ResponseWriter, r *http.Request) {
-	c, p, ok := a.usableProvider(w, r)
+	c, p, ok := a.usableProvider(w, r, authz.ActionRun)
 	if !ok {
 		return
 	}

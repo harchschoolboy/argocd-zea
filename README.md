@@ -23,7 +23,9 @@ the app-of-apps repo).
   (`argocd-zea.io/secret-type: connection`), like Argo CD repository Secrets.
   Zea admins create them in the UI, or you commit them declaratively.
 - **Access**: Argo CD RBAC (`extensions, invoke, zea` + `get` on the anchor
-  Application that deploys Zea), then per-Connection `allowedGroups`.
+  Application that deploys Zea), then Zea's own access policy: roles with
+  view / run / edit on Streams, Connections and Registries, bound to users
+  and SSO groups.
 
 ## Install
 
@@ -48,7 +50,7 @@ prints a ready-to-merge values snippet for the argo-cd chart.
   `argocd-server` to `github.com` to download the UI extension at startup.
 
 In the commands below the Argo CD namespace is `argocd`, the Helm release and
-the anchor Application are both called `zea`, and the release is `v0.2.1`.
+the anchor Application are both called `zea`, and the release is `v0.3.0`.
 
 ### Step 1. Install the backend
 
@@ -101,7 +103,7 @@ set `image.tag`.
 #### Option B: with the Helm CLI
 
 ```bash
-helm install zea oci://ghcr.io/harchschoolboy/charts/zea --version 0.2.1 \
+helm install zea oci://ghcr.io/harchschoolboy/charts/zea --version 0.3.0 \
   -n argocd \
   --set anchorApplication=argocd:<existing-app> \
   --set 'admins.users={admin}'
@@ -152,11 +154,11 @@ server:
           - name: EXTENSION_NAME
             value: zea
           - name: EXTENSION_VERSION
-            value: v0.2.1
+            value: v0.3.0
           - name: EXTENSION_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.2.1/extension-zea.tar.gz
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.3.0/extension-zea.tar.gz
           - name: EXTENSION_CHECKSUM_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.2.1/extension-zea_checksums.txt
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.3.0/extension-zea_checksums.txt
 
 configs:
   params:
@@ -244,11 +246,11 @@ one Zea installation.
                - name: EXTENSION_NAME
                  value: zea
                - name: EXTENSION_VERSION
-                 value: v0.2.1
+                 value: v0.3.0
                - name: EXTENSION_URL
-                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.2.1/extension-zea.tar.gz
+                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.3.0/extension-zea.tar.gz
                - name: EXTENSION_CHECKSUM_URL
-                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.2.1/extension-zea_checksums.txt
+                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.3.0/extension-zea_checksums.txt
              securityContext:
                runAsNonRoot: true
                runAsUser: 1000
@@ -276,7 +278,8 @@ one Zea installation.
 ### Step 3. Verify
 
 Open Argo CD. A **Zea** item appears in the left sidebar. Log in as a Zea admin
-(by default the local `admin`) to see the **Add connection** button.
+(by default the local `admin`) to see the **Add connection** button and the
+**Access** tab.
 
 To check the proxy path from the command line, use an Argo CD session token:
 
@@ -298,11 +301,11 @@ Who can do what:
 | Action | Requirement |
 |--------|-------------|
 | Open Zea | Argo CD RBAC: `extensions, invoke, zea` and `applications, get` on the anchor |
-| See and use a Connection | Zea admin, or a member of one of the Connection's `allowedGroups` (`*` = everyone who can open Zea) |
-| Create, edit, delete Connections | Zea admin: `admins.users` (Argo CD usernames) or `admins.groups` (SSO groups) in the chart values |
+| Everything, including the access policy | Zea admin: `admins.users` (Argo CD usernames) or `admins.groups` (SSO groups) in the chart values |
+| See, run or edit a Stream, Connection or Registry | A role of the Zea access policy bound to the user or one of their groups |
 
-The example policy grants Zea to `role:readonly`. To limit it to an SSO
-group instead:
+The example Argo CD policy grants Zea to `role:readonly`. To limit it to an
+SSO group instead:
 
 ```csv
 p, role:zea, extensions, invoke, zea, allow
@@ -313,10 +316,37 @@ g, my-sso-group, role:zea
 Local accounts such as `admin` have no groups, so list them in
 `admins.users`.
 
+**Zea access policy.** Admins edit it on the **Access** tab: roles are rules
+of resource (`streams`, `connections`, `registries`), a name pattern (`*`,
+`dev-*`, ...) and actions; bindings give roles to groups, users or everyone
+(`*`). The tab shows what a policy grants a given user before it is saved,
+and imports and exports it as YAML.
+
+| Action | Streams | Connections | Registries |
+|--------|---------|-------------|------------|
+| view | See it, its runs and jobs; export | See it, branches, pipelines, runs, images | See it |
+| run | Start, cancel, retry runs | Start, cancel, rerun pipelines | - |
+| edit | Create, change, delete, draft, import | Create, change, delete | Create, change, delete, test |
+
+Run and edit include view. Running a Stream needs only run on the Stream,
+not on its Connections; saving one needs run on every Connection it uses.
+
+The policy is the ConfigMap `zea-policy` (key `policy.yaml`) in the
+Connections namespace. To manage it in git, export it from the Access tab
+and commit it as a ConfigMap, see
+[deploy/examples/zea-policy.yaml](deploy/examples/zea-policy.yaml); a
+ConfigMap committed like that is read-only in Zea.
+Details: [docs/design.md](docs/design.md#access).
+
+Upgrading from 0.2: on the first start the backend turns the old
+per-Connection `allowedGroups` into the policy (one role per group with view
+and run on its Connections and the Streams they cover). After that
+`allowedGroups` is ignored; remove it from declarative Connections.
+
 ### Step 5. Add Connections
 
 A Connection is one repository plus a CI provider and credentials. Create
-Connections on the Zea page as an admin (**Test** checks the credentials
+Connections on the Zea page as an admin or with edit access (**Test** checks the credentials
 before saving), or commit them as Secrets in `zea-connections`, see
 [deploy/examples/connection-secret.yaml](deploy/examples/connection-secret.yaml).
 Declarative Connections are read-only in the UI. Credentials are write-only:
@@ -378,9 +408,9 @@ button returns to the list. **Test**, **Edit** and **Delete** are in this
 view too.
 
 Running runs can be cancelled; finished runs can be rerun (GitHub) or have
-their failed jobs retried (GitHub and GitLab). Everyone who can see a
-Connection (`allowedGroups` or admin) can run, cancel and rerun its
-pipelines. Every start is written to the backend log with the user, ref and
+their failed jobs retried (GitHub and GitLab). Users with run access to a
+Connection can run, cancel and rerun its pipelines; view access shows them
+only. Every start is written to the backend log with the user, ref and
 the names of the parameters (values are not logged).
 
 ### Images
@@ -390,7 +420,8 @@ for the selected branch (or all branches), with tags, push time, size,
 digest, a link to the commit and a button that copies the full image
 reference.
 
-1. **Add a registry.** As an admin open the **Registries** tab and
+1. **Add a registry.** As an admin (or with edit access to registries) open
+   the **Registries** tab and
    add one; **Test registry** lists what the credentials can see. Or commit a
    Secret, see
    [deploy/examples/registry-secret.yaml](deploy/examples/registry-secret.yaml).
@@ -411,8 +442,9 @@ reference.
      every use. Only Secrets listed in the chart value `registries.pullSecrets`
      are offered; the chart grants Zea `get` on exactly those.
 
-   Registries are admin-only: users never see their credentials, only the
-   images of the Connections shared with them.
+   Nobody sees registry credentials; edit access shows which keys are set.
+   Users without access to Registries still see the images of the
+   Connections they may view.
 
 2. **Add image sources** to the Connection (**Edit** -> **Images**). Each
    source is a registry plus a regular expression for repository names and an
@@ -516,7 +548,7 @@ A Stream chains pipelines of several Connections: stages run one after
 another, the steps of a stage run in parallel. The **Streams** tab opens
 first:
 
-- **New stream** (admins): drag Connections into stage columns, pick the
+- **New stream** (edit access to streams): drag Connections into stage columns, pick the
   branch and pipeline of each step, fill its inputs. Values may use
   `${{ params.<name> }}` (params asked when the Stream starts) and
   `${{ steps.<id>.ref|sha|runId|url|status }}` of upstream steps. A step can
@@ -533,7 +565,7 @@ first:
   it, the Stream is read-only in Zea. **Edit as draft** makes an editable
   copy to change and export again. **Import** creates a Stream from YAML.
 
-A user sees a Stream only when they may use every Connection it runs. Polling
+Who sees, runs and edits a Stream is set in the access policy. Polling
 interval, step timeout and run history are set under `streams:` in the chart
 values.
 
@@ -581,7 +613,7 @@ kubectl -n argocd rollout restart deploy/zea deploy/argocd-server
 | Value | Default | Meaning |
 |-------|---------|---------|
 | `anchorApplication` | `<release ns>:<release name>` | Anchor Application `<namespace>:<name>` |
-| `admins.users` / `admins.groups` | `[admin]` / `[]` | Zea admins |
+| `admins.users` / `admins.groups` | `[admin]` / `[]` | Zea admins: every action and the access policy |
 | `connections.namespace` | `zea-connections` | Namespace with Connection Secrets |
 | `connections.createNamespace` | `true` | Create that namespace (kept on uninstall) |
 | `connections.rbac` | `true` | Role and RoleBinding for the backend in that namespace |
@@ -606,6 +638,7 @@ security contexts, scheduling).
 | `request did not come through the Argo CD proxy` (401) | `zea-proxy` has the label `app.kubernetes.io/part-of=argocd`. Restart `argocd-server` if Argo CD was configured before the Secret existed. After a token rotation, restart both `zea` and `argocd-server` |
 | `requests must be scoped to the Zea anchor Application` (403) | `anchorApplication` matches the labelled Application's `<namespace>:<name>` |
 | 403 from Argo CD on `/extensions/zea` | RBAC policy `extensions, invoke, zea` |
+| A user sees no Streams or Connections, or buttons are disabled | The Zea access policy (Access tab): a role with view, run or edit on that name bound to the user or one of their groups; an invalid stored policy grants nothing and is reported on the Access tab |
 | 404 on `/extensions/zea` | `server.enable.proxy.extension: "true"` and `extension.config.zea` are set; `argocd-server` was restarted |
 | Install or sync stuck on the hook Job | `kubectl -n argocd logs job/zea-proxy-token` |
 | `... is not permitted in project` / `do not match any of the allowed destinations` | The Application's project does not allow the chart source or namespaces. Use the `zea` AppProject from the example, or extend your project the same way |

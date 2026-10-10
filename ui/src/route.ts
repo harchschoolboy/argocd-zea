@@ -3,7 +3,7 @@ import * as React from 'react';
 // Route is the Zea page state kept in the URL query, so a connection view
 // can be linked to and the browser Back button returns to the list.
 export interface Route {
-  // "streams" (default), "connections" or "registries" (admins).
+  // "streams" (default), "connections", "registries" or "access" (admins).
   view?: string;
   connection?: string;
   ref?: string;

@@ -20,7 +20,10 @@ const HeaderProxyToken = "Zea-Proxy-Token"
 
 type ctxKey int
 
-const identityKey ctxKey = iota
+const (
+	identityKey ctxKey = iota
+	accessKey
+)
 
 // IdentityFrom returns the Argo CD identity attached by requireIdentity.
 func IdentityFrom(ctx context.Context) *argocd.Identity {

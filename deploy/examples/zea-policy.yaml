@@ -1,0 +1,42 @@
+# Declarative Zea access policy. Zea admins (chart values admins.users /
+# admins.groups) can also edit it on the Access tab; a ConfigMap committed
+# like this (without the argocd-zea.io/managed-by: zea label) is read-only in
+# the UI. Use Export on the Access tab to get the YAML of an edited policy.
+# The namespace is the Connections namespace (connections.namespace).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: zea-policy
+  namespace: zea-connections
+  labels:
+    argocd-zea.io/type: policy
+data:
+  policy.yaml: |
+    roles:
+      # Resources: streams, connections, registries.
+      # Actions: view, run (not for registries), edit. Run and edit include view.
+      # pattern is a glob over names; empty means "*".
+      - name: developers
+        description: Run the dev streams and use all connections
+        rules:
+          - resource: streams
+            pattern: "dev-*"
+            actions: [view, run]
+          - resource: connections
+            actions: [run]
+          - resource: registries
+            actions: [view]
+      - name: payments
+        rules:
+          - resource: connections
+            pattern: billing
+            actions: [view, run]
+    bindings:
+      # group (SSO group), user (Argo CD username or user id) or group "*"
+      # for everyone who can open Zea.
+      - group: devs
+        roles: [developers]
+      - group: payments
+        roles: [payments]
+      - user: alice
+        roles: [developers, payments]

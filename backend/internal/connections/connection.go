@@ -40,9 +40,6 @@ const MaxImageSources = 20
 // maxPatternLen caps image source regular expressions.
 const maxPatternLen = 500
 
-// AllGroups in allowedGroups grants access to every user who can use Zea.
-const AllGroups = "*"
-
 var (
 	// ErrNotFound is returned when a Connection does not exist.
 	ErrNotFound = errors.New("connection not found")
@@ -54,12 +51,14 @@ var (
 
 var nameRe = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
-// Connection is one repository + CI provider + credentials + access rules.
+// Connection is one repository + CI provider + credentials.
 type Connection struct {
-	Name          string
-	Provider      string
-	URL           string
-	APIURL        string
+	Name     string
+	Provider string
+	URL      string
+	APIURL   string
+	// AllowedGroups is deprecated: it is only read once, to migrate it into
+	// the access policy, and is ignored afterwards.
 	AllowedGroups []string
 	// Images selects the container images built from this repository.
 	Images []ImageSource

@@ -168,9 +168,11 @@ interface ListProps {
   watchUntil: number;
   expandRunID?: string;
   limit: number;
+  // Run access: cancel and rerun.
+  canRun: boolean;
 }
 
-export const RunsList = ({ client, connection, gitRef, capabilities, refreshKey, watchUntil, expandRunID, limit }: ListProps) => {
+export const RunsList = ({ client, connection, gitRef, capabilities, refreshKey, watchUntil, expandRunID, limit, canRun }: ListProps) => {
   const [allBranches, setAllBranches] = React.useState(false);
   const [expanded, setExpanded] = React.useState<string | undefined>(expandRunID);
   const ref = allBranches ? '' : gitRef;
@@ -209,6 +211,7 @@ export const RunsList = ({ client, connection, gitRef, capabilities, refreshKey,
           connection={connection}
           run={r}
           capabilities={capabilities}
+          canRun={canRun}
           expanded={expanded === r.id}
           onToggle={() => setExpanded(expanded === r.id ? undefined : r.id)}
           onChanged={runs.reload}
@@ -223,12 +226,13 @@ interface RowProps {
   connection: string;
   run: Run;
   capabilities?: Capabilities;
+  canRun: boolean;
   expanded: boolean;
   onToggle: () => void;
   onChanged: () => void;
 }
 
-const RunRow = ({ client, connection, run, capabilities, expanded, onToggle, onChanged }: RowProps) => {
+const RunRow = ({ client, connection, run, capabilities, canRun, expanded, onToggle, onChanged }: RowProps) => {
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState('');
   const [detailKey, setDetailKey] = React.useState(0);
@@ -255,8 +259,8 @@ const RunRow = ({ client, connection, run, capabilities, expanded, onToggle, onC
   };
 
   const finished = !isActive(run.status) && run.status !== 'manual';
-  const canRerunAll = finished && !!capabilities?.retryRun;
-  const canRerunFailed = finished && !!capabilities?.retryFailedJobs && (run.status === 'failed' || run.status === 'canceled');
+  const canRerunAll = canRun && finished && !!capabilities?.retryRun;
+  const canRerunFailed = canRun && finished && !!capabilities?.retryFailedJobs && (run.status === 'failed' || run.status === 'canceled');
 
   return (
     <div style={{ borderTop: `1px solid ${COLORS.border}`, padding: '0.5em 0' }}>
@@ -280,7 +284,7 @@ const RunRow = ({ client, connection, run, capabilities, expanded, onToggle, onC
             {[run.ref, run.event, run.actor, ago(run.createdAt), run.commitSHA?.slice(0, 7)].filter(Boolean).join(' · ')}
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.5em', marginTop: '0.4em' }}>
-            {isActive(run.status) && (
+            {canRun && isActive(run.status) && (
               <button className='argo-button argo-button--base-o' disabled={busy} onClick={cancel} title='Cancel this run'>
                 <i className='fa fa-stop' /> Cancel
               </button>
@@ -317,10 +321,20 @@ const RunRow = ({ client, connection, run, capabilities, expanded, onToggle, onC
   );
 };
 
-export const RunJobs = ({ client, connection, runID, refreshKey }: { client: ZeaClient; connection: string; runID: string; refreshKey: number }) => {
+interface JobsProps {
+  client: ZeaClient;
+  connection: string;
+  runID: string;
+  refreshKey: number;
+  // Loads the jobs through the stream run that started the pipeline run, so
+  // stream access is enough.
+  stream?: { name: string; run: string; step: string };
+}
+
+export const RunJobs = ({ client, connection, runID, refreshKey, stream }: JobsProps) => {
   const detail = usePoll<RunDetail>(
-    () => client.run(connection, runID),
-    [client, connection, runID, refreshKey],
+    () => (stream ? client.streamRunJobs(stream.name, stream.run, stream.step, runID) : client.run(connection, runID)),
+    [client, connection, runID, refreshKey, stream?.name, stream?.run, stream?.step],
     DETAIL_POLL_MS,
     d => !!d && (isActive(d.status) || d.jobs.some(j => isActive(j.status))),
   );

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/harchschoolboy/argocd-zea/backend/internal/authz"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/connections"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/images"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/providers"
@@ -22,8 +23,11 @@ type registryView struct {
 	URL            string   `json:"url"`
 	Editable       bool     `json:"editable"`
 	CredentialKeys []string `json:"credentialKeys"`
-	// UsedBy lists the Connections whose image sources use the registry.
+	// UsedBy lists the Connections whose image sources use the registry,
+	// limited to those the user may see.
 	UsedBy []string `json:"usedBy"`
+	// Actions are what the user may do with the registry.
+	Actions []string `json:"actions"`
 }
 
 // registryInput is the body of create/update/test-registry requests.
@@ -47,18 +51,26 @@ func (in *registryInput) toRegistry() *registries.Registry {
 	}
 }
 
-func registryViewOf(r *registries.Registry, usedBy []string) registryView {
-	if usedBy == nil {
-		usedBy = []string{}
+func registryViewOf(acc *authz.Access, r *registries.Registry, usedBy []string) registryView {
+	visible := []string{}
+	for _, c := range usedBy {
+		if acc.Can(authz.ResourceConnections, authz.ActionView, c) {
+			visible = append(visible, c)
+		}
 	}
-	return registryView{
+	v := registryView{
 		Name:           r.Name,
 		Kind:           r.Kind,
 		URL:            r.URL,
 		Editable:       r.Editable,
-		CredentialKeys: r.CredentialKeys(),
-		UsedBy:         usedBy,
+		CredentialKeys: []string{},
+		UsedBy:         visible,
+		Actions:        acc.Actions(authz.ResourceRegistries, r.Name),
 	}
+	if acc.Can(authz.ResourceRegistries, authz.ActionEdit, r.Name) {
+		v.CredentialKeys = r.CredentialKeys()
+	}
+	return v
 }
 
 // registryUsage maps registry names to the Connections referencing them.
@@ -89,8 +101,12 @@ func (a *api) registriesReady(w http.ResponseWriter) bool {
 	return true
 }
 
-func (a *api) handleRegistryKinds(w http.ResponseWriter, _ *http.Request) {
+func (a *api) handleRegistryKinds(w http.ResponseWriter, r *http.Request) {
 	if !a.registriesReady(w) {
+		return
+	}
+	if !AccessFrom(r.Context()).CanAny(authz.ResourceRegistries, authz.ActionView) {
+		writeError(w, http.StatusForbidden, "you may not view registries")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"kinds": a.deps.RegistryKinds.Infos()})
@@ -110,9 +126,12 @@ func (a *api) handleListRegistries(w http.ResponseWriter, r *http.Request) {
 		a.writeErr(w, err)
 		return
 	}
+	acc := AccessFrom(r.Context())
 	out := []registryView{}
 	for _, reg := range all {
-		out = append(out, registryViewOf(reg, usage[reg.Name]))
+		if acc.Can(authz.ResourceRegistries, authz.ActionView, reg.Name) {
+			out = append(out, registryViewOf(acc, reg, usage[reg.Name]))
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"registries": out})
 }
@@ -126,6 +145,9 @@ func (a *api) handleCreateRegistry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reg := in.toRegistry()
+	if !allowNew(w, r, authz.ResourceRegistries, authz.ActionEdit, reg.Name) {
+		return
+	}
 	if err := a.deps.RegistryKinds.Validate(reg); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -136,18 +158,21 @@ func (a *api) handleCreateRegistry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.log.Info("registry created", "registry", reg.Name, "kind", reg.Kind, "user", IdentityFrom(r.Context()).Username)
-	writeJSON(w, http.StatusCreated, registryViewOf(created, nil))
+	writeJSON(w, http.StatusCreated, registryViewOf(AccessFrom(r.Context()), created, nil))
 }
 
 func (a *api) handleUpdateRegistry(w http.ResponseWriter, r *http.Request) {
 	if !a.registriesReady(w) {
 		return
 	}
+	name := r.PathValue("name")
+	if !a.allow(w, r, authz.ResourceRegistries, authz.ActionEdit, name) {
+		return
+	}
 	var in registryInput
 	if !decodeJSON(w, r, &in) {
 		return
 	}
-	name := r.PathValue("name")
 	if in.Name != "" && in.Name != name {
 		writeError(w, http.StatusBadRequest, "registry name cannot be changed")
 		return
@@ -181,7 +206,7 @@ func (a *api) handleUpdateRegistry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.log.Info("registry updated", "registry", name, "user", IdentityFrom(r.Context()).Username)
-	writeJSON(w, http.StatusOK, registryViewOf(updated, usage[name]))
+	writeJSON(w, http.StatusOK, registryViewOf(AccessFrom(r.Context()), updated, usage[name]))
 }
 
 func (a *api) handleDeleteRegistry(w http.ResponseWriter, r *http.Request) {
@@ -189,6 +214,9 @@ func (a *api) handleDeleteRegistry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := r.PathValue("name")
+	if !a.allow(w, r, authz.ResourceRegistries, authz.ActionEdit, name) {
+		return
+	}
 	usage, err := a.registryUsage(r.Context())
 	if err != nil {
 		a.writeErr(w, err)
@@ -211,6 +239,9 @@ func (a *api) handleTestRegistry(w http.ResponseWriter, r *http.Request) {
 	if !a.registriesReady(w) {
 		return
 	}
+	if !a.allow(w, r, authz.ResourceRegistries, authz.ActionEdit, r.PathValue("name")) {
+		return
+	}
 	reg, err := a.deps.Registries.Get(r.Context(), r.PathValue("name"))
 	if err != nil {
 		a.writeErr(w, err)
@@ -220,7 +251,7 @@ func (a *api) handleTestRegistry(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleTestRegistryDraft tests unsaved form values. Blank credentials of an
-// existing editable registry fall back to the stored ones.
+// existing editable registry the user may edit fall back to the stored ones.
 func (a *api) handleTestRegistryDraft(w http.ResponseWriter, r *http.Request) {
 	if !a.registriesReady(w) {
 		return
@@ -230,8 +261,10 @@ func (a *api) handleTestRegistryDraft(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reg := in.toRegistry()
-	if cur, err := a.deps.Registries.Get(r.Context(), reg.Name); err == nil && cur.Editable {
-		reg.Credentials = connections.MergeCredentials(cur.Credentials, reg.Credentials)
+	if AccessFrom(r.Context()).Can(authz.ResourceRegistries, authz.ActionEdit, reg.Name) {
+		if cur, err := a.deps.Registries.Get(r.Context(), reg.Name); err == nil && cur.Editable {
+			reg.Credentials = connections.MergeCredentials(cur.Credentials, reg.Credentials)
+		}
 	}
 	if err := a.deps.RegistryKinds.Validate(reg); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -286,6 +319,9 @@ func (a *api) handleImagesPreview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if !a.allowRegistries(w, r, in.Images, nil) {
+		return
+	}
 	res := a.deps.Images.Resolve(r.Context(), in.Images, images.Options{Ref: strings.TrimSpace(in.Ref), TagLimit: previewTags})
 	writeJSON(w, http.StatusOK, res)
 }
@@ -298,7 +334,7 @@ type imagesResponse struct {
 }
 
 func (a *api) handleConnectionImages(w http.ResponseWriter, r *http.Request) {
-	c, ok := a.usableConnection(w, r)
+	c, ok := a.usableConnection(w, r, authz.ActionView)
 	if !ok {
 		return
 	}

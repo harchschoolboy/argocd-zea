@@ -41,14 +41,19 @@ func (fakeProvider) CommitURL(c *connections.Connection, sha string) string {
 	return c.URL + "/commit/" + sha
 }
 
-func TestOnlyAdminsManageRegistries(t *testing.T) {
+func TestRegistriesNeedAccess(t *testing.T) {
 	e := newEnv(false)
-	for _, req := range [][2]string{
-		{"GET", "/api/v1/registries"}, {"GET", "/api/v1/registry-kinds"}, {"POST", "/api/v1/registries"},
-		{"DELETE", "/api/v1/registries/do"}, {"POST", "/api/v1/registries/do/test"}, {"POST", "/api/v1/images/preview"},
+	code, body := e.do(t, "GET", "/api/v1/registries", nil)
+	if code != http.StatusOK || mustJSON(body["registries"]) != `[]` {
+		t.Fatalf("list without access: %d %v", code, body)
+	}
+	for _, req := range [][3]any{
+		{"GET", "/api/v1/registry-kinds", http.StatusForbidden}, {"POST", "/api/v1/registries", http.StatusForbidden},
+		{"DELETE", "/api/v1/registries/do", http.StatusNotFound}, {"POST", "/api/v1/registries/do/test", http.StatusNotFound},
+		{"POST", "/api/v1/images/preview", http.StatusForbidden},
 	} {
-		if code, _ := e.do(t, req[0], req[1], map[string]any{}); code != http.StatusForbidden {
-			t.Fatalf("%s %s by non-admin: %d", req[0], req[1], code)
+		if code, _ := e.do(t, req[0].(string), req[1].(string), map[string]any{}); code != req[2].(int) {
+			t.Fatalf("%s %s without access: %d", req[0], req[1], code)
 		}
 	}
 }

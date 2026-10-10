@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/harchschoolboy/argocd-zea/backend/internal/argocd"
+	"github.com/harchschoolboy/argocd-zea/backend/internal/authz"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/connections"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/streams"
 )
@@ -25,6 +25,8 @@ type streamView struct {
 	Version     string            `json:"version"`
 	Connections []string          `json:"connections"`
 	Problems    []streams.Problem `json:"problems"`
+	// Actions are what the user may do with the Stream.
+	Actions []string `json:"actions"`
 }
 
 // streamInput is the body of create, update and validate requests.
@@ -59,29 +61,20 @@ func (a *api) connectionIndex(ctx context.Context) (map[string]*connections.Conn
 	return out, nil
 }
 
-// canSeeStream: admins see every Stream; other users need access to every
-// Connection the Stream uses.
-func (a *api) canSeeStream(id *argocd.Identity, st *streams.Stream, conns map[string]*connections.Connection) bool {
-	if a.deps.Authz.IsAdmin(id) {
-		return true
-	}
-	return a.canUseAll(id, st.Connections(), conns)
-}
-
-// canUseAll reports whether the user may use every named Connection. An
-// empty list is never usable by non-admins.
-func (a *api) canUseAll(id *argocd.Identity, used []string, conns map[string]*connections.Connection) bool {
-	if a.deps.Authz.IsAdmin(id) {
-		return true
-	}
-	if len(used) == 0 {
-		return false
-	}
-	for _, name := range used {
-		c, ok := conns[name]
-		if !ok || !a.deps.Authz.CanUse(id, c) {
-			return false
+// allowStreamConnections enforces the save rule: a user may only save a
+// Stream that uses Connections the user may run, because anyone allowed to
+// run the Stream later runs them on the editor's behalf.
+func allowStreamConnections(w http.ResponseWriter, r *http.Request, st *streams.Stream) bool {
+	acc := AccessFrom(r.Context())
+	var denied []string
+	for _, c := range st.Connections() {
+		if !acc.Can(authz.ResourceConnections, authz.ActionRun, c) {
+			denied = append(denied, c)
 		}
+	}
+	if len(denied) > 0 {
+		writeError(w, http.StatusForbidden, "you need run access to connections: "+strings.Join(denied, ", "))
+		return false
 	}
 	return true
 }
@@ -107,7 +100,7 @@ func streamProblems(st *streams.Stream, conns map[string]*connections.Connection
 	return out
 }
 
-func streamViewOf(st *streams.Stream, conns map[string]*connections.Connection) streamView {
+func streamViewOf(acc *authz.Access, st *streams.Stream, conns map[string]*connections.Connection) streamView {
 	v := streamView{
 		Name:        st.Name,
 		DraftOf:     st.DraftOf,
@@ -116,6 +109,7 @@ func streamViewOf(st *streams.Stream, conns map[string]*connections.Connection) 
 		Version:     st.ResourceVersion,
 		Connections: st.Connections(),
 		Problems:    streamProblems(st, conns),
+		Actions:     acc.Actions(authz.ResourceStreams, st.Name),
 	}
 	if v.Params == nil {
 		v.Params = []streams.Param{}
@@ -137,10 +131,13 @@ func streamViewOf(st *streams.Stream, conns map[string]*connections.Connection) 
 	return v
 }
 
-// visibleStream loads a Stream and hides it (404) from users who may not
-// see it.
-func (a *api) visibleStream(w http.ResponseWriter, r *http.Request) (*streams.Stream, map[string]*connections.Connection, bool) {
+// visibleStream loads a Stream if the user may perform action on it. Streams
+// the user may not see are reported as not found.
+func (a *api) visibleStream(w http.ResponseWriter, r *http.Request, action string) (*streams.Stream, map[string]*connections.Connection, bool) {
 	if !a.streamsReady(w) {
+		return nil, nil, false
+	}
+	if !a.allow(w, r, authz.ResourceStreams, action, r.PathValue("name")) {
 		return nil, nil, false
 	}
 	st, err := a.deps.Streams.Get(r.Context(), r.PathValue("name"))
@@ -151,10 +148,6 @@ func (a *api) visibleStream(w http.ResponseWriter, r *http.Request) (*streams.St
 	conns, err := a.connectionIndex(r.Context())
 	if err != nil {
 		a.writeErr(w, err)
-		return nil, nil, false
-	}
-	if !a.canSeeStream(IdentityFrom(r.Context()), st, conns) {
-		a.writeErr(w, streams.ErrNotFound)
 		return nil, nil, false
 	}
 	return st, conns, true
@@ -174,22 +167,22 @@ func (a *api) handleListStreams(w http.ResponseWriter, r *http.Request) {
 		a.writeErr(w, err)
 		return
 	}
-	id := IdentityFrom(r.Context())
+	acc := AccessFrom(r.Context())
 	out := []streamView{}
 	for _, st := range all {
-		if a.canSeeStream(id, st, conns) {
-			out = append(out, streamViewOf(st, conns))
+		if acc.Can(authz.ResourceStreams, authz.ActionView, st.Name) {
+			out = append(out, streamViewOf(acc, st, conns))
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"streams": out})
 }
 
 func (a *api) handleGetStream(w http.ResponseWriter, r *http.Request) {
-	st, conns, ok := a.visibleStream(w, r)
+	st, conns, ok := a.visibleStream(w, r, authz.ActionView)
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, streamViewOf(st, conns))
+	writeJSON(w, http.StatusOK, streamViewOf(AccessFrom(r.Context()), st, conns))
 }
 
 // respondStream writes a stored Stream with its problems.
@@ -199,7 +192,7 @@ func (a *api) respondStream(w http.ResponseWriter, r *http.Request, status int, 
 		a.writeErr(w, err)
 		return
 	}
-	writeJSON(w, status, streamViewOf(st, conns))
+	writeJSON(w, status, streamViewOf(AccessFrom(r.Context()), st, conns))
 }
 
 func (a *api) handleCreateStream(w http.ResponseWriter, r *http.Request) {
@@ -212,8 +205,14 @@ func (a *api) handleCreateStream(w http.ResponseWriter, r *http.Request) {
 	}
 	st := in.toStream()
 	st.ResourceVersion = ""
+	if !allowNew(w, r, authz.ResourceStreams, authz.ActionEdit, st.Name) {
+		return
+	}
 	if err := st.Validate(); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !allowStreamConnections(w, r, st) {
 		return
 	}
 	created, err := a.deps.Streams.Create(r.Context(), st)
@@ -229,11 +228,14 @@ func (a *api) handleUpdateStream(w http.ResponseWriter, r *http.Request) {
 	if !a.streamsReady(w) {
 		return
 	}
+	name := r.PathValue("name")
+	if !a.allow(w, r, authz.ResourceStreams, authz.ActionEdit, name) {
+		return
+	}
 	var in streamInput
 	if !decodeJSONMax(w, r, &in, maxStreamBodyBytes) {
 		return
 	}
-	name := r.PathValue("name")
 	if in.Name != "" && in.Name != name {
 		writeError(w, http.StatusBadRequest, "stream name cannot be changed")
 		return
@@ -254,6 +256,9 @@ func (a *api) handleUpdateStream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if !allowStreamConnections(w, r, st) {
+		return
+	}
 	updated, err := a.deps.Streams.Update(r.Context(), st)
 	if err != nil {
 		a.writeErr(w, err)
@@ -268,6 +273,9 @@ func (a *api) handleDeleteStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := r.PathValue("name")
+	if !a.allow(w, r, authz.ResourceStreams, authz.ActionEdit, name) {
+		return
+	}
 	if err := a.deps.Streams.Delete(r.Context(), name); err != nil {
 		a.writeErr(w, err)
 		return
@@ -291,6 +299,9 @@ func (a *api) handleDraftStream(w http.ResponseWriter, r *http.Request) {
 	if r.ContentLength != 0 && !decodeJSON(w, r, &in) {
 		return
 	}
+	if !a.allow(w, r, authz.ResourceStreams, authz.ActionView, r.PathValue("name")) {
+		return
+	}
 	src, err := a.deps.Streams.Get(r.Context(), r.PathValue("name"))
 	if err != nil {
 		a.writeErr(w, err)
@@ -307,8 +318,14 @@ func (a *api) handleDraftStream(w http.ResponseWriter, r *http.Request) {
 	if draft.Name == "" {
 		draft.Name = src.Name + "-draft"
 	}
+	if !allowNew(w, r, authz.ResourceStreams, authz.ActionEdit, draft.Name) {
+		return
+	}
 	if err := draft.Validate(); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !allowStreamConnections(w, r, draft) {
 		return
 	}
 	created, err := a.deps.Streams.Create(r.Context(), draft)
@@ -321,7 +338,7 @@ func (a *api) handleDraftStream(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *api) handleExportStream(w http.ResponseWriter, r *http.Request) {
-	st, _, ok := a.visibleStream(w, r)
+	st, _, ok := a.visibleStream(w, r, authz.ActionView)
 	if !ok {
 		return
 	}
@@ -362,6 +379,9 @@ func (a *api) handleImportStream(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := st.Validate(); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !allowNew(w, r, authz.ResourceStreams, authz.ActionEdit, st.Name) || !allowStreamConnections(w, r, st) {
 		return
 	}
 	user := IdentityFrom(r.Context()).Username

@@ -1,4 +1,5 @@
 import {
+  AccessPolicy,
   Application,
   ApplicationList,
   BranchList,
@@ -8,6 +9,9 @@ import {
   ImagesResult,
   Me,
   Pipeline,
+  PolicyDocument,
+  PolicyEvaluation,
+  PolicyValidation,
   ProviderInfo,
   Registry,
   RegistryInput,
@@ -267,6 +271,34 @@ export class ZeaClient {
 
   retryStreamRun(name: string, id: string): Promise<StreamRun> {
     return this.call<StreamRun>(`api/v1/streams/${encodeURIComponent(name)}/runs/${encodeURIComponent(id)}/retry`, { method: 'POST' });
+  }
+
+  // Branches of a connection the stream uses; needs run access to the stream only.
+  streamBranches(name: string, connection: string): Promise<BranchList> {
+    return this.call<BranchList>(`api/v1/streams/${encodeURIComponent(name)}/branches?connection=${encodeURIComponent(connection)}`);
+  }
+
+  // Jobs of a pipeline run a step of the stream run started; needs view access to the stream only.
+  streamRunJobs(name: string, run: string, step: string, providerRun: string): Promise<RunDetail> {
+    return this.call<RunDetail>(
+      `api/v1/streams/${encodeURIComponent(name)}/runs/${encodeURIComponent(run)}/jobs/${encodeURIComponent(providerRun)}?step=${encodeURIComponent(step)}`,
+    );
+  }
+
+  policy(): Promise<PolicyDocument> {
+    return this.call<PolicyDocument>('api/v1/policy');
+  }
+
+  savePolicy(policy: AccessPolicy, version: string): Promise<PolicyDocument> {
+    return this.call<PolicyDocument>('api/v1/policy', { method: 'PUT', json: { policy, version } });
+  }
+
+  validatePolicy(input: { policy: AccessPolicy } | { yaml: string }): Promise<PolicyValidation> {
+    return this.call<PolicyValidation>('api/v1/policy/validate', { method: 'POST', json: input });
+  }
+
+  evaluatePolicy(policy: AccessPolicy, user: string, groups: string[]): Promise<PolicyEvaluation> {
+    return this.call<PolicyEvaluation>('api/v1/policy/evaluate', { method: 'POST', json: { policy, user, groups } });
   }
 }
 

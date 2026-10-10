@@ -107,10 +107,11 @@ func run() error {
 		StepTimeout:  cfg.StreamStepTimeout,
 		History:      cfg.StreamRunHistory,
 	}, log)
+	policyStore := authz.NewConfigMapPolicyStore(kube, cfg.ConnectionsNamespace)
 	deps := server.Deps{
 		Store:         connStore,
 		Providers:     provs,
-		Authz:         authz.New(cfg.AdminUsers, cfg.AdminGroups),
+		Authz:         authz.New(cfg.AdminUsers, cfg.AdminGroups, policyStore),
 		Registries:    regStore,
 		RegistryKinds: regKinds,
 		Images:        images.NewResolver(regStore, regKinds, imagesCacheTTL),
@@ -118,8 +119,9 @@ func run() error {
 		StreamRuns:    engine,
 	}
 	if len(cfg.AdminUsers) == 0 && len(cfg.AdminGroups) == 0 {
-		log.Warn("no Zea admins configured (ZEA_ADMIN_USERS / ZEA_ADMIN_GROUPS); connections can only be managed declaratively")
+		log.Warn("no Zea admins configured (ZEA_ADMIN_USERS / ZEA_ADMIN_GROUPS); the access policy can only be managed declaratively")
 	}
+	migrateAccess(log, deps, policyStore)
 
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
@@ -163,6 +165,33 @@ func run() error {
 	case <-shutdownCtx.Done():
 	}
 	return err
+}
+
+// migrateAccess creates the access policy from the deprecated allowedGroups
+// of Connections on the first start of a version with policies. Failures
+// are logged: without a policy only admins have access, and the migration
+// is tried again on the next start.
+func migrateAccess(log *slog.Logger, deps server.Deps, store authz.PolicyStore) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	created, err := server.MigrateLegacyAccess(ctx, deps, store)
+	switch {
+	case err != nil:
+		log.Error("migrating allowedGroups into the access policy failed", "error", err)
+		return
+	case created:
+		log.Info("access policy created from connection allowedGroups", "configmap", authz.ConfigMapName)
+		return
+	}
+	conns, err := deps.Store.List(ctx)
+	if err != nil {
+		return
+	}
+	for _, c := range conns {
+		if len(c.AllowedGroups) > 0 {
+			log.Warn("allowedGroups is deprecated and ignored; grant access in the access policy instead", "connection", c.Name)
+		}
+	}
 }
 
 // kubeClient uses the in-cluster service account, falling back to the

@@ -97,6 +97,8 @@ type testEnv struct {
 	regs  *registries.MemoryStore
 	strms *streams.MemoryStore
 	eng   *streams.Engine
+	// policy holds the access policy; tests may replace it with SetRaw.
+	policy *authz.MemoryPolicyStore
 }
 
 func newEnv(skip bool) *testEnv {
@@ -120,17 +122,23 @@ func newEnv(skip bool) *testEnv {
 	strms := streams.NewMemoryStore(testStreams()...)
 	provs := providers.NewRegistry(fakeProvider{})
 	eng := streams.NewEngine(streams.NewMemoryRunStore(), store, provs, streams.EngineConfig{}, nil)
+	policy := authz.NewMemoryPolicyStore()
 	deps := Deps{
 		Store:         store,
 		Providers:     provs,
-		Authz:         authz.New([]string{"admin"}, []string{"zea-admins"}),
+		Authz:         authz.New([]string{"admin"}, []string{"zea-admins"}, policy),
 		Registries:    regs,
 		RegistryKinds: kinds,
 		Images:        images.NewResolver(regs, kinds, 0),
 		Streams:       strms,
 		StreamRuns:    eng,
 	}
-	return &testEnv{h: New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), deps), store: store, regs: regs, strms: strms, eng: eng}
+	// The fixtures grant access through the deprecated allowedGroups, which
+	// the migration turns into the policy, as on a real upgrade.
+	if _, err := MigrateLegacyAccess(context.Background(), deps, policy); err != nil {
+		panic(err)
+	}
+	return &testEnv{h: New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), deps), store: store, regs: regs, strms: strms, eng: eng, policy: policy}
 }
 
 type reqOpt func(*http.Request)
@@ -298,7 +306,7 @@ func TestOnlyAdminsManageConnections(t *testing.T) {
 func TestCreateUpdateDelete(t *testing.T) {
 	e := newEnv(false)
 	admin := as("admin", "")
-	in := map[string]any{"name": "new", "provider": "fake", "url": "https://x/o/n", "allowedGroups": []string{"devs"},
+	in := map[string]any{"name": "new", "provider": "fake", "url": "https://x/o/n",
 		"credentials": map[string]string{"token": "t1"}}
 	if code, body := e.do(t, "POST", "/api/v1/connections", in, admin); code != http.StatusCreated {
 		t.Fatalf("create: %d %v", code, body)
@@ -307,7 +315,7 @@ func TestCreateUpdateDelete(t *testing.T) {
 		t.Fatalf("duplicate create: %d", code)
 	}
 
-	upd := map[string]any{"provider": "fake", "url": "https://x/o/n2", "allowedGroups": []string{"ops"}, "credentials": map[string]string{"token": ""}}
+	upd := map[string]any{"provider": "fake", "url": "https://x/o/n2", "credentials": map[string]string{"token": ""}}
 	if code, body := e.do(t, "PUT", "/api/v1/connections/new", upd, admin); code != http.StatusOK {
 		t.Fatalf("update: %d %v", code, body)
 	}

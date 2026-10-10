@@ -158,7 +158,7 @@ func TestStreamDraftExportImport(t *testing.T) {
 		t.Fatalf("update draft: %d %v", code, body)
 	}
 
-	code, body = e.do(t, "GET", "/api/v1/streams/git-draft/export", nil)
+	code, body = e.do(t, "GET", "/api/v1/streams/git-draft/export", nil, admin)
 	manifest, _ := body["yaml"].(string)
 	if code != http.StatusOK || body["name"] != "git" || body["fileName"] != "zea-stream-git.yaml" ||
 		!strings.Contains(manifest, "namespace: zea-connections") || !strings.Contains(manifest, "description: edited") {

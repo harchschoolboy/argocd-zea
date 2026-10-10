@@ -6,7 +6,7 @@ import { Badge, ellipsis, Help, ProblemList, StreamStatusIcon, StreamStatusLabel
 import { StreamEditor } from './StreamEditor';
 import { ConnData } from './streamModel';
 import { StagesBoard, StreamRunForm, StreamRunHistory, StreamRunView } from './StreamRun';
-import { Connection, Me, Stream, StreamExport, StreamRun } from './types';
+import { can, Connection, Me, Stream, StreamExport, StreamRun } from './types';
 import { COLORS, ErrorText, Muted, useLoad } from './ui';
 
 const StreamBadges = ({ stream }: { stream: Stream }) => (
@@ -111,14 +111,16 @@ const StreamCard = ({ client, stream }: { client: ZeaClient; stream: Stream }) =
           <b style={{ ...ellipsis, fontSize: '1.05em' }}>{stream.name}</b>
           <StreamBadges stream={stream} />
         </div>
-        <button
-          className='argo-button argo-button--base'
-          style={{ flex: '0 0 auto' }}
-          disabled={busy || blocked}
-          title={blocked ? 'Fix the problems first' : paramDefaults(stream) ? 'Run with the default params' : 'Some params need a value'}
-          onClick={run}>
-          <i className={busy ? 'fa fa-circle-notch fa-spin' : 'fa fa-play'} /> Run
-        </button>
+        {can(stream.actions, 'run') && (
+          <button
+            className='argo-button argo-button--base'
+            style={{ flex: '0 0 auto' }}
+            disabled={busy || blocked}
+            title={blocked ? 'Fix the problems first' : paramDefaults(stream) ? 'Run with the default params' : 'Some params need a value'}
+            onClick={run}>
+            <i className={busy ? 'fa fa-circle-notch fa-spin' : 'fa fa-play'} /> Run
+          </button>
+        )}
       </div>
       {stream.description && <div style={{ marginTop: '0.3em', wordBreak: 'break-word' }}>{stream.description}</div>}
       <div style={{ fontSize: '0.85em', color: COLORS.muted, marginTop: '0.3em', wordBreak: 'break-word' }}>
@@ -237,13 +239,14 @@ const ExportPanel = ({ client, stream, onClose }: { client: ZeaClient; stream: s
 
 const StreamList = ({ client, me }: { client: ZeaClient; me: Me }) => {
   const [list, reload] = useLoad(() => client.streams(), [client]);
+  const canCreate = can(me.permissions.streams, 'edit');
   const [importing, setImporting] = React.useState(false);
   return (
     <>
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', marginBottom: '1em' }}>
         <Muted>Pipelines of several connections, run in order with shared params.</Muted>
         <div style={{ flex: 1 }} />
-        {me.isAdmin && (
+        {canCreate && (
           <>
             <button className='argo-button argo-button--base-o' onClick={() => setImporting(v => !v)}>
               <i className='fa fa-file-import' /> Import
@@ -263,9 +266,9 @@ const StreamList = ({ client, me }: { client: ZeaClient; me: Me }) => {
       {list.state === 'ok' && list.data.length === 0 && (
         <div className='white-box'>
           <div className='white-box__details'>
-            {me.isAdmin
+            {canCreate
               ? 'No streams yet. Use "New stream" to chain pipelines of your connections.'
-              : 'No streams are available to you. A stream is visible when you may use every connection it runs.'}
+              : 'No streams are shared with you. Ask a Zea admin for access.'}
           </div>
         </div>
       )}
@@ -332,19 +335,21 @@ const StreamDetail = ({ client, data, me, name, openRun }: { client: ZeaClient; 
         <div style={{ flex: 1 }} />
         {st.state === 'ok' && (
           <>
-            <button
-              className='argo-button argo-button--base'
-              disabled={busy || st.data.problems.length > 0}
-              title={st.data.problems.length > 0 ? 'Fix the problems first' : 'Start this stream'}
-              onClick={() => setPanel(panel === 'run' ? 'none' : 'run')}>
-              <i className='fa fa-play' /> Run
-            </button>
-            {me.isAdmin && st.data.editable && (
+            {can(st.data.actions, 'run') && (
+              <button
+                className='argo-button argo-button--base'
+                disabled={busy || st.data.problems.length > 0}
+                title={st.data.problems.length > 0 ? 'Fix the problems first' : 'Start this stream'}
+                onClick={() => setPanel(panel === 'run' ? 'none' : 'run')}>
+                <i className='fa fa-play' /> Run
+              </button>
+            )}
+            {can(st.data.actions, 'edit') && st.data.editable && (
               <button className='argo-button argo-button--base-o' disabled={busy} onClick={() => navigate({ view: 'streams', stream: name, mode: 'edit' })}>
                 <i className='fa fa-pencil-alt' /> Edit
               </button>
             )}
-            {me.isAdmin && (
+            {can(me.permissions.streams, 'edit') && (
               <button className='argo-button argo-button--base-o' disabled={busy} onClick={draft} title='Copy into an editable draft'>
                 <i className='fa fa-copy' /> Edit as draft
               </button>
@@ -352,7 +357,7 @@ const StreamDetail = ({ client, data, me, name, openRun }: { client: ZeaClient; 
             <button className='argo-button argo-button--base-o' disabled={busy} onClick={() => setPanel(panel === 'export' ? 'none' : 'export')}>
               <i className='fa fa-file-export' /> Export
             </button>
-            {me.isAdmin && st.data.editable && (
+            {can(st.data.actions, 'edit') && st.data.editable && (
               <button className='argo-button argo-button--base-o' disabled={busy} onClick={remove} title='Delete stream'>
                 <i className='fa fa-trash' />
               </button>
@@ -383,10 +388,9 @@ const StreamDetail = ({ client, data, me, name, openRun }: { client: ZeaClient; 
               <ProblemList problems={st.data.problems} />
             </div>
           )}
-          {panel === 'run' && (
+          {panel === 'run' && can(st.data.actions, 'run') && (
             <StreamRunForm
               client={client}
-              data={data}
               stream={st.data}
               onStarted={r => navigate({ view: 'streams', stream: name, srun: r.id })}
               onClose={() => setPanel('none')}
@@ -407,7 +411,8 @@ const EditorPage = ({ client, data, name }: { client: ZeaClient; data: ConnData;
   const [loaded] = useLoad(
     async (): Promise<{ stream?: Stream; connections: Connection[] }> => {
       const [stream, connections] = await Promise.all([name ? client.stream(name) : Promise.resolve(undefined), client.connections()]);
-      return { stream, connections };
+      // A stream can only use connections the user may run.
+      return { stream, connections: connections.filter(c => can(c.actions, 'run')) };
     },
     [client, name],
   );
@@ -418,6 +423,16 @@ const EditorPage = ({ client, data, name }: { client: ZeaClient; data: ConnData;
     return <ErrorText text={loaded.error} />;
   }
   const { stream, connections } = loaded.data;
+  if (stream && !can(stream.actions, 'edit')) {
+    return (
+      <>
+        <button className='argo-button argo-button--base-o' onClick={() => navigate({ view: 'streams', stream: stream.name })}>
+          <i className='fa fa-arrow-left' /> {stream.name}
+        </button>
+        <ErrorText text='You have no edit access to this stream.' />
+      </>
+    );
+  }
   if (stream && !stream.editable) {
     return (
       <>
@@ -443,11 +458,12 @@ const EditorPage = ({ client, data, name }: { client: ZeaClient; data: ConnData;
 export const StreamsView = ({ client, me }: { client: ZeaClient; me: Me }) => {
   const route = useRoute();
   const data = React.useMemo(() => new ConnData(client), [client]);
-  if (me.isAdmin && route.mode === 'new') {
+  const canCreate = can(me.permissions.streams, 'edit');
+  if (canCreate && route.mode === 'new') {
     return <EditorPage client={client} data={data} />;
   }
   if (route.stream) {
-    if (me.isAdmin && route.mode === 'edit') {
+    if (canCreate && route.mode === 'edit') {
       return <EditorPage key={route.stream} client={client} data={data} name={route.stream} />;
     }
     if (route.srun) {

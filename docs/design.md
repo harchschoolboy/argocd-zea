@@ -40,7 +40,7 @@ Argo CD API server
   v
 zea-backend (Go, in the Argo CD namespace)
   |  verifies Zea-Proxy-Token, reads identity headers
-  |  Zea authz: admin group / Connection.allowedGroups
+  |  Zea authz: admins from values + access policy (roles, bindings)
   |  provider layer: github | gitlab | ...
   v
 GitHub API / GitLab API (gitlab.com or self-hosted) / OCI registries / git
@@ -65,8 +65,9 @@ itself (configurable). Consequences:
 
 - Access to Zea at all = `get` on the anchor Application +
   `extensions, invoke, zea`.
-- Fine-grained permissions (which Connection a user may see, build,
-  administer) are enforced by the backend using `Argocd-User-Groups`.
+- Fine-grained permissions (which Stream, Connection or Registry a user
+  may see, run or edit) are enforced by the backend using `Argocd-Username`
+  and `Argocd-User-Groups`, see [Access](#access).
 - The backend rejects requests scoped to any other Application
   (`ZEA_ANCHOR_APP`). The UI finds the anchor by the label
   `argocd-zea.io/anchor: "true"`.
@@ -95,7 +96,8 @@ manages Argo CD, and patching them from a second owner causes drift.
 
 ## Connections
 
-A Connection = one repository + one CI provider + credentials + access rules.
+A Connection = one repository + one CI provider + credentials (+ image
+sources). Who may use it is decided by the [access policy](#access).
 
 Stored as a Kubernetes Secret, mirroring how Argo CD stores repositories
 (`argocd.argoproj.io/secret-type: repository`), but in a dedicated namespace
@@ -113,7 +115,6 @@ stringData:
   name: my-service
   provider: github            # github | gitlab
   url: https://github.com/org/my-service   # self-hosted GitLab/GHE URLs allowed
-  allowedGroups: devs,ops     # who may see and run pipelines
   # provider-specific credentials, e.g.
   githubAppID: "123"
   githubAppInstallationID: "456"
@@ -123,7 +124,7 @@ stringData:
 ```
 
 Two ways to create Connections:
-- **UI** - Zea admins (`admins.users` / `admins.groups` in the chart) create,
+- **UI** - users with edit access (Zea admins, or a policy role) create,
   edit and delete Connections on the Zea page; the backend writes the Secret
   named `zea-conn-<name>` with the label `argocd-zea.io/managed-by: zea`.
   Credentials are write-only: the API never returns them, and an empty value
@@ -138,16 +139,89 @@ Secrets by label, so access to Secrets in the Argo CD namespace would expose
 `argocd-secret` and repository credentials. The chart creates the namespace
 (kept on uninstall) and a Role/RoleBinding limited to it.
 
-### Access rules
+## Access
 
-| Who | Can |
-|-----|-----|
-| Zea admins (`adminGroups` in backend config) | Create/edit/delete Connections and Registries, everything below |
-| Members of `allowedGroups` of a Connection | See it, list branches and images, start/cancel/retry pipelines, read logs |
-| Others | Do not see the Connection |
+Zea checks every request itself, after Argo CD has let the user in (anchor
+Application + `extensions, invoke, zea`). Two layers:
 
-Deploy additionally requires Argo CD `sync` on the target Application
-(checked by the backend through the Argo CD API on behalf of the user).
+- **Zea admins** - `admins.users` / `admins.groups` in the chart values
+  (`ZEA_ADMIN_USERS` / `ZEA_ADMIN_GROUPS`). They have every action and are
+  the only ones who see and edit the access policy.
+- **Access policy** - roles and bindings in the ConfigMap `zea-policy`
+  (key `policy.yaml`) in the Connections namespace, edited on the **Access**
+  tab or managed in git.
+
+```yaml
+roles:
+  - name: developers
+    description: Run the dev streams, see all connections
+    rules:
+      - resource: streams
+        pattern: "dev-*"
+        actions: [view, run]
+      - resource: connections
+        pattern: "*"
+        actions: [view]
+  - name: stream-authors
+    rules:
+      - resource: streams
+        actions: [edit]          # pattern defaults to "*"
+      - resource: connections
+        actions: [run]
+bindings:
+  - group: devs
+    roles: [developers]
+  - user: alice                  # username or user id
+    roles: [developers, stream-authors]
+  - group: "*"                   # everyone who can open Zea
+    roles: []
+```
+
+| Resource | view | run | edit |
+|----------|------|-----|------|
+| `streams` | See it, its runs and their jobs; Export | Start, cancel and retry runs | Create, change, delete, draft, import |
+| `connections` | See it, branches, pipelines, runs and jobs, images; Test | Start, cancel and rerun pipelines | Create, change, delete; see which credential keys are set |
+| `registries` | See it and which visible Connections use it | - | Create, change, delete; Test |
+
+- `pattern` is a glob over item names (`*`, `?`, `[a-z]`); empty means `*`.
+  Any action includes view. Rules only grant; there is no deny. Items the
+  user may not view answer 404, missing actions 403. Creating needs edit
+  on the new name.
+- Saving a Stream needs edit on it and run on every Connection it uses, so
+  a Stream author cannot reach pipelines they could not start themselves.
+  Running a Stream needs only run on the Stream: access to a Stream
+  delegates the use of its Connections. The run form lists branches and the
+  run view shows step jobs through the Stream
+  (`/streams/{name}/branches`, `/streams/{name}/runs/{run}/jobs/{providerRun}`),
+  so no Connection access is needed. Runs follow the Stream name; editing a
+  Stream does not change who sees its past runs.
+- Image sources of a Connection may only use Registries the user can view
+  (checked for sources added in this change).
+- Testing unsaved Connection or Registry forms reuses stored credentials
+  only with edit on that name.
+- Policy edits carry `version` (the ConfigMap resourceVersion) and fail with
+  409 when someone else changed it. Like Streams, only a ConfigMap labelled
+  `argocd-zea.io/managed-by: zea` and not tracked by Argo CD is editable in
+  Zea; a committed one (see `deploy/examples/zea-policy.yaml`) is read-only. Every replica reloads the policy within 5 seconds.
+- A stored policy that does not parse or validate grants nothing (admins
+  keep every action); the Access tab and the backend log show why.
+- Limits: 200 roles, 100 rules per role, 500 bindings.
+- Deploy (planned) will additionally require Argo CD `sync` on the target
+  Application, checked through the Argo CD API on behalf of the user.
+
+The Access tab edits roles (a rule table with View / Run / Edit per
+resource and pattern) and bindings (a matrix of subjects and roles),
+validates while editing, imports and exports the YAML and shows what the
+unsaved policy grants a given user and groups on the existing items.
+
+**Migration from `allowedGroups`.** Before 0.3.0 a Connection listed the
+groups that may use it (`allowedGroups`, `*` for everyone) and only admins
+could edit anything. When `zea-policy` does not exist, the backend creates
+it on start from these values: per group a role `legacy-<group>`
+(`everyone` for `*`) with view and run on its Connections and on the
+Streams whose Connections it may all use, bound to that group. Once the
+policy exists, `allowedGroups` is ignored (the backend logs a warning for
+each Connection that still sets it) and should be removed.
 
 ## Providers
 
@@ -181,22 +255,22 @@ Application headers.
 
 | Method and path | Who | Purpose |
 |-----------------|-----|---------|
-| `GET /api/v1/me` | any | Identity and `isAdmin` |
+| `GET /api/v1/me` | any | Identity, `isAdmin` and `permissions` (actions per resource on some items) |
 | `GET /api/v1/providers` | any | Provider capabilities and credential form schema |
-| `GET /api/v1/connections` | any | Connections the user may use |
-| `POST /api/v1/connections` | admin | Create |
-| `PUT /api/v1/connections/{name}` | admin | Update (UI-managed only) |
-| `DELETE /api/v1/connections/{name}` | admin | Delete (UI-managed only) |
-| `POST /api/v1/test-connection` | admin | Test unsaved form values |
-| `POST /api/v1/connections/{name}/test` | user | Test a saved Connection |
-| `GET /api/v1/connections/{name}/branches` | user | Default branch + branches (up to 1000) |
-| `GET /api/v1/connections/{name}/pipelines?ref=` | user | Triggerable pipelines at `ref` |
-| `GET /api/v1/connections/{name}/pipelines/{pipeline}/form?ref=` | user | Run form |
-| `POST /api/v1/connections/{name}/runs` | user | Start: `{pipelineID, ref, inputs, variables}` -> 201 with the run |
-| `GET /api/v1/connections/{name}/runs?pipeline=&ref=&limit=` | user | Recent runs (limit up to 50, default 20) |
-| `GET /api/v1/connections/{name}/runs/{run}` | user | Run with jobs and steps |
-| `POST /api/v1/connections/{name}/runs/{run}/cancel` | user | Cancel -> 202 |
-| `POST /api/v1/connections/{name}/runs/{run}/retry` | user | Rerun, body `{failedOnly}` optional -> 202 |
+| `GET /api/v1/connections` | any | Connections the user may view, with `actions` |
+| `POST /api/v1/connections` | edit | Create |
+| `PUT /api/v1/connections/{name}` | edit | Update (UI-managed only) |
+| `DELETE /api/v1/connections/{name}` | edit | Delete (UI-managed only) |
+| `POST /api/v1/test-connection` | edit | Test unsaved form values |
+| `POST /api/v1/connections/{name}/test` | view | Test a saved Connection |
+| `GET /api/v1/connections/{name}/branches` | view | Default branch + branches (up to 1000) |
+| `GET /api/v1/connections/{name}/pipelines?ref=` | view | Triggerable pipelines at `ref` |
+| `GET /api/v1/connections/{name}/pipelines/{pipeline}/form?ref=` | view | Run form |
+| `POST /api/v1/connections/{name}/runs` | run | Start: `{pipelineID, ref, inputs, variables}` -> 201 with the run |
+| `GET /api/v1/connections/{name}/runs?pipeline=&ref=&limit=` | view | Recent runs (limit up to 50, default 20) |
+| `GET /api/v1/connections/{name}/runs/{run}` | view | Run with jobs and steps |
+| `POST /api/v1/connections/{name}/runs/{run}/cancel` | run | Cancel -> 202 |
+| `POST /api/v1/connections/{name}/runs/{run}/retry` | run | Rerun, body `{failedOnly}` optional -> 202 |
 
 Connections a user may not use answer 404, not 403. Invalid requests and
 provider validation errors (GitHub/GitLab 400/422) answer 400/422 with the
@@ -317,15 +391,15 @@ images: |
 
 | Method and path | Who | Purpose |
 |-----------------|-----|---------|
-| `GET /api/v1/connections/{name}/images?ref=&limit=&refresh=` | user | Images of the Connection, filtered by branch when `ref` is set; `configured: false` without image sources |
-| `POST /api/v1/images/preview` | admin | Resolve unsaved sources: `{images, ref}`, 3 tags per repository |
-| `GET /api/v1/registry-kinds` | admin | Kinds and credential form schema |
-| `GET /api/v1/registries` | admin | Registries with `usedBy` (never credential values) |
-| `POST /api/v1/registries` | admin | Create |
-| `PUT /api/v1/registries/{name}` | admin | Update (UI-managed only); empty credential keeps the stored value |
-| `DELETE /api/v1/registries/{name}` | admin | Delete (UI-managed, unused only) |
-| `POST /api/v1/registries/{name}/test` | admin | List repositories of a saved registry |
-| `POST /api/v1/test-registry` | admin | Test unsaved form values |
+| `GET /api/v1/connections/{name}/images?ref=&limit=&refresh=` | view | Images of the Connection, filtered by branch when `ref` is set; `configured: false` without image sources |
+| `POST /api/v1/images/preview` | edit on some Connection, view on the Registries | Resolve unsaved sources: `{images, ref}`, 3 tags per repository |
+| `GET /api/v1/registry-kinds` | view on some Registry | Kinds and credential form schema |
+| `GET /api/v1/registries` | any | Registries the user may view, with `actions` and `usedBy` (never credential values) |
+| `POST /api/v1/registries` | edit | Create |
+| `PUT /api/v1/registries/{name}` | edit | Update (UI-managed only); empty credential keeps the stored value |
+| `DELETE /api/v1/registries/{name}` | edit | Delete (UI-managed, unused only) |
+| `POST /api/v1/registries/{name}/test` | edit | List repositories of a saved registry |
+| `POST /api/v1/test-registry` | edit | Test unsaved form values |
 
 Per-source registry errors do not fail the request: they are returned in
 `errors` next to the repositories that did resolve.
@@ -400,11 +474,8 @@ resourceVersion) and fail with 409 when someone else changed the Stream.
 
 ### Access rules
 
-Only Zea admins create, edit, delete, draft and import Streams. Other users
-see and run a Stream only when they may use every Connection it
-references; other Streams answer 404. Runs follow the same rule, applied to
-the Connections of the run's own snapshot, so editing a Stream does not
-change who sees its past runs. Anyone who sees a run may cancel or retry it.
+See [Access](#access): view, run and edit on `streams` by name; saving
+needs run on every Connection of the Stream, running does not.
 
 ### Runs
 
@@ -473,17 +544,19 @@ step's automatic retries over.
 
 ### UI (S3-S4)
 
-The page has the tabs **Streams** (default), **Connections** and, for
-admins, **Registries**
+The page has the tabs **Streams** (default), **Connections**,
+**Registries** (with view access to some Registry) and, for admins,
+**Access**
 (`?view=streams[&stream=<name>][&mode=edit|new|run][&srun=<id>]`,
-`?view=connections`, `?connection=<name>`, `?view=registries`).
+`?view=connections`, `?connection=<name>`, `?view=registries`,
+`?view=access`). Buttons follow the user's actions on each item.
 
 - **List** - cards with badges (draft, managed in git, problems), stages and
   steps count, Connections used and the last run (polled while it runs).
   **Run** on a card asks for confirmation (listing the default params) and
   starts the Stream with its defaults; when a required param has no
-  default it opens the run form instead. Admins get **New stream** and
-  **Import** (paste YAML).
+  default it opens the run form instead. Users with edit on Streams get
+  **New stream** and **Import** (paste YAML).
 - **Detail** - read-only stage columns, problems, run history (polled while a
   run is active) and the actions **Run**, **Edit** (UI-managed only),
   **Edit as draft**, **Export** (copy or download the ConfigMap) and
@@ -510,20 +583,31 @@ admins, **Registries**
 
 | Method and path | Who | Purpose |
 |-----------------|-----|---------|
-| `GET /api/v1/streams` | user | Visible Streams with `editable`, `version`, `connections`, `problems` |
-| `GET /api/v1/streams/{name}` | user | One Stream |
-| `POST /api/v1/streams` | admin | Create `{name, description, params, stages}` |
-| `PUT /api/v1/streams/{name}` | admin | Replace (UI-managed only); `version` detects concurrent edits |
-| `DELETE /api/v1/streams/{name}` | admin | Delete (UI-managed only) |
-| `POST /api/v1/streams/{name}/draft` | admin | Copy into a draft `{name?}` |
-| `GET /api/v1/streams/{name}/export` | user | `{name, fileName, yaml}` - declarative ConfigMap |
-| `POST /api/v1/streams/import` | admin | `{yaml, replace?}` - create, or replace a UI-managed Stream |
-| `POST /api/v1/streams/validate` | admin | Problems of an unsaved Stream |
-| `POST /api/v1/streams/{name}/runs` | user | Start a run `{params}`; 409 when the Stream has problems |
-| `GET /api/v1/streams/{name}/runs` | user | Visible runs, newest first, without the Spec snapshot |
-| `GET /api/v1/streams/{name}/runs/{run}` | user | One run with its Spec snapshot |
-| `POST /api/v1/streams/{name}/runs/{run}/cancel` | user | Request cancellation (202); 409 when finished |
-| `POST /api/v1/streams/{name}/runs/{run}/retry` | user | Run the steps that did not succeed again; 409 when running, succeeded, or retried too often |
+| `GET /api/v1/streams` | any | Streams the user may view, with `actions`, `editable`, `version`, `connections`, `problems` |
+| `GET /api/v1/streams/{name}` | view | One Stream |
+| `POST /api/v1/streams` | edit + run on its Connections | Create `{name, description, params, stages}` |
+| `PUT /api/v1/streams/{name}` | edit + run on its Connections | Replace (UI-managed only); `version` detects concurrent edits |
+| `DELETE /api/v1/streams/{name}` | edit | Delete (UI-managed only) |
+| `POST /api/v1/streams/{name}/draft` | view; edit on the draft name + run on its Connections | Copy into a draft `{name?}` |
+| `GET /api/v1/streams/{name}/export` | view | `{name, fileName, yaml}` - declarative ConfigMap |
+| `POST /api/v1/streams/import` | edit + run on its Connections | `{yaml, replace?}` - create, or replace a UI-managed Stream |
+| `POST /api/v1/streams/validate` | edit on some Stream | Problems of an unsaved Stream |
+| `POST /api/v1/streams/{name}/runs` | run | Start a run `{params}`; 409 when the Stream has problems |
+| `GET /api/v1/streams/{name}/runs` | view | Runs, newest first, without the Spec snapshot |
+| `GET /api/v1/streams/{name}/runs/{run}` | view | One run with its Spec snapshot |
+| `POST /api/v1/streams/{name}/runs/{run}/cancel` | run | Request cancellation (202); 409 when finished |
+| `POST /api/v1/streams/{name}/runs/{run}/retry` | run | Run the steps that did not succeed again; 409 when running, succeeded, or retried too often |
+| `GET /api/v1/streams/{name}/branches?connection=` | run | Branches of a Connection the Stream uses (branch params) |
+| `GET /api/v1/streams/{name}/runs/{run}/jobs/{providerRun}?step=` | view | Jobs of a pipeline run started by that step of the run |
+
+### Backend API (access)
+
+| Method and path | Who | Purpose |
+|-----------------|-----|---------|
+| `GET /api/v1/policy` | admin | `{policy, yaml, version, exists, editable, error?, admins, resources}` |
+| `PUT /api/v1/policy` | admin | Save `{policy, version}`; 400 with problems, 409 on a stale version or a read-only ConfigMap |
+| `POST /api/v1/policy/validate` | admin | `{policy}` or `{yaml}` -> normalized `{policy, problems, yaml}` |
+| `POST /api/v1/policy/evaluate` | admin | `{policy, user, groups}` -> `{isAdmin, roles, items}`: actions per existing item |
 
 ### Plan
 
@@ -573,7 +657,7 @@ with selfHeal would revert them.
    chart, release artifacts. *(done; currently lists annotated Applications -
    to be replaced by Connections in phase 2)*
 2. **Connections + providers core** - Connection Secrets, anchor Application,
-   admin/allowedGroups authz, provider interface, GitHub and GitLab adapters
+   admin/allowedGroups authz (replaced by the access policy in 0.3.0), provider interface, GitHub and GitLab adapters
    for branches and pipeline list, Connections UI (cards). *(done)*
 3. **Run** - trigger form, start, status, jobs, cancel/retry *(done)*; logs,
    play manual jobs *(next)*.
@@ -581,7 +665,8 @@ with selfHeal would revert them.
    on Connections, images per branch with commit links *(done)*; GHCR and
    Docker Hub *(later)*.
 5. **Deploy** - plain-YAML app-of-apps write-back, parent refresh/sync.
-6. **Hardening** - caching, rate limits, audit log, error UX.
+6. **Hardening** - caching, rate limits, audit log, error UX; access policy
+   with roles and bindings *(0.3.0)*.
 7. **Streams** - multi-Connection pipelines, see [Streams](#streams)
    *(S1-S4 done)*.
 

@@ -1,12 +1,13 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
-	"github.com/harchschoolboy/argocd-zea/backend/internal/argocd"
-	"github.com/harchschoolboy/argocd-zea/backend/internal/connections"
+	"github.com/harchschoolboy/argocd-zea/backend/internal/authz"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/streams"
 )
 
@@ -98,29 +99,22 @@ func (a *api) runsReady(w http.ResponseWriter) bool {
 	return true
 }
 
-// canSeeRun applies the Stream access rule to the run's own snapshot, so
-// later edits of the Stream do not change who sees past runs.
-func (a *api) canSeeRun(id *argocd.Identity, r *streams.Run, conns map[string]*connections.Connection) bool {
-	return a.canUseAll(id, r.Connections(), conns)
-}
-
-// visibleRun loads a run and hides it (404) from users who may not see it.
-func (a *api) visibleRun(w http.ResponseWriter, r *http.Request) (*streams.Run, bool) {
+// visibleRun loads a run if the user may perform action on its Stream. Runs
+// of Streams the user may not see are reported as not found.
+func (a *api) visibleRun(w http.ResponseWriter, r *http.Request, action string) (*streams.Run, bool) {
 	if !a.runsReady(w) {
+		return nil, false
+	}
+	if !AccessFrom(r.Context()).Can(authz.ResourceStreams, authz.ActionView, r.PathValue("name")) {
+		a.writeErr(w, streams.ErrRunNotFound)
+		return nil, false
+	}
+	if !a.allow(w, r, authz.ResourceStreams, action, r.PathValue("name")) {
 		return nil, false
 	}
 	run, err := a.deps.StreamRuns.Runs().Get(r.Context(), r.PathValue("name"), r.PathValue("run"))
 	if err != nil {
 		a.writeErr(w, err)
-		return nil, false
-	}
-	conns, err := a.connectionIndex(r.Context())
-	if err != nil {
-		a.writeErr(w, err)
-		return nil, false
-	}
-	if !a.canSeeRun(IdentityFrom(r.Context()), run, conns) {
-		a.writeErr(w, streams.ErrRunNotFound)
 		return nil, false
 	}
 	return run, true
@@ -135,7 +129,7 @@ func (a *api) handleStartStreamRun(w http.ResponseWriter, r *http.Request) {
 	if !a.runsReady(w) {
 		return
 	}
-	st, conns, ok := a.visibleStream(w, r)
+	st, conns, ok := a.visibleStream(w, r, authz.ActionRun)
 	if !ok {
 		return
 	}
@@ -163,28 +157,24 @@ func (a *api) handleListStreamRuns(w http.ResponseWriter, r *http.Request) {
 	if !a.runsReady(w) {
 		return
 	}
+	if !AccessFrom(r.Context()).Can(authz.ResourceStreams, authz.ActionView, r.PathValue("name")) {
+		a.writeErr(w, streams.ErrNotFound)
+		return
+	}
 	runs, err := a.deps.StreamRuns.Runs().List(r.Context(), r.PathValue("name"))
 	if err != nil {
 		a.writeErr(w, err)
 		return
 	}
-	conns, err := a.connectionIndex(r.Context())
-	if err != nil {
-		a.writeErr(w, err)
-		return
-	}
-	id := IdentityFrom(r.Context())
 	out := []runView{}
 	for _, run := range runs {
-		if a.canSeeRun(id, run, conns) {
-			out = append(out, runViewOf(run, false))
-		}
+		out = append(out, runViewOf(run, false))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"runs": out})
 }
 
 func (a *api) handleGetStreamRun(w http.ResponseWriter, r *http.Request) {
-	run, ok := a.visibleRun(w, r)
+	run, ok := a.visibleRun(w, r, authz.ActionView)
 	if !ok {
 		return
 	}
@@ -192,7 +182,7 @@ func (a *api) handleGetStreamRun(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *api) handleCancelStreamRun(w http.ResponseWriter, r *http.Request) {
-	run, ok := a.visibleRun(w, r)
+	run, ok := a.visibleRun(w, r, authz.ActionRun)
 	if !ok {
 		return
 	}
@@ -205,7 +195,7 @@ func (a *api) handleCancelStreamRun(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *api) handleRetryStreamRun(w http.ResponseWriter, r *http.Request) {
-	run, ok := a.visibleRun(w, r)
+	run, ok := a.visibleRun(w, r, authz.ActionRun)
 	if !ok {
 		return
 	}
@@ -215,4 +205,91 @@ func (a *api) handleRetryStreamRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, runViewOf(updated, true))
+}
+
+// handleStreamBranches lists the branches of a Connection the Stream uses,
+// for users who may run the Stream without access to the Connection.
+func (a *api) handleStreamBranches(w http.ResponseWriter, r *http.Request) {
+	st, conns, ok := a.visibleStream(w, r, authz.ActionRun)
+	if !ok {
+		return
+	}
+	name := strings.TrimSpace(r.URL.Query().Get("connection"))
+	c := conns[name]
+	if c == nil || !slices.Contains(st.Connections(), name) {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("the stream does not use connection %q", name))
+		return
+	}
+	p, err := a.providerOf(w, c)
+	if err != nil {
+		return
+	}
+	branches, err := p.ListBranches(r.Context(), c)
+	if err != nil {
+		a.writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, branches)
+}
+
+// stepRan reports whether the provider run was started for the step in any
+// try or attempt of the run.
+func stepRan(run *streams.Run, step, providerRun string) bool {
+	match := func(s streams.StepState) bool { return s.ID == step && s.RunID == providerRun }
+	for _, s := range run.Steps {
+		if match(s) {
+			return true
+		}
+	}
+	for _, t := range run.Tries {
+		if match(t.StepState) {
+			return true
+		}
+	}
+	for _, at := range run.Attempts {
+		for _, s := range at.Steps {
+			if match(s) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// handleStreamRunJobs returns the provider run (with jobs) of a step, for
+// users who may see the Stream without access to the Connection.
+func (a *api) handleStreamRunJobs(w http.ResponseWriter, r *http.Request) {
+	run, ok := a.visibleRun(w, r, authz.ActionView)
+	if !ok {
+		return
+	}
+	step := strings.TrimSpace(r.URL.Query().Get("step"))
+	providerRun := r.PathValue("providerRun")
+	var conn string
+	for _, stage := range run.Spec.Stages {
+		for _, s := range stage.Steps {
+			if s.ID == step {
+				conn = s.Connection
+			}
+		}
+	}
+	if conn == "" || !stepRan(run, step, providerRun) {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("step %q of the run did not start pipeline run %q", step, providerRun))
+		return
+	}
+	c, err := a.deps.Store.Get(r.Context(), conn)
+	if err != nil {
+		a.writeErr(w, err)
+		return
+	}
+	p, err := a.providerOf(w, c)
+	if err != nil {
+		return
+	}
+	detail, err := p.GetRun(r.Context(), c, providerRun)
+	if err != nil {
+		a.writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, detail)
 }

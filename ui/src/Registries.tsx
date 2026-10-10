@@ -2,7 +2,7 @@ import * as React from 'react';
 import { describeError, ZeaClient } from './api';
 import { buildCredentials, CredentialsEditor, inputStyle, pickMode, Row } from './forms';
 import { navigate, routeHref } from './route';
-import { Registry, RegistryInput, RegistryKind, RegistryTestResult } from './types';
+import { can, Registry, RegistryInput, RegistryKind, RegistryTestResult } from './types';
 import { COLORS, ErrorText, Muted, useLoad } from './ui';
 
 const RegistryTestView = ({ result }: { result: RegistryTestResult }) =>
@@ -229,25 +229,27 @@ const RegistryRow = ({
         </div>
         {error && <ErrorText text={error} />}
         {test && <RegistryTestView result={test} />}
-        <div style={{ display: 'flex', gap: '0.5em', marginTop: '0.8em' }}>
-          <button className='argo-button argo-button--base-o' onClick={runTest} disabled={busy}>
-            Test
-          </button>
-          {r.editable && (
-            <>
-              <button className='argo-button argo-button--base-o' onClick={onEdit} disabled={busy}>
-                Edit
-              </button>
-              <button
-                className='argo-button argo-button--base-o'
-                onClick={remove}
-                disabled={busy || r.usedBy.length > 0}
-                title={r.usedBy.length > 0 ? 'Remove it from the image sources of its connections first' : undefined}>
-                Delete
-              </button>
-            </>
-          )}
-        </div>
+        {can(r.actions, 'edit') && (
+          <div style={{ display: 'flex', gap: '0.5em', marginTop: '0.8em' }}>
+            <button className='argo-button argo-button--base-o' onClick={runTest} disabled={busy}>
+              Test
+            </button>
+            {r.editable && (
+              <>
+                <button className='argo-button argo-button--base-o' onClick={onEdit} disabled={busy}>
+                  Edit
+                </button>
+                <button
+                  className='argo-button argo-button--base-o'
+                  onClick={remove}
+                  disabled={busy || r.usedBy.length > 0}
+                  title={r.usedBy.length > 0 ? 'Remove it from the image sources of its connections first' : undefined}>
+                  Delete
+                </button>
+              </>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -255,8 +257,8 @@ const RegistryRow = ({
 
 type Editing = { mode: 'none' } | { mode: 'create' } | { mode: 'edit'; registry: Registry };
 
-// RegistriesView is the admin page for container registries.
-export const RegistriesView = ({ client }: { client: ZeaClient }) => {
+// RegistriesView lists container registries; canCreate shows "Add registry".
+export const RegistriesView = ({ client, canCreate }: { client: ZeaClient; canCreate: boolean }) => {
   const [data, reload] = useLoad(async () => {
     const [kinds, registries] = await Promise.all([client.registryKinds(), client.registries()]);
     return { kinds, registries };
@@ -272,7 +274,7 @@ export const RegistriesView = ({ client }: { client: ZeaClient }) => {
     <>
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', marginBottom: '1em' }}>
         <div style={{ flex: 1 }} />
-        {editing.mode === 'none' && data.state === 'ok' && (
+        {canCreate && editing.mode === 'none' && data.state === 'ok' && (
           <button className='argo-button argo-button--base' onClick={() => setEditing({ mode: 'create' })}>
             <i className='fa fa-plus' /> Add registry
           </button>
@@ -302,7 +304,9 @@ export const RegistriesView = ({ client }: { client: ZeaClient }) => {
           )}
           {data.data.registries.length === 0 ? (
             <div className='white-box'>
-              <div className='white-box__details'>No registries yet. Use "Add registry" to connect one.</div>
+              <div className='white-box__details'>
+                {canCreate ? 'No registries yet. Use "Add registry" to connect one.' : 'No registries are shared with you.'}
+              </div>
             </div>
           ) : (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(420px, 1fr))', gap: '1em' }}>

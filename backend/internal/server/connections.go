@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
+	"github.com/harchschoolboy/argocd-zea/backend/internal/authz"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/connections"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/providers"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/registries"
@@ -25,31 +27,25 @@ type connectionView struct {
 	Provider       string                    `json:"provider"`
 	URL            string                    `json:"url"`
 	APIURL         string                    `json:"apiURL,omitempty"`
-	AllowedGroups  []string                  `json:"allowedGroups"`
 	Images         []connections.ImageSource `json:"images"`
 	ImagesError    string                    `json:"imagesError,omitempty"`
 	Editable       bool                      `json:"editable"`
 	CredentialKeys []string                  `json:"credentialKeys,omitempty"`
+	// Actions are what the user may do with the Connection.
+	Actions []string `json:"actions"`
 }
 
 // connectionInput is the body of create/update/test-connection requests.
 type connectionInput struct {
-	Name          string                    `json:"name"`
-	Provider      string                    `json:"provider"`
-	URL           string                    `json:"url"`
-	APIURL        string                    `json:"apiURL"`
-	AllowedGroups []string                  `json:"allowedGroups"`
-	Images        []connections.ImageSource `json:"images"`
-	Credentials   map[string]string         `json:"credentials"`
+	Name        string                    `json:"name"`
+	Provider    string                    `json:"provider"`
+	URL         string                    `json:"url"`
+	APIURL      string                    `json:"apiURL"`
+	Images      []connections.ImageSource `json:"images"`
+	Credentials map[string]string         `json:"credentials"`
 }
 
 func (in *connectionInput) toConnection() *connections.Connection {
-	groups := []string{}
-	for _, g := range in.AllowedGroups {
-		if g = strings.TrimSpace(g); g != "" {
-			groups = append(groups, g)
-		}
-	}
 	creds := map[string]string{}
 	for k, v := range in.Credentials {
 		creds[strings.TrimSpace(k)] = v
@@ -63,31 +59,31 @@ func (in *connectionInput) toConnection() *connections.Connection {
 		})
 	}
 	return &connections.Connection{
-		Name:          strings.TrimSpace(in.Name),
-		Provider:      strings.TrimSpace(in.Provider),
-		URL:           strings.TrimSpace(in.URL),
-		APIURL:        strings.TrimSpace(in.APIURL),
-		AllowedGroups: groups,
-		Images:        imgs,
-		Credentials:   creds,
+		Name:        strings.TrimSpace(in.Name),
+		Provider:    strings.TrimSpace(in.Provider),
+		URL:         strings.TrimSpace(in.URL),
+		APIURL:      strings.TrimSpace(in.APIURL),
+		Images:      imgs,
+		Credentials: creds,
 	}
 }
 
 func (a *api) view(r *http.Request, c *connections.Connection) connectionView {
+	acc := AccessFrom(r.Context())
 	v := connectionView{
-		Name:          c.Name,
-		Provider:      c.Provider,
-		URL:           c.URL,
-		APIURL:        c.APIURL,
-		AllowedGroups: c.AllowedGroups,
-		Images:        c.Images,
-		ImagesError:   c.ImagesError,
-		Editable:      c.Editable,
+		Name:        c.Name,
+		Provider:    c.Provider,
+		URL:         c.URL,
+		APIURL:      c.APIURL,
+		Images:      c.Images,
+		ImagesError: c.ImagesError,
+		Editable:    c.Editable,
+		Actions:     acc.Actions(authz.ResourceConnections, c.Name),
 	}
 	if v.Images == nil {
 		v.Images = []connections.ImageSource{}
 	}
-	if a.deps.Authz.IsAdmin(IdentityFrom(r.Context())) {
+	if acc.Can(authz.ResourceConnections, authz.ActionEdit, c.Name) {
 		v.CredentialKeys = c.CredentialKeys()
 	}
 	return v
@@ -99,10 +95,10 @@ func (a *api) handleListConnections(w http.ResponseWriter, r *http.Request) {
 		a.writeErr(w, err)
 		return
 	}
-	id := IdentityFrom(r.Context())
+	acc := AccessFrom(r.Context())
 	out := []connectionView{}
 	for _, c := range all {
-		if a.deps.Authz.CanUse(id, c) {
+		if acc.Can(authz.ResourceConnections, authz.ActionView, c.Name) {
 			out = append(out, a.view(r, c))
 		}
 	}
@@ -115,8 +111,14 @@ func (a *api) handleCreateConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c := in.toConnection()
+	if !allowNew(w, r, authz.ResourceConnections, authz.ActionEdit, c.Name) {
+		return
+	}
 	if err := a.validate(r.Context(), c); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !a.allowRegistries(w, r, c.Images, nil) {
 		return
 	}
 	created, err := a.deps.Store.Create(r.Context(), c)
@@ -128,12 +130,36 @@ func (a *api) handleCreateConnection(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, a.view(r, created))
 }
 
+// allowRegistries requires view access to every registry the image sources
+// add, so users cannot read registries they were not given.
+func (a *api) allowRegistries(w http.ResponseWriter, r *http.Request, srcs, before []connections.ImageSource) bool {
+	had := map[string]bool{}
+	for _, s := range before {
+		had[s.Registry] = true
+	}
+	acc := AccessFrom(r.Context())
+	var denied []string
+	for _, s := range srcs {
+		if !had[s.Registry] && !acc.Can(authz.ResourceRegistries, authz.ActionView, s.Registry) && !slices.Contains(denied, s.Registry) {
+			denied = append(denied, s.Registry)
+		}
+	}
+	if len(denied) > 0 {
+		writeError(w, http.StatusForbidden, "you may not use registries: "+strings.Join(denied, ", "))
+		return false
+	}
+	return true
+}
+
 func (a *api) handleUpdateConnection(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if !a.allow(w, r, authz.ResourceConnections, authz.ActionEdit, name) {
+		return
+	}
 	var in connectionInput
 	if !decodeJSON(w, r, &in) {
 		return
 	}
-	name := r.PathValue("name")
 	if in.Name != "" && in.Name != name {
 		writeError(w, http.StatusBadRequest, "connection name cannot be changed")
 		return
@@ -155,6 +181,9 @@ func (a *api) handleUpdateConnection(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if !a.allowRegistries(w, r, c.Images, cur.Images) {
+		return
+	}
 	updated, err := a.deps.Store.Update(r.Context(), c)
 	if err != nil {
 		a.writeErr(w, err)
@@ -166,6 +195,9 @@ func (a *api) handleUpdateConnection(w http.ResponseWriter, r *http.Request) {
 
 func (a *api) handleDeleteConnection(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+	if !a.allow(w, r, authz.ResourceConnections, authz.ActionEdit, name) {
+		return
+	}
 	if err := a.deps.Store.Delete(r.Context(), name); err != nil {
 		a.writeErr(w, err)
 		return
@@ -175,15 +207,20 @@ func (a *api) handleDeleteConnection(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleTestDraft tests unsaved form values. When the draft names an
-// existing editable Connection, blank credentials fall back to stored ones.
+// existing editable Connection the user may edit, blank credentials fall
+// back to stored ones.
 func (a *api) handleTestDraft(w http.ResponseWriter, r *http.Request) {
 	var in connectionInput
 	if !decodeJSON(w, r, &in) {
 		return
 	}
 	c := in.toConnection()
-	if cur, err := a.deps.Store.Get(r.Context(), c.Name); err == nil && cur.Editable {
-		c.Credentials = connections.MergeCredentials(cur.Credentials, c.Credentials)
+	// Stored credentials are only reused for Connections the user may
+	// edit; otherwise a draft could send them to another URL.
+	if AccessFrom(r.Context()).Can(authz.ResourceConnections, authz.ActionEdit, c.Name) {
+		if cur, err := a.deps.Store.Get(r.Context(), c.Name); err == nil && cur.Editable {
+			c.Credentials = connections.MergeCredentials(cur.Credentials, c.Credentials)
+		}
 	}
 	if err := a.validate(r.Context(), c); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -193,7 +230,7 @@ func (a *api) handleTestDraft(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *api) handleTestConnection(w http.ResponseWriter, r *http.Request) {
-	c, ok := a.usableConnection(w, r)
+	c, ok := a.usableConnection(w, r, authz.ActionView)
 	if !ok {
 		return
 	}
@@ -215,7 +252,7 @@ func (a *api) runTest(w http.ResponseWriter, r *http.Request, c *connections.Con
 }
 
 func (a *api) handleBranches(w http.ResponseWriter, r *http.Request) {
-	c, p, ok := a.usableProvider(w, r)
+	c, p, ok := a.usableProvider(w, r, authz.ActionView)
 	if !ok {
 		return
 	}
@@ -228,7 +265,7 @@ func (a *api) handleBranches(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *api) handlePipelines(w http.ResponseWriter, r *http.Request) {
-	c, p, ok := a.usableProvider(w, r)
+	c, p, ok := a.usableProvider(w, r, authz.ActionView)
 	if !ok {
 		return
 	}
@@ -242,12 +279,14 @@ func (a *api) handlePipelines(w http.ResponseWriter, r *http.Request) {
 }
 
 // usableConnection loads the Connection named in the path if the user may
-// use it. Inaccessible Connections are reported as not found.
-func (a *api) usableConnection(w http.ResponseWriter, r *http.Request) (*connections.Connection, bool) {
-	c, err := a.deps.Store.Get(r.Context(), r.PathValue("name"))
-	if err == nil && !a.deps.Authz.CanUse(IdentityFrom(r.Context()), c) {
-		err = connections.ErrNotFound
+// perform action on it. Connections the user may not see are reported as
+// not found.
+func (a *api) usableConnection(w http.ResponseWriter, r *http.Request, action string) (*connections.Connection, bool) {
+	name := r.PathValue("name")
+	if !a.allow(w, r, authz.ResourceConnections, action, name) {
+		return nil, false
 	}
+	c, err := a.deps.Store.Get(r.Context(), name)
 	if err != nil {
 		a.writeErr(w, err)
 		return nil, false
@@ -255,17 +294,22 @@ func (a *api) usableConnection(w http.ResponseWriter, r *http.Request) (*connect
 	return c, true
 }
 
-func (a *api) usableProvider(w http.ResponseWriter, r *http.Request) (*connections.Connection, providers.Provider, bool) {
-	c, ok := a.usableConnection(w, r)
+func (a *api) usableProvider(w http.ResponseWriter, r *http.Request, action string) (*connections.Connection, providers.Provider, bool) {
+	c, ok := a.usableConnection(w, r, action)
 	if !ok {
 		return nil, nil, false
 	}
+	p, err := a.providerOf(w, c)
+	return c, p, err == nil
+}
+
+// providerOf answers 409 when the Connection's provider is unknown.
+func (a *api) providerOf(w http.ResponseWriter, c *connections.Connection) (providers.Provider, error) {
 	p, err := a.deps.Providers.Get(c.Provider)
 	if err != nil {
 		writeError(w, http.StatusConflict, fmt.Sprintf("connection %q: %v", c.Name, err))
-		return nil, nil, false
 	}
-	return c, p, true
+	return p, err
 }
 
 func (a *api) validate(ctx context.Context, c *connections.Connection) error {
@@ -302,6 +346,10 @@ func (a *api) validateImageRegistries(ctx context.Context, srcs []connections.Im
 func (a *api) writeErr(w http.ResponseWriter, err error) {
 	var ue *providers.UpstreamError
 	var urlErr *url.Error
+	if status, ok := isPolicyErr(err); ok {
+		writeError(w, status, err.Error())
+		return
+	}
 	switch {
 	case errors.Is(err, connections.ErrNotFound), errors.Is(err, registries.ErrNotFound), errors.Is(err, streams.ErrNotFound),
 		errors.Is(err, streams.ErrRunNotFound):

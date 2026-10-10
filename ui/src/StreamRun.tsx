@@ -13,7 +13,7 @@ import {
   ValueField,
 } from './StreamFields';
 import { ConnData } from './streamModel';
-import { Stream, StreamAttempt, StreamRun, StreamRunStatus, StreamSpec, StreamStep } from './types';
+import { can, Stream, StreamAttempt, StreamRun, StreamRunStatus, StreamSpec, StreamStep } from './types';
 import { COLORS, ErrorText, Muted, useLoad } from './ui';
 
 const RUN_POLL_MS = 4_000;
@@ -209,7 +209,7 @@ export const StagesBoard = ({ data, spec, run, selected, onSelect }: BoardProps)
   );
 };
 
-const AttemptRow = ({ client, connection, entry }: { client: ZeaClient; connection: string; entry: EarlierTry }) => {
+const AttemptRow = ({ client, run, stepID, connection, entry }: { client: ZeaClient; run: StreamRun; stepID: string; connection: string; entry: EarlierTry }) => {
   const { state } = entry;
   const [open, setOpen] = React.useState(false);
   return (
@@ -240,7 +240,7 @@ const AttemptRow = ({ client, connection, entry }: { client: ZeaClient; connecti
       )}
       {open && state.runId && (
         <div style={{ marginLeft: '2.4em' }}>
-          <RunJobs client={client} connection={connection} runID={state.runId} refreshKey={0} />
+          <RunJobs client={client} connection={connection} runID={state.runId} refreshKey={0} stream={{ name: run.stream, run: run.id, step: stepID }} />
         </div>
       )}
     </div>
@@ -301,7 +301,14 @@ const StepDetails = ({ client, data, run, stepID, onClose }: { client: ZeaClient
       )}
       <div style={{ marginTop: '0.5em' }}>
         {state.runId ? (
-          <RunJobs key={state.runId} client={client} connection={state.connection} runID={state.runId} refreshKey={0} />
+          <RunJobs
+            key={state.runId}
+            client={client}
+            connection={state.connection}
+            runID={state.runId}
+            refreshKey={0}
+            stream={{ name: run.stream, run: run.id, step: stepID }}
+          />
         ) : (
           <Muted>{state.status === 'pending' && state.retryAt ? 'Waiting for the retry delay.' : WAITING[state.status] ?? 'The step has no pipeline run.'}</Muted>
         )}
@@ -310,7 +317,7 @@ const StepDetails = ({ client, data, run, stepID, onClose }: { client: ZeaClient
         <div style={{ marginTop: '0.8em' }}>
           <div style={{ fontWeight: 600, marginBottom: '0.2em' }}>Earlier tries</div>
           {earlier.map(entry => (
-            <AttemptRow key={entry.key} client={client} connection={state.connection} entry={entry} />
+            <AttemptRow key={entry.key} client={client} run={run} stepID={stepID} connection={state.connection} entry={entry} />
           ))}
         </div>
       )}
@@ -320,7 +327,6 @@ const StepDetails = ({ client, data, run, stepID, onClose }: { client: ZeaClient
 
 interface RunFormProps {
   client: ZeaClient;
-  data: ConnData;
   stream: Stream;
   // Values to start from (e.g. the params of an earlier run).
   initial?: Record<string, string>;
@@ -329,8 +335,21 @@ interface RunFormProps {
   onClose: () => void;
 }
 
-const BranchParam = ({ data, connection, value, onChange }: { data: ConnData; connection?: string; value: string; onChange: (v: string) => void }) => {
-  const [branches] = useLoad(() => (connection ? data.branches(connection) : Promise.resolve(undefined)), [data, connection]);
+interface BranchParamProps {
+  client: ZeaClient;
+  stream: string;
+  connection?: string;
+  value: string;
+  onChange: (v: string) => void;
+}
+
+// BranchParam lists branches through the stream, so run access to the stream
+// is enough.
+const BranchParam = ({ client, stream, connection, value, onChange }: BranchParamProps) => {
+  const [branches] = useLoad(
+    () => (connection ? client.streamBranches(stream, connection) : Promise.resolve(undefined)),
+    [client, stream, connection],
+  );
   return (
     <>
       <ValueField
@@ -346,7 +365,7 @@ const BranchParam = ({ data, connection, value, onChange }: { data: ConnData; co
 };
 
 // StreamRunForm asks for the params of a Stream and starts it.
-export const StreamRunForm = ({ client, data, stream, initial, title, onStarted, onClose }: RunFormProps) => {
+export const StreamRunForm = ({ client, stream, initial, title, onStarted, onClose }: RunFormProps) => {
   const [values, setValues] = React.useState<Record<string, string>>(() =>
     Object.fromEntries(
       stream.params.map(p => [p.name, initial?.[p.name] ?? p.default ?? (p.type === 'boolean' ? 'false' : '')]),
@@ -396,7 +415,7 @@ export const StreamRunForm = ({ client, data, stream, initial, title, onStarted,
               ))}
             </select>
           ) : p.type === 'branch' ? (
-            <BranchParam data={data} connection={p.connection} value={values[p.name] ?? ''} onChange={v => set(p.name, v)} />
+            <BranchParam client={client} stream={stream.name} connection={p.connection} value={values[p.name] ?? ''} onChange={v => set(p.name, v)} />
           ) : (
             <input className='argo-field' style={{ width: '100%' }} value={values[p.name] ?? ''} onChange={e => set(p.name, e.target.value)} />
           )}
@@ -417,7 +436,7 @@ export const StreamRunForm = ({ client, data, stream, initial, title, onStarted,
 
 // RunAgain starts a new run of the current Stream with the params of an
 // earlier run.
-const RunAgain = ({ client, data, stream, params, onClose }: { client: ZeaClient; data: ConnData; stream: string; params: Record<string, string>; onClose: () => void }) => {
+const RunAgain = ({ client, stream, params, onClose }: { client: ZeaClient; stream: string; params: Record<string, string>; onClose: () => void }) => {
   const [st] = useLoad(() => client.stream(stream), [client, stream]);
   if (st.state === 'loading') {
     return <Muted>Loading...</Muted>;
@@ -431,7 +450,6 @@ const RunAgain = ({ client, data, stream, params, onClose }: { client: ZeaClient
   return (
     <StreamRunForm
       client={client}
-      data={data}
       stream={st.data}
       initial={params}
       title='Run again'
@@ -564,6 +582,10 @@ export const StreamRunView = ({ client, data, stream, runID }: { client: ZeaClie
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState('');
   const [again, setAgain] = React.useState(false);
+  // Hides the run actions without run access; when the stream cannot be
+  // loaded (e.g. deleted) the backend decides.
+  const [st] = useLoad(() => client.stream(stream), [client, stream]);
+  const canRun = st.state === 'error' || (st.state === 'ok' && can(st.data.actions, 'run'));
   // undefined follows the active step; null means the panel was closed.
   const [picked, setPicked] = React.useState<string | null>();
   const r = run.data;
@@ -624,17 +646,17 @@ export const StreamRunView = ({ client, data, stream, runID }: { client: ZeaClie
           </>
         )}
         <div style={{ flex: 1 }} />
-        {r?.status === 'running' && (
+        {canRun && r?.status === 'running' && (
           <button className='argo-button argo-button--base-o' disabled={busy || r.cancelRequested} onClick={cancel}>
             <i className={r.cancelRequested ? 'fa fa-circle-notch fa-spin' : 'fa fa-stop'} /> {r.cancelRequested ? 'Cancelling...' : 'Cancel'}
           </button>
         )}
-        {retryable && (
+        {canRun && retryable && (
           <button className='argo-button argo-button--base' disabled={busy} onClick={retry} title='Run the failed, cancelled and skipped steps again'>
             <i className='fa fa-redo' /> Retry failed
           </button>
         )}
-        {r && r.status !== 'running' && (
+        {canRun && r && r.status !== 'running' && (
           <button className='argo-button argo-button--base-o' disabled={busy} onClick={() => setAgain(!again)} title='Start a new run with these params'>
             <i className='fa fa-play' /> Run again
           </button>
@@ -649,7 +671,7 @@ export const StreamRunView = ({ client, data, stream, runID }: { client: ZeaClie
       {r && (
         <>
           {again && r.status !== 'running' && (
-            <RunAgain client={client} data={data} stream={stream} params={r.params} onClose={() => setAgain(false)} />
+            <RunAgain client={client} stream={stream} params={r.params} onClose={() => setAgain(false)} />
           )}
           {r.message && (
             <div style={{ color: r.status === 'failed' ? COLORS.error : COLORS.muted, marginBottom: '0.6em', wordBreak: 'break-word' }}>

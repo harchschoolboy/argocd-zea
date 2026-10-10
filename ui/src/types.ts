@@ -22,7 +22,15 @@ export interface Me {
   applicationName: string;
   isAdmin: boolean;
   version: string;
+  // Actions the user may perform on at least some items of each resource.
+  permissions: Record<string, string[]>;
 }
+
+export type AccessAction = 'view' | 'run' | 'edit';
+
+// can reports whether the actions of an item (or a permissions summary)
+// include action.
+export const can = (actions: string[] | undefined, action: AccessAction) => (actions ?? []).includes(action);
 
 export interface Capabilities {
   multiplePipelines: boolean;
@@ -72,13 +80,14 @@ export interface Connection {
   provider: string;
   url: string;
   apiURL?: string;
-  allowedGroups: string[];
   images: ImageSource[];
   // Set when the stored image sources cannot be parsed.
   imagesError?: string;
   editable: boolean;
-  // Only returned to admins: which credential keys are set (never values).
+  // Only returned with edit access: which credential keys are set (never values).
   credentialKeys?: string[];
+  // Actions the user may perform on this connection.
+  actions: string[];
 }
 
 export interface ConnectionInput {
@@ -86,7 +95,6 @@ export interface ConnectionInput {
   provider: string;
   url: string;
   apiURL: string;
-  allowedGroups: string[];
   images: ImageSource[];
   // Empty value keeps the stored secret, "-" removes it.
   credentials: Record<string, string>;
@@ -108,6 +116,7 @@ export interface Registry {
   credentialKeys: string[];
   // Connections whose image sources use this registry.
   usedBy: string[];
+  actions: string[];
 }
 
 export interface RegistryInput {
@@ -321,6 +330,8 @@ export interface Stream extends StreamSpec {
   version: string;
   connections: string[];
   problems: StreamProblem[];
+  // Actions the user may perform on this stream.
+  actions: string[];
 }
 
 export interface StreamInput extends StreamSpec {
@@ -400,4 +411,67 @@ export interface StreamRun {
   tries?: StreamStepTry[];
   // The Spec snapshot; only present for a single run.
   spec?: StreamSpec;
+}
+
+// Access policy: roles grant actions on resources whose names match a glob
+// pattern; bindings give roles to groups ("*" is everyone) or users.
+export interface AccessRule {
+  resource: string;
+  pattern: string;
+  actions: string[];
+}
+
+export interface AccessRole {
+  name: string;
+  description?: string;
+  rules: AccessRule[];
+}
+
+export interface AccessBinding {
+  group?: string;
+  user?: string;
+  roles: string[];
+}
+
+export interface AccessPolicy {
+  roles: AccessRole[];
+  bindings: AccessBinding[];
+}
+
+export interface PolicyProblem {
+  path: string;
+  message: string;
+}
+
+export interface ResourceInfo {
+  name: string;
+  actions: string[];
+}
+
+export interface PolicyDocument {
+  policy: AccessPolicy;
+  yaml: string;
+  version: string;
+  // False until the policy ConfigMap is created.
+  exists: boolean;
+  // False when the ConfigMap is managed declaratively (git).
+  editable: boolean;
+  // Set when the stored policy is invalid; it then grants nothing.
+  error?: string;
+  // Zea admins from the chart values; they always have every action.
+  admins: { users: string[]; groups: string[] };
+  resources: ResourceInfo[];
+}
+
+export interface PolicyValidation {
+  policy: AccessPolicy;
+  problems: PolicyProblem[];
+  yaml: string;
+}
+
+export interface PolicyEvaluation {
+  isAdmin: boolean;
+  roles: string[];
+  // Per resource, the existing items the user has some action on.
+  items: Record<string, { name: string; actions: string[] }[]>;
 }

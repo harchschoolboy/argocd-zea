@@ -48,12 +48,16 @@ func New(cfg *config.Config, log *slog.Logger, deps Deps) http.Handler {
 	mux.HandleFunc("GET /api/v1/me", a.handleMe)
 	mux.HandleFunc("GET /api/v1/version", handleVersion)
 	mux.HandleFunc("GET /api/v1/providers", a.handleProviders)
+	mux.HandleFunc("GET /api/v1/policy", a.adminOnly(a.handleGetPolicy))
+	mux.HandleFunc("PUT /api/v1/policy", a.adminOnly(a.handleSavePolicy))
+	mux.HandleFunc("POST /api/v1/policy/validate", a.adminOnly(a.handleValidatePolicy))
+	mux.HandleFunc("POST /api/v1/policy/evaluate", a.adminOnly(a.handleEvaluatePolicy))
 	mux.HandleFunc("GET /api/v1/connections", a.handleListConnections)
-	mux.HandleFunc("POST /api/v1/connections", a.adminOnly(a.handleCreateConnection))
-	mux.HandleFunc("PUT /api/v1/connections/{name}", a.adminOnly(a.handleUpdateConnection))
-	mux.HandleFunc("DELETE /api/v1/connections/{name}", a.adminOnly(a.handleDeleteConnection))
+	mux.HandleFunc("POST /api/v1/connections", requireAny(authz.ResourceConnections, authz.ActionEdit, a.handleCreateConnection))
+	mux.HandleFunc("PUT /api/v1/connections/{name}", a.handleUpdateConnection)
+	mux.HandleFunc("DELETE /api/v1/connections/{name}", a.handleDeleteConnection)
 	mux.HandleFunc("POST /api/v1/connections/{name}/test", a.handleTestConnection)
-	mux.HandleFunc("POST /api/v1/test-connection", a.adminOnly(a.handleTestDraft))
+	mux.HandleFunc("POST /api/v1/test-connection", requireAny(authz.ResourceConnections, authz.ActionEdit, a.handleTestDraft))
 	mux.HandleFunc("GET /api/v1/connections/{name}/branches", a.handleBranches)
 	mux.HandleFunc("GET /api/v1/connections/{name}/pipelines", a.handlePipelines)
 	mux.HandleFunc("GET /api/v1/connections/{name}/pipelines/{pipeline}/form", a.handleRunForm)
@@ -63,31 +67,33 @@ func New(cfg *config.Config, log *slog.Logger, deps Deps) http.Handler {
 	mux.HandleFunc("POST /api/v1/connections/{name}/runs/{run}/cancel", a.handleCancelRun)
 	mux.HandleFunc("POST /api/v1/connections/{name}/runs/{run}/retry", a.handleRetryRun)
 	mux.HandleFunc("GET /api/v1/connections/{name}/images", a.handleConnectionImages)
-	mux.HandleFunc("POST /api/v1/images/preview", a.adminOnly(a.handleImagesPreview))
-	mux.HandleFunc("GET /api/v1/registry-kinds", a.adminOnly(a.handleRegistryKinds))
-	mux.HandleFunc("GET /api/v1/registries", a.adminOnly(a.handleListRegistries))
-	mux.HandleFunc("POST /api/v1/registries", a.adminOnly(a.handleCreateRegistry))
-	mux.HandleFunc("PUT /api/v1/registries/{name}", a.adminOnly(a.handleUpdateRegistry))
-	mux.HandleFunc("DELETE /api/v1/registries/{name}", a.adminOnly(a.handleDeleteRegistry))
-	mux.HandleFunc("POST /api/v1/registries/{name}/test", a.adminOnly(a.handleTestRegistry))
-	mux.HandleFunc("POST /api/v1/test-registry", a.adminOnly(a.handleTestRegistryDraft))
+	mux.HandleFunc("POST /api/v1/images/preview", requireAny(authz.ResourceConnections, authz.ActionEdit, a.handleImagesPreview))
+	mux.HandleFunc("GET /api/v1/registry-kinds", a.handleRegistryKinds)
+	mux.HandleFunc("GET /api/v1/registries", a.handleListRegistries)
+	mux.HandleFunc("POST /api/v1/registries", requireAny(authz.ResourceRegistries, authz.ActionEdit, a.handleCreateRegistry))
+	mux.HandleFunc("PUT /api/v1/registries/{name}", a.handleUpdateRegistry)
+	mux.HandleFunc("DELETE /api/v1/registries/{name}", a.handleDeleteRegistry)
+	mux.HandleFunc("POST /api/v1/registries/{name}/test", a.handleTestRegistry)
+	mux.HandleFunc("POST /api/v1/test-registry", requireAny(authz.ResourceRegistries, authz.ActionEdit, a.handleTestRegistryDraft))
 	mux.HandleFunc("GET /api/v1/streams", a.handleListStreams)
-	mux.HandleFunc("POST /api/v1/streams", a.adminOnly(a.handleCreateStream))
-	mux.HandleFunc("POST /api/v1/streams/import", a.adminOnly(a.handleImportStream))
-	mux.HandleFunc("POST /api/v1/streams/validate", a.adminOnly(a.handleValidateStream))
+	mux.HandleFunc("POST /api/v1/streams", requireAny(authz.ResourceStreams, authz.ActionEdit, a.handleCreateStream))
+	mux.HandleFunc("POST /api/v1/streams/import", requireAny(authz.ResourceStreams, authz.ActionEdit, a.handleImportStream))
+	mux.HandleFunc("POST /api/v1/streams/validate", requireAny(authz.ResourceStreams, authz.ActionEdit, a.handleValidateStream))
 	mux.HandleFunc("GET /api/v1/streams/{name}", a.handleGetStream)
-	mux.HandleFunc("PUT /api/v1/streams/{name}", a.adminOnly(a.handleUpdateStream))
-	mux.HandleFunc("DELETE /api/v1/streams/{name}", a.adminOnly(a.handleDeleteStream))
-	mux.HandleFunc("POST /api/v1/streams/{name}/draft", a.adminOnly(a.handleDraftStream))
+	mux.HandleFunc("PUT /api/v1/streams/{name}", a.handleUpdateStream)
+	mux.HandleFunc("DELETE /api/v1/streams/{name}", a.handleDeleteStream)
+	mux.HandleFunc("POST /api/v1/streams/{name}/draft", requireAny(authz.ResourceStreams, authz.ActionEdit, a.handleDraftStream))
 	mux.HandleFunc("GET /api/v1/streams/{name}/export", a.handleExportStream)
+	mux.HandleFunc("GET /api/v1/streams/{name}/branches", a.handleStreamBranches)
 	mux.HandleFunc("GET /api/v1/streams/{name}/runs", a.handleListStreamRuns)
 	mux.HandleFunc("POST /api/v1/streams/{name}/runs", a.handleStartStreamRun)
 	mux.HandleFunc("GET /api/v1/streams/{name}/runs/{run}", a.handleGetStreamRun)
 	mux.HandleFunc("POST /api/v1/streams/{name}/runs/{run}/cancel", a.handleCancelStreamRun)
 	mux.HandleFunc("POST /api/v1/streams/{name}/runs/{run}/retry", a.handleRetryStreamRun)
+	mux.HandleFunc("GET /api/v1/streams/{name}/runs/{run}/jobs/{providerRun}", a.handleStreamRunJobs)
 
 	protected := requireProxyToken(cfg.ProxyToken, cfg.InsecureSkipProxyAuth, log,
-		requireIdentity(requireAnchor(cfg.AnchorApp, mux)))
+		requireIdentity(requireAnchor(cfg.AnchorApp, a.withAccess(mux))))
 
 	root := http.NewServeMux()
 	root.HandleFunc("GET /healthz", handleHealth)
@@ -109,23 +115,21 @@ type meResponse struct {
 	*argocd.Identity
 	IsAdmin bool   `json:"isAdmin"`
 	Version string `json:"version"`
+	// Permissions maps each resource type to the actions the user may
+	// perform on at least some of its items.
+	Permissions map[string][]string `json:"permissions"`
 }
 
 func (a *api) handleMe(w http.ResponseWriter, r *http.Request) {
-	id := IdentityFrom(r.Context())
-	writeJSON(w, http.StatusOK, meResponse{Identity: id, IsAdmin: a.deps.Authz.IsAdmin(id), Version: Version})
+	acc := AccessFrom(r.Context())
+	writeJSON(w, http.StatusOK, meResponse{
+		Identity:    IdentityFrom(r.Context()),
+		IsAdmin:     acc.IsAdmin(),
+		Version:     Version,
+		Permissions: acc.Summary(),
+	})
 }
 
 func (a *api) handleProviders(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"providers": a.deps.Providers.Infos()})
-}
-
-func (a *api) adminOnly(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if !a.deps.Authz.IsAdmin(IdentityFrom(r.Context())) {
-			writeError(w, http.StatusForbidden, "only Zea admins can manage connections, registries and streams")
-			return
-		}
-		next(w, r)
-	}
 }

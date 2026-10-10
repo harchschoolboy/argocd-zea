@@ -60,9 +60,8 @@ func TestStreamRunAccess(t *testing.T) {
 	id := body["id"].(string)
 
 	bob := as("bob", "others")
-	_, body = e.do(t, "GET", "/api/v1/streams/pub/runs", nil, bob)
-	if runs := body["runs"].([]any); len(runs) != 0 {
-		t.Fatalf("bob sees %d runs", len(runs))
+	if code, _ := e.do(t, "GET", "/api/v1/streams/pub/runs", nil, bob); code != http.StatusNotFound {
+		t.Fatalf("bob lists runs: %d", code)
 	}
 	if code, _ := e.do(t, "GET", "/api/v1/streams/pub/runs/"+id, nil, bob); code != http.StatusNotFound {
 		t.Fatalf("bob get: %d", code)

@@ -5,14 +5,13 @@ import { RunFormPanel } from './RunForm';
 import { ImagesPanel } from './Images';
 import { routeHref } from './route';
 import { LastRun, RunsList } from './Runs';
-import { Connection, ProviderInfo, Run, TestResult } from './types';
+import { can, Connection, ProviderInfo, Run, TestResult } from './types';
 import { COLORS, ErrorText, Muted, ProviderBadge, TestResultView, useLoad } from './ui';
 
 interface Props {
   client: ZeaClient;
   connection: Connection;
   provider?: ProviderInfo;
-  isAdmin: boolean;
   // detail renders the full connection view instead of the compact card.
   detail?: boolean;
   initialRef?: string;
@@ -49,7 +48,6 @@ export const ConnectionCard = ({
   client,
   connection: c,
   provider,
-  isAdmin,
   detail,
   initialRef,
   expandRunID,
@@ -59,6 +57,8 @@ export const ConnectionCard = ({
   onEdit,
   onDeleted,
 }: Props) => {
+  const canRun = can(c.actions, 'run');
+  const canEdit = can(c.actions, 'edit');
   const [branches, reloadBranches] = useLoad(() => client.branches(c.name), [client, c.name]);
   const [ref, setRef] = React.useState<string | null>(initialRef || null);
   const [busy, setBusy] = React.useState(false);
@@ -158,7 +158,7 @@ export const ConnectionCard = ({
             </a>
           )}
           <ProviderBadge provider={c.provider} />
-          {!c.editable && isAdmin && (
+          {!c.editable && canEdit && (
             <span title='Defined by a Secret in git; edit it there.' style={{ fontSize: '0.8em', color: COLORS.muted }}>
               <i className='fa fa-lock' /> declarative
             </span>
@@ -214,7 +214,7 @@ export const ConnectionCard = ({
             gitRef={ref ?? ''}
             ready={branches.state === 'error' || (branches.state === 'ok' && ref !== null)}
             configured={c.images.length > 0 || !!c.imagesError}
-            isAdmin={isAdmin}
+            canEdit={canEdit}
           />
         )}
 
@@ -240,8 +240,8 @@ export const ConnectionCard = ({
                       <button
                         className={formFor === p.id ? 'argo-button argo-button--base-o' : 'argo-button argo-button--base'}
                         style={{ flexShrink: 0 }}
-                        disabled={!p.dispatchable}
-                        title={p.dispatchable ? `Run ${p.name} on ${ref}` : p.reason}
+                        disabled={!p.dispatchable || !canRun}
+                        title={!canRun ? 'You have no run access to this connection' : p.dispatchable ? `Run ${p.name} on ${ref}` : p.reason}
                         onClick={() => setFormFor(formFor === p.id ? null : p.id)}>
                         <i className='fa fa-play' /> Run
                       </button>
@@ -287,6 +287,7 @@ export const ConnectionCard = ({
                 watchUntil={watchUntil}
                 expandRunID={started?.run.id ?? expandRunID}
                 limit={30}
+                canRun={canRun}
               />
             ) : (
               <LastRun
@@ -310,7 +311,7 @@ export const ConnectionCard = ({
               <button className='argo-button argo-button--base-o' onClick={runTest} disabled={busy}>
                 Test
               </button>
-              {isAdmin && c.editable && (
+              {canEdit && c.editable && (
                 <>
                   <button className='argo-button argo-button--base-o' onClick={onEdit} disabled={busy}>
                     Edit

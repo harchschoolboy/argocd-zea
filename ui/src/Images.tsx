@@ -223,11 +223,11 @@ interface PanelProps {
   // False while the selected branch is still being resolved.
   ready: boolean;
   configured: boolean;
-  isAdmin: boolean;
+  canEdit: boolean;
 }
 
 // ImagesPanel lists the images of a Connection for the selected branch.
-export const ImagesPanel = ({ client, connection, gitRef, ready, configured, isAdmin }: PanelProps) => {
+export const ImagesPanel = ({ client, connection, gitRef, ready, configured, canEdit }: PanelProps) => {
   const [allBranches, setAllBranches] = React.useState(false);
   const refresh = React.useRef(false);
   const ref = allBranches ? '' : gitRef;
@@ -245,7 +245,7 @@ export const ImagesPanel = ({ client, connection, gitRef, ready, configured, isA
     return (
       <Muted>
         No images configured for this connection.
-        {isAdmin && ' Add a registry under Registries, then add image sources with Edit.'}
+        {canEdit && ' Add a registry under Registries, then add image sources with Edit.'}
       </Muted>
     );
   }

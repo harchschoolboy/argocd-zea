@@ -56,9 +56,10 @@ logLevel: info
 # Application name as the Helm release name).
 anchorApplication: ""
 
-# Zea admins create, edit and delete Connections in the UI. Users are Argo CD
+# Zea admins have every action and alone edit the access policy (the Access
+# tab, ConfigMap zea-policy in the Connections namespace). Users are Argo CD
 # usernames (local accounts such as "admin" have no groups); groups come from
-# SSO. Everyone else only sees Connections whose allowedGroups match.
+# SSO. Everyone else gets what the access policy grants them.
 admins:
   users:
     - admin

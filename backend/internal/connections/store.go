@@ -170,10 +170,13 @@ func FromSecret(sec *corev1.Secret) *Connection {
 // ToSecret maps a Connection to a UI-managed Secret (without name/namespace).
 func ToSecret(c *Connection) *corev1.Secret {
 	data := map[string]string{
-		KeyName:          c.Name,
-		KeyProvider:      c.Provider,
-		KeyURL:           c.URL,
-		KeyAllowedGroups: strings.Join(c.AllowedGroups, ","),
+		KeyName:     c.Name,
+		KeyProvider: c.Provider,
+		KeyURL:      c.URL,
+	}
+	// allowedGroups is deprecated and only written when set.
+	if len(c.AllowedGroups) > 0 {
+		data[KeyAllowedGroups] = strings.Join(c.AllowedGroups, ",")
 	}
 	if c.APIURL != "" {
 		data[KeyAPIURL] = c.APIURL
