@@ -8,6 +8,9 @@ interface Props {
   defaultBranch?: string;
   disabled?: boolean;
   placeholder?: string;
+  // Extra text shown next to an item, by name.
+  notes?: Record<string, string>;
+  emptyText?: string;
   onChange: (value: string) => void;
 }
 
@@ -15,7 +18,7 @@ interface Props {
 // the list, and any text is still accepted. A native <datalist> is not used
 // because browsers filter it by the current value, so a selected branch
 // hides all the others.
-export const BranchPicker = ({ value, branches, defaultBranch, disabled, placeholder, onChange }: Props) => {
+export const BranchPicker = ({ value, branches, defaultBranch, disabled, placeholder, notes, emptyText, onChange }: Props) => {
   const [open, setOpen] = React.useState(false);
   // null shows all branches; a string is what the user typed since opening.
   const [filter, setFilter] = React.useState<string | null>(null);
@@ -144,7 +147,7 @@ export const BranchPicker = ({ value, branches, defaultBranch, disabled, placeho
           }}>
           {items.length === 0 && (
             <div style={{ padding: '0.4em 0.8em', color: COLORS.muted }}>
-              No matching branches. The typed name is used as is.
+              {emptyText ?? 'No matching branches. The typed name is used as is.'}
             </div>
           )}
           {items.map((b, i) => (
@@ -169,6 +172,11 @@ export const BranchPicker = ({ value, branches, defaultBranch, disabled, placeho
               <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {b.name}
               </span>
+              {notes?.[b.name] && (
+                <span style={{ fontSize: '0.8em', color: COLORS.muted, maxWidth: '50%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {notes[b.name]}
+                </span>
+              )}
               {b.name === defaultBranch && <span style={{ fontSize: '0.8em', color: COLORS.muted }}>default</span>}
               {b.protected && <i className='fa fa-lock' title='Protected' style={{ color: COLORS.muted }} />}
             </div>

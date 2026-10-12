@@ -81,7 +81,7 @@ func PruneRuns(ctx context.Context, s RunStore, stream string, keep int) (int, e
 	}
 	kept, deleted := 0, 0
 	for _, r := range runs {
-		if r.Status == RunRunning {
+		if RunActive(r.Status) {
 			continue
 		}
 		if kept < keep {
@@ -106,7 +106,7 @@ func sortRuns(runs []*Run) {
 }
 
 func runPhase(r *Run) string {
-	if r.Status == RunRunning {
+	if RunActive(r.Status) {
 		return PhaseActive
 	}
 	return PhaseFinished
@@ -311,7 +311,7 @@ func (m *MemoryRunStore) List(_ context.Context, stream string) ([]*Run, error) 
 }
 
 func (m *MemoryRunStore) ListActive(context.Context) ([]*Run, error) {
-	return m.filter(func(r *Run) bool { return r.Status == RunRunning }), nil
+	return m.filter(func(r *Run) bool { return RunActive(r.Status) }), nil
 }
 
 func (m *MemoryRunStore) Update(_ context.Context, r *Run) (*Run, error) {

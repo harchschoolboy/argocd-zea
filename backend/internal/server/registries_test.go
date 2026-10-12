@@ -147,6 +147,30 @@ func TestConnectionImages(t *testing.T) {
 	}
 }
 
+func TestMatchImages(t *testing.T) {
+	e := newEnv(false)
+	in := map[string]any{"images": []string{
+		"reg.example.com/team/web-dev:1111111", "reg.example.com/team/web-dev:1111111", "reg.example.com/other/web-dev:1",
+		"nginx:1.27", "reg.example.com/team/web-main@sha256:abc",
+	}}
+	code, body := e.do(t, "POST", "/api/v1/images/match", in)
+	if code != http.StatusOK {
+		t.Fatalf("match: %d %v", code, body)
+	}
+	want := `[{"branch":"dev","commit":"1111111","commitURL":"https://x/o/r/commit/1111111","connection":"shared",` +
+		`"image":"reg.example.com/team/web-dev:1111111","registry":"do","repository":"web-dev","tag":"1111111"},` +
+		`{"branch":"main","connection":"shared","image":"reg.example.com/team/web-main@sha256:abc","registry":"do","repository":"web-main"}]`
+	if got := mustJSON(body["matches"]); got != want {
+		t.Fatalf("matches:\n%s\nwant\n%s", got, want)
+	}
+	if code, body := e.do(t, "POST", "/api/v1/images/match", in, as("bob", "nobody")); code != http.StatusOK || mustJSON(body["matches"]) != `[]` {
+		t.Fatalf("without access: %d %v", code, body)
+	}
+	if code, _ := e.do(t, "POST", "/api/v1/images/match", map[string]any{"images": []string{strings.Repeat("a", 600)}}); code != http.StatusBadRequest {
+		t.Fatalf("long ref: %d", code)
+	}
+}
+
 func TestConnectionImageSourcesValidation(t *testing.T) {
 	e := newEnv(false)
 	admin := as("admin", "")

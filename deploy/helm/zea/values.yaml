@@ -92,6 +92,23 @@ streams:
   # Finished runs kept per Stream.
   runHistory: 30
 
+# Every change made through Zea (who, what, result) is logged as an "audit"
+# line. It is also kept in one ConfigMap per day (zea-audit-YYYYMMDD in the
+# connections namespace, capped at ~900KiB) for the Audit tab, for this many
+# days; 0 keeps only the log lines.
+audit:
+  retentionDays: 30
+
+# Stream "Argo CD" steps wait until an Application is synced (optionally to an
+# image) and healthy. Zea may only use Applications in these namespaces; the
+# first one is the default when a step names no namespace. Empty means the
+# anchor Application's namespace. With rbac, the chart grants "get" and
+# "patch" (for a refresh) on Applications in each namespace. Anyone who may
+# run a Stream sees the health and images of the Applications it names.
+argocd:
+  applicationNamespaces: []
+  rbac: true
+
 # Registries can reuse existing image pull Secrets (authentication "Existing
 # pull secret") instead of storing their own credentials. Only the Secrets
 # listed here can be used: the chart grants "get" on exactly these names, in

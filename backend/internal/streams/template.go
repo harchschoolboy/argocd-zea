@@ -7,7 +7,12 @@ import (
 )
 
 // Step fields available to later steps as ${{ steps.<id>.<field> }}.
-var stepFields = map[string]bool{"status": true, "runId": true, "url": true, "sha": true, "ref": true}
+// user is who decided an approval step; revision, health and images are
+// the Application state of an argocd step.
+var stepFields = map[string]bool{
+	"status": true, "runId": true, "url": true, "sha": true, "ref": true, "user": true,
+	"revision": true, "health": true, "images": true,
+}
 
 // Built-in values available to every step.
 var builtins = map[string]bool{"zea.user": true, "stream.name": true, "stream.run": true}
@@ -71,7 +76,7 @@ func checkReference(ref string, params, upstream map[string]bool) string {
 			return fmt.Sprintf("step %q does not finish before this step (add it to needs or move it to an earlier stage)", parts[1])
 		}
 		if !stepFields[parts[2]] {
-			return fmt.Sprintf("unknown step field %q: use status, runId, url, sha or ref", parts[2])
+			return fmt.Sprintf("unknown step field %q: use status, runId, url, sha, ref, user, revision, health or images", parts[2])
 		}
 		return ""
 	}

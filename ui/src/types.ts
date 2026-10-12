@@ -14,6 +14,28 @@ export interface ApplicationList {
   items: Application[] | null;
 }
 
+// An Argo CD Application as far as Zea shows it (affected apps).
+export interface ArgoApp {
+  name: string;
+  namespace: string;
+  project: string;
+  images: string[];
+  sync?: string;
+  health?: string;
+}
+
+// An image reference matched to an image source of a Connection.
+export interface ImageMatch {
+  image: string;
+  connection: string;
+  registry: string;
+  repository: string;
+  tag?: string;
+  branch?: string;
+  commit?: string;
+  commitURL?: string;
+}
+
 export interface Me {
   username: string;
   userId: string;
@@ -26,7 +48,7 @@ export interface Me {
   permissions: Record<string, string[]>;
 }
 
-export type AccessAction = 'view' | 'run' | 'edit';
+export type AccessAction = 'view' | 'run' | 'approve' | 'edit';
 
 // can reports whether the actions of an item (or a permissions summary)
 // include action.
@@ -270,7 +292,7 @@ export interface Job {
 export interface RunDetail extends Run {
   jobs: Job[];
 }
-export type StreamParamType = 'string' | 'choice' | 'boolean' | 'branch';
+export type StreamParamType = 'string' | 'choice' | 'boolean' | 'branch' | 'image';
 
 // StreamParam is asked when a Stream starts and referenced in steps as
 // ${{ params.<name> }}.
@@ -290,6 +312,9 @@ export type StepWhen = 'success' | 'failure' | 'always';
 export interface StreamStep {
   id: string;
   name?: string;
+  // Empty for a pipeline step; 'approval' waits for a user's decision;
+  // 'argocd' waits until an Argo CD Application is synced and healthy.
+  type?: string;
   connection: string;
   pipeline: string;
   ref: string;
@@ -303,6 +328,16 @@ export interface StreamStep {
   // Automatic retries of a failed pipeline; 0 or empty leaves it to the user.
   retries?: number;
   retryDelay?: string;
+  // Approval steps: shown to approvers.
+  message?: string;
+  // Approval steps: the run's starter may not decide.
+  noSelfApproval?: boolean;
+  // Argo CD steps: "<namespace>/<name>" or "<name>" of the Application.
+  app?: string;
+  // Argo CD steps: wait until the Application runs this image (or tag).
+  image?: string;
+  // Argo CD steps: do not ask Argo CD to refresh the Application first.
+  noRefresh?: boolean;
 }
 
 export interface StreamStage {
@@ -312,6 +347,8 @@ export interface StreamStage {
 
 export interface StreamSpec {
   description?: string;
+  // Runs with the same rendered lock (of any stream) run one at a time.
+  lock?: string;
   params: StreamParam[];
   stages: StreamStage[];
 }
@@ -345,9 +382,9 @@ export interface StreamExport {
   yaml: string;
 }
 
-export type StreamRunStatus = 'running' | 'succeeded' | 'failed' | 'cancelled';
+export type StreamRunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 
-export type StreamStepStatus = 'pending' | 'starting' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'skipped';
+export type StreamStepStatus = 'pending' | 'starting' | 'running' | 'waiting' | 'succeeded' | 'failed' | 'cancelled' | 'skipped';
 
 export interface StreamRunStep {
   id: string;
@@ -365,10 +402,24 @@ export interface StreamRunStep {
   try?: number;
   // When a pending step that is retried starts again.
   retryAt?: string;
+  // Approval steps: the rendered message and the decision.
+  prompt?: string;
+  decidedBy?: string;
+  comment?: string;
+  // Argo CD steps: "<namespace>/<name>", the awaited image and the last
+  // seen state; sha is the synced revision.
+  app?: string;
+  image?: string;
+  health?: string;
+  sync?: string;
+  // Comma separated images the Application runs.
+  images?: string;
   name?: string;
   stage: number;
+  type?: string;
   connection: string;
   pipeline: string;
+  noSelfApproval?: boolean;
 }
 
 // A finished attempt of a run that was retried; steps are the states the
@@ -380,11 +431,11 @@ export interface StreamAttempt {
   message?: string;
   startedAt: string;
   finishedAt?: string;
-  steps: Omit<StreamRunStep, 'name' | 'stage' | 'connection' | 'pipeline'>[];
+  steps: Omit<StreamRunStep, 'name' | 'stage' | 'type' | 'connection' | 'pipeline' | 'noSelfApproval'>[];
 }
 
 // A failed try of a step that was retried automatically.
-export type StreamStepTry = Omit<StreamRunStep, 'name' | 'stage' | 'connection' | 'pipeline'> & {
+export type StreamStepTry = Omit<StreamRunStep, 'name' | 'stage' | 'type' | 'connection' | 'pipeline' | 'noSelfApproval'> & {
   // The run attempt the try belongs to.
   attempt: number;
 };
@@ -411,6 +462,10 @@ export interface StreamRun {
   tries?: StreamStepTry[];
   // The Spec snapshot; only present for a single run.
   spec?: StreamSpec;
+  // The rendered lock; a queued run waits for blockedBy ("<stream>/<run>").
+  lock?: string;
+  queuedAt?: string;
+  blockedBy?: string;
 }
 
 // Access policy: roles grant actions on resources whose names match a glob
@@ -461,12 +516,37 @@ export interface PolicyDocument {
   // Zea admins from the chart values; they always have every action.
   admins: { users: string[]; groups: string[] };
   resources: ResourceInfo[];
+  // Existing item names per resource, for picking rule patterns.
+  names?: Record<string, string[]>;
 }
 
 export interface PolicyValidation {
   policy: AccessPolicy;
   problems: PolicyProblem[];
   yaml: string;
+}
+
+// AuditEvent is one change made through Zea.
+export interface AuditEvent {
+  time: string;
+  user: string;
+  action: string;
+  resource?: string;
+  name?: string;
+  // A run id, or run/step for approvals.
+  target?: string;
+  status: number;
+  error?: string;
+}
+
+// AuditPage is the stored events of one day (UTC), newest first.
+export interface AuditPage {
+  days: string[];
+  day: string;
+  events: AuditEvent[];
+  dropped?: number;
+  // Days events are kept; 0 when only logged.
+  retention: number;
 }
 
 export interface PolicyEvaluation {

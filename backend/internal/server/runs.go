@@ -90,6 +90,7 @@ func (a *api) handleTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Values may be sensitive; only names are logged.
+	noteAudit(r.Context(), "", run.ID)
 	a.log.Info("pipeline triggered", "connection", c.Name, "pipeline", in.PipelineID, "ref", in.Ref,
 		"inputs", sortedKeys(in.Inputs), "variables", sortedKeys(in.Variables), "run", run.ID, "user", user)
 	writeJSON(w, http.StatusCreated, run)

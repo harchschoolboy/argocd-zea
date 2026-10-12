@@ -9,14 +9,25 @@ export const MAX_STREAM_NAME = 50;
 
 export const isTemplate = (v: string) => v.includes('${{');
 
+export const APPROVAL = 'approval';
+export const isApproval = (s: { type?: string }) => s.type === APPROVAL;
+// Keep in sync with DefaultApprovalTimeout in backend/internal/streams.
+export const DEFAULT_APPROVAL_TIMEOUT = '24h';
+
+export const ARGOCD = 'argocd';
+export const isArgoCD = (s: { type?: string }) => s.type === ARGOCD;
+// Keep in sync with DefaultArgoTimeout in backend/internal/streams.
+export const DEFAULT_ARGO_TIMEOUT = '30m';
+
 export function emptySpec(): StreamSpec {
   return { description: '', params: [], stages: [{ name: 'Build', steps: [] }] };
 }
 
 // specOf copies the editable part of a Stream (or a run snapshot).
-export function specOf(s: { description?: string; params?: StreamParam[] | null; stages?: StreamStage[] | null }): StreamSpec {
+export function specOf(s: { description?: string; lock?: string; params?: StreamParam[] | null; stages?: StreamStage[] | null }): StreamSpec {
   return {
     description: s.description ?? '',
+    lock: s.lock || undefined,
     params: (s.params ?? []).map(p => ({ ...p, options: p.options ? [...p.options] : undefined })),
     stages: (s.stages ?? []).map(st => ({ ...st, steps: (st.steps ?? []).map(x => ({ ...x })) })),
   };
@@ -169,7 +180,13 @@ function rewriteValues(step: StreamStep, re: RegExp, to: string): StreamStep {
     return out;
   };
   const fixMap = (m?: Record<string, string>) => (m ? Object.fromEntries(Object.entries(m).map(([k, v]) => [k, fix(v)])) : m);
-  const next = { ...step, ref: fix(step.ref), inputs: fixMap(step.inputs), variables: fixMap(step.variables) };
+  const next = {
+    ...step,
+    ref: fix(step.ref),
+    inputs: fixMap(step.inputs),
+    variables: fixMap(step.variables),
+    message: step.message === undefined ? undefined : fix(step.message),
+  };
   return changed ? next : step;
 }
 
@@ -221,8 +238,11 @@ export function referencesFor(spec: StreamSpec, stepID?: string): Reference[] {
     .filter(p => PARAM_NAME_RE.test(p.name))
     .map(p => ({ group: 'Params', value: `\${{ params.${p.name} }}`, label: `params.${p.name}` }));
   if (stepID !== undefined) {
+    const types = new Map(allSteps(spec).map(s => [s.id, s.type ?? '']));
     for (const id of upstreamOf(spec, stepID)) {
-      for (const f of ['ref', 'sha', 'runId', 'url', 'status']) {
+      const t = types.get(id);
+      const fields = t === APPROVAL ? ['status', 'user'] : t === ARGOCD ? ['revision', 'health', 'images', 'status'] : ['ref', 'sha', 'runId', 'url', 'status'];
+      for (const f of fields) {
         out.push({ group: `Step ${id}`, value: `\${{ steps.${id}.${f} }}`, label: `steps.${id}.${f}` });
       }
     }

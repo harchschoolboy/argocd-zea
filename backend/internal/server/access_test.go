@@ -37,6 +37,9 @@ func TestPolicyAPI(t *testing.T) {
 		!strings.Contains(body["yaml"].(string), "legacy-devs") || mustJSON(body["admins"]) != `{"groups":["zea-admins"],"users":["admin"]}` {
 		t.Fatalf("get: %d %v", code, body)
 	}
+	if names, _ := body["names"].(map[string]any); len(names) != 3 || len(names["connections"].([]any)) == 0 || names["streams"] == nil || names["registries"] == nil {
+		t.Fatalf("names: %v", body["names"])
+	}
 	version := body["version"]
 
 	bad := map[string]any{"roles": []any{role("x", rule("nope", "*", "view"))}}
@@ -112,6 +115,15 @@ func TestDelegatedStreamRun(t *testing.T) {
 	}
 	if code, _ := e.do(t, "GET", "/api/v1/streams/pub/branches?connection=secret", nil, zoe); code != http.StatusNotFound {
 		t.Fatalf("branches of unused connection: %d", code)
+	}
+	if code, _ := e.do(t, "GET", "/api/v1/connections/shared/images", nil, zoe); code != http.StatusNotFound {
+		t.Fatalf("connection images: %d", code)
+	}
+	if code, body := e.do(t, "GET", "/api/v1/streams/pub/images?connection=shared", nil, zoe); code != http.StatusOK || body["repositories"] == nil {
+		t.Fatalf("stream images: %d %v", code, body)
+	}
+	if code, _ := e.do(t, "GET", "/api/v1/streams/pub/images?connection=secret", nil, zoe); code != http.StatusNotFound {
+		t.Fatalf("images of unused connection: %d", code)
 	}
 	code, body = e.do(t, "GET", "/api/v1/streams/pub", nil, zoe)
 	if code != http.StatusOK || mustJSON(body["actions"]) != `["view","run"]` {

@@ -6,8 +6,10 @@ import { COLORS, useLoad } from './ui';
 
 export const STREAM_STATUS: Record<string, { icon: string; color: string; label: string }> = {
   pending: { icon: 'fa fa-clock', color: COLORS.muted, label: 'Pending' },
+  queued: { icon: 'fa fa-hourglass-half', color: COLORS.muted, label: 'Queued' },
   starting: { icon: 'fa fa-circle-notch fa-spin', color: COLORS.muted, label: 'Starting' },
   running: { icon: 'fa fa-circle-notch fa-spin', color: '#0dadea', label: 'Running' },
+  waiting: { icon: 'fa fa-hand-paper', color: COLORS.warn, label: 'Waiting for approval' },
   succeeded: { icon: 'fa fa-check-circle', color: COLORS.ok, label: 'Succeeded' },
   failed: { icon: 'fa fa-times-circle', color: COLORS.error, label: 'Failed' },
   cancelled: { icon: 'fa fa-ban', color: COLORS.muted, label: 'Cancelled' },

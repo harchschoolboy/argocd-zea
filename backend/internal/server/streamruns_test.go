@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"testing"
+
+	"github.com/harchschoolboy/argocd-zea/backend/internal/streams"
 )
 
 func TestStreamRunLifecycle(t *testing.T) {
@@ -118,5 +120,71 @@ func TestStreamRunRetry(t *testing.T) {
 	_, body = e.do(t, "GET", "/api/v1/streams/pub/runs", nil)
 	if run := body["runs"].([]any)[0].(map[string]any); run["attempt"] != float64(2) || run["attempts"] != nil {
 		t.Fatalf("listed run = %v", run)
+	}
+}
+
+func TestStreamRunApproval(t *testing.T) {
+	e := newEnv(false)
+	ctx := context.Background()
+	gate := streams.Step{ID: "gate", Type: streams.StepTypeApproval, Message: "Ship ${{ steps.build.ref }}?", NoSelfApproval: true}
+	if _, err := e.strms.Create(ctx, &streams.Stream{Name: "gated", Editable: true, Spec: streams.Spec{Stages: []streams.Stage{
+		{Steps: []streams.Step{step("build", "shared", "main")}}, {Steps: []streams.Step{gate}}, {Steps: []streams.Step{step("deploy", "gitops", "main")}},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	e.policy.SetRaw(`roles:
+  - name: dev
+    rules:
+      - {resource: streams, pattern: gated, actions: [run]}
+      - {resource: connections, pattern: "*", actions: [run]}
+  - name: approver
+    rules:
+      - {resource: streams, pattern: gated, actions: [approve]}
+bindings:
+  - {group: devs, roles: [dev]}
+  - {user: alice, roles: [approver]}
+  - {user: carol, roles: [approver]}
+`, false)
+	code, body := e.do(t, "POST", "/api/v1/streams/gated/runs", nil)
+	if code != http.StatusCreated {
+		t.Fatalf("start: %d %v", code, body)
+	}
+	id := body["id"].(string)
+	base := "/api/v1/streams/gated/runs/" + id + "/steps/gate/"
+	if code, _ := e.do(t, "POST", base+"approve", nil, as("carol", "")); code != http.StatusConflict {
+		t.Fatalf("approve before waiting: %d", code)
+	}
+	// build: finish it by hand; the fake provider keeps runs running.
+	if _, err := streams.Mutate(ctx, e.eng.Runs(), "gated", id, func(r *streams.Run) error {
+		r.Steps[0].Status = streams.StepSucceeded
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	e.eng.ReconcileAll(ctx)
+	_, body = e.do(t, "GET", "/api/v1/streams/gated/runs/"+id, nil)
+	g := body["steps"].([]any)[1].(map[string]any)
+	if g["status"] != "waiting" || g["type"] != "approval" || g["noSelfApproval"] != true || g["prompt"] != "Ship ?" {
+		t.Fatalf("gate = %v", g)
+	}
+	if code, _ := e.do(t, "POST", base+"approve", nil, as("bob", "devs")); code != http.StatusForbidden {
+		t.Fatalf("bob approves without the approve action: %d", code)
+	}
+	if code, _ := e.do(t, "POST", base+"approve", nil); code != http.StatusForbidden {
+		t.Fatalf("self approval: %d", code)
+	}
+	if code, _ := e.do(t, "POST", base+"approve", map[string]any{"nope": 1}, as("carol", "")); code != http.StatusBadRequest {
+		t.Fatalf("unknown field: %d", code)
+	}
+	code, body = e.do(t, "POST", base+"reject", map[string]any{"comment": "wait for QA"}, as("carol", ""))
+	if code != http.StatusOK {
+		t.Fatalf("reject: %d %v", code, body)
+	}
+	g = body["steps"].([]any)[1].(map[string]any)
+	if g["status"] != "failed" || g["decidedBy"] != "carol" || g["comment"] != "wait for QA" {
+		t.Fatalf("rejected gate = %v", g)
+	}
+	if code, _ := e.do(t, "POST", "/api/v1/streams/gated/runs/"+id+"/steps/build/approve", nil, as("carol", "")); code != http.StatusConflict {
+		t.Fatalf("approve a pipeline step: %d", code)
 	}
 }

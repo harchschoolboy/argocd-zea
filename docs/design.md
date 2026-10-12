@@ -177,14 +177,14 @@ bindings:
     roles: []
 ```
 
-| Resource | view | run | edit |
-|----------|------|-----|------|
-| `streams` | See it, its runs and their jobs; Export | Start, cancel and retry runs | Create, change, delete, draft, import |
-| `connections` | See it, branches, pipelines, runs and jobs, images; Test | Start, cancel and rerun pipelines | Create, change, delete; see which credential keys are set |
-| `registries` | See it and which visible Connections use it | - | Create, change, delete; Test |
+| Resource | view | run | approve | edit |
+|----------|------|-----|---------|------|
+| `streams` | See it, its runs and their jobs; Export | Start, cancel and retry runs | Approve or reject approval steps | Create, change, delete, draft, import |
+| `connections` | See it, branches, pipelines, runs and jobs, images; Test | Start, cancel and rerun pipelines | - | Create, change, delete; see which credential keys are set |
+| `registries` | See it and which visible Connections use it | - | - | Create, change, delete; Test |
 
 - `pattern` is a glob over item names (`*`, `?`, `[a-z]`); empty means `*`.
-  Any action includes view. Rules only grant; there is no deny. Items the
+  Any action includes view; approve does not include run. Rules only grant; there is no deny. Items the
   user may not view answer 404, missing actions 403. Creating needs edit
   on the new name.
 - Saving a Stream needs edit on it and run on every Connection it uses, so
@@ -209,7 +209,7 @@ bindings:
 - Deploy (planned) will additionally require Argo CD `sync` on the target
   Application, checked through the Argo CD API on behalf of the user.
 
-The Access tab edits roles (a rule table with View / Run / Edit per
+The Access tab edits roles (a rule table with View / Run / Approve / Edit per
 resource and pattern) and bindings (a matrix of subjects and roles),
 validates while editing, imports and exports the YAML and shows what the
 unsaved policy grants a given user and groups on the existing items.
@@ -222,6 +222,26 @@ it on start from these values: per group a role `legacy-<group>`
 Streams whose Connections it may all use, bound to that group. Once the
 policy exists, `allowedGroups` is ignored (the backend logs a warning for
 each Connection that still sets it) and should be removed.
+
+### Audit
+
+Every request that changes something (any method but GET) is recorded after
+it is handled: time, user, action (e.g. `connection.update`,
+`stream.run.start`, `stream.step.approve`), resource, name, target (a run
+or step), HTTP status and error. Parameter values, request bodies and
+credentials are not recorded.
+
+- Each event is a structured `audit` line in the backend log, for log
+  shipping.
+- Events are also appended (flushed every 3 seconds and at shutdown) to one
+  ConfigMap per day, `zea-audit-YYYYMMDD` in the Connections namespace,
+  labelled `argocd-zea.io/type: audit`. A day is capped at about 900 KiB;
+  later events of that day only go to the log and are counted as dropped.
+- Days older than `ZEA_AUDIT_RETENTION_DAYS` (chart `audit.retentionDays`,
+  default 30, up to 366) are deleted; 0 keeps only the log lines.
+- `GET /api/v1/audit?day=YYYYMMDD` (admins) returns the stored days and the
+  events of one day, newest first. The **Audit** tab shows them with a day
+  picker, a text filter and links to the changed items.
 
 ## Providers
 
@@ -393,6 +413,7 @@ images: |
 |-----------------|-----|---------|
 | `GET /api/v1/connections/{name}/images?ref=&limit=&refresh=` | view | Images of the Connection, filtered by branch when `ref` is set; `configured: false` without image sources |
 | `POST /api/v1/images/preview` | edit on some Connection, view on the Registries | Resolve unsaved sources: `{images, ref}`, 3 tags per repository |
+| `POST /api/v1/images/match` | any | `{images}` -> `{matches}`: the Connections (that the user may view) whose image sources match each image reference, with branch, tag, commit and commit URL; no registry calls |
 | `GET /api/v1/registry-kinds` | view on some Registry | Kinds and credential form schema |
 | `GET /api/v1/registries` | any | Registries the user may view, with `actions` and `usedBy` (never credential values) |
 | `POST /api/v1/registries` | edit | Create |
@@ -403,6 +424,16 @@ images: |
 
 Per-source registry errors do not fail the request: they are returned in
 `errors` next to the repositories that did resolve.
+
+**Affected Applications.** The UI lists the Applications the user can see
+through the regular Argo CD API (so Argo CD RBAC applies) with their
+`status.summary.images`, sync and health, and sends the image references to
+`/images/match`. Matching uses only the source patterns (Docker Hub
+references are normalized), so it needs no registry access. Connection cards
+show where a Connection is deployed, the Connection view lists the
+Applications with branch and commit, and a Stream run marks Applications
+running a commit one of its steps built. The lists are polled every 30
+seconds.
 
 ## Streams
 
@@ -417,9 +448,11 @@ editor can be added later without changing the format.
 
 ```yaml
 description: Build and deploy
+lock: "deploy-${{ params.env }}"   # optional, see Runs
 params:
   - {name: branch, type: branch, connection: api, default: main, required: true}
   - {name: env, type: choice, options: [dev, prod], default: dev}
+  - {name: tag, type: image, connection: api}
 stages:
   - name: Build
     steps:
@@ -438,15 +471,40 @@ stages:
         continueOnError: false
         retries: 0             # 0..5 automatic retries, 0 = manual only
         retryDelay: 30s        # 0s..1h, empty = 30s
+  - name: Release
+    steps:
+      - id: approve
+        type: approval         # pipeline (default, empty) | approval
+        message: "Deploy ${{ steps.api.sha }} to ${{ params.env }}?"
+        noSelfApproval: true   # the user who started or retried the run may not decide
+        timeout: 8h            # empty = 24h
+      - id: wait-api
+        type: argocd           # waits for an Argo CD Application
+        app: argocd/api-${{ params.env }}   # <namespace>/<name> or <name>
+        image: "${{ params.tag }}"          # optional: full reference or tag
+        noRefresh: false       # true: do not ask Argo CD to refresh first
+        timeout: 20m           # empty = 30m
+        needs: [approve]
 ```
 
 - **Params** are asked when the Stream starts: `string`, `choice`
   (`options`), `boolean`, `branch` (branches of `connection`, picked from a
-  list). Later: `image` (tags from a registry).
-- **References** `${{ ... }}` are allowed in `ref`, `inputs` and
-  `variables`: `params.<name>`, `steps.<id>.status|runId|url|sha|ref` (only
-  steps that finish before this one), `zea.user`, `stream.name`,
-  `stream.run`.
+  list), `image` (tags of the images of `connection`, which must have image
+  sources; the value is the tag, any text is accepted).
+- **References** `${{ ... }}` are allowed in `ref`, `inputs`,
+  `variables`, `message`, `app` and `image`: `params.<name>`,
+  `steps.<id>.status|runId|url|sha|ref|user|revision|health|images` (only
+  steps that finish before this one; `user` is who decided an approval step;
+  `revision`, `health` and comma separated `images` come from Argo CD steps),
+  `zea.user`, `stream.name`, `stream.run`. `lock` may use params,
+  `zea.user` and `stream.name`.
+- **Approval steps** (`type: approval`) have no connection, pipeline, ref,
+  inputs, variables or retries; `message` (up to 1000 characters) is
+  rendered when the step starts. `needs`, `when`, `continueOnError` and
+  `timeout` work as for pipelines.
+- **Argo CD steps** (`type: argocd`) have `app`, optional `image` and
+  `noRefresh`, and no connection, pipeline, ref, inputs, variables, message
+  or retries. See [Runs](#runs).
 - Limits: 20 stages, 20 steps per stage, 50 steps, 30 params, 50 inputs and
   variables per step, 256 KiB of YAML.
 
@@ -474,7 +532,7 @@ resourceVersion) and fail with 409 when someone else changed the Stream.
 
 ### Access rules
 
-See [Access](#access): view, run and edit on `streams` by name; saving
+See [Access](#access): view, run, approve and edit on `streams` by name; saving
 needs run on every Connection of the Stream, running does not.
 
 ### Runs
@@ -508,10 +566,22 @@ cancel). Each pass, for every active run:
    `ref`, `inputs` and `variables` are rendered, the step is saved as
    `starting` and only then triggered, so a crash cannot trigger it twice.
    A trigger error fails the step. A pending step waiting for its retry
-   delay is not started yet.
+   delay is not started yet. An approval step renders its `message`
+   into `prompt` and becomes `waiting` instead.
 4. When every step has finished, the run is `failed` if a step failed or was
    cancelled without `continueOnError`, otherwise `succeeded`. Older
    finished runs beyond `ZEA_STREAM_RUN_HISTORY` (default 30) are deleted.
+
+**Approval.** A `waiting` step changes only through
+`POST .../steps/{step}/approve|reject` with an optional `comment` (up to
+1000 characters) by a user with approve on the Stream: approve makes it
+`succeeded`, reject `failed`; `decidedBy` and `comment` are stored and
+`steps.<id>.user` is set. With `noSelfApproval` the user who started or
+last retried the run gets 403. Deciding a step that is not waiting, or a
+run that is finished or being cancelled, answers 409. The reconcile loop
+fails a step still waiting after its `timeout` (default 24h), cancelling
+the run cancels it, and a retry opens it again. Approval steps are never
+retried automatically.
 
 A `starting` step without a provider run id (old GHES, or a crash right
 after the trigger) is matched with `ListRuns`: the earliest run of the same
@@ -523,6 +593,40 @@ runs. Writes use the ConfigMap resourceVersion, and a step changes only if
 it is still in the state the engine saw, so two backends overlapping during
 a rolling update do not trigger a step twice. The engine is still meant for
 one replica (`replicaCount: 1`).
+
+**Locks.** A Stream with `lock` renders it when a run starts (or is
+retried). While another active run of any Stream holds the same rendered lock
+the new run is `queued`: no step starts, `blockedBy` names the holder
+(`<stream>/<run>`) and the message says so. Queued runs take the lock in the
+order they were queued (`queuedAt`) once the holder finishes. A queued run
+can be cancelled; retrying a locked run queues it again.
+
+**Argo CD steps.** Zea never syncs or edits an Application; deploying stays
+with the pipelines (or auto-sync), the step only verifies the result. When
+the step starts, `app` and `image` are rendered, the Application is
+resolved (`<name>` uses the first namespace of `ZEA_ARGOCD_APP_NAMESPACES`,
+other namespaces are rejected) and, unless `noRefresh`, Argo CD is asked to
+refresh it (annotation `argocd.argoproj.io/refresh: normal`). Each pass then
+reads the Application:
+
+1. A sync operation that failed or errored after the step started fails it.
+2. The target must be reached: with `image`, `status.summary.images`
+   contains it (an exact reference, a reference ending in `/<image>`, or
+   `:<tag>` when only a tag is given); without it, a sync finished after the
+   step started (5 seconds of clock skew allowed).
+3. Then Synced, Healthy and no running operation succeed the step; Degraded
+   for 5 minutes (`DegradedGrace`) fails it; anything else keeps waiting.
+4. A missing Application keeps the step waiting; a 403 from Kubernetes fails
+   it at once; after `timeout` (default 30m) it fails with the last state.
+
+The step stores the Application (`<namespace>/<name>`), the awaited image,
+sync, health, the synced revision (`sha`, also `steps.<id>.revision`) and the
+running images. Argo CD steps are not retried automatically; a run retry
+starts them again. The backend needs `get` and `patch` on
+`applications.argoproj.io` in the allowed namespaces (the chart creates a
+Role per namespace, value `argocd.applicationNamespaces`). Anyone who may run
+a Stream sees the health and images of the Applications it names, so only
+list namespaces whose Applications that is acceptable for.
 
 **Retry.** A finished run that failed or was cancelled can be retried in
 place: steps that succeeded keep their state (and their `steps.<id>.*`
@@ -561,8 +665,8 @@ The page has the tabs **Streams** (default), **Connections**,
   run is active) and the actions **Run**, **Edit** (UI-managed only),
   **Edit as draft**, **Export** (copy or download the ConfigMap) and
   **Delete**.
-- **Editor** - name, description and params; a palette of Connections that
-  are dragged (or clicked) into stage columns; stages and steps are
+- **Editor** - name, description, lock and params; a palette of
+  Connections (and the control steps **Approval** and **Argo CD sync**) that are dragged (or clicked) into stage columns; stages and steps are
   reordered by drag-and-drop, and a drop on the last zone creates a stage.
   The step panel picks the branch and pipeline of the Connection, prefills
   inputs and variables from the provider run form, and inserts
@@ -575,9 +679,19 @@ The page has the tabs **Streams** (default), **Connections**,
   form prefilled from the run). Clicking a step opens its provider jobs and
   job steps (as in the Connection view; the active or failed step opens by
   default) and its earlier tries: automatic retries and earlier attempts.
-  A step waiting for a retry shows when it starts again.
-- **History** - runs of the Stream with status filters, a step status strip,
-  params, attempt number and paging.
+  A step waiting for a retry shows when it starts again. An approval step
+  shows its message, the deadline and, for users with approve, a comment
+  field with **Approve** and **Reject**; afterwards who decided and the
+  comment. Stream cards, the run header and the history mark runs waiting
+  for approval. An Argo CD step links the Application and shows its sync
+  and health, the awaited image, the synced revision and the running
+  images; its editor offers the Applications the user can see. Image params
+  get a tag picker. Queued runs link the run that holds the lock, and the
+  run view lists the Applications running commits the run built.
+- **History** - runs of the Stream with status filters (including
+  Queued), a step status strip, params, attempt number and paging.
+
+Admins also get the **Audit** tab (`?view=audit`), see [Audit](#audit).
 
 ### Backend API (phase 7)
 
@@ -597,7 +711,10 @@ The page has the tabs **Streams** (default), **Connections**,
 | `GET /api/v1/streams/{name}/runs/{run}` | view | One run with its Spec snapshot |
 | `POST /api/v1/streams/{name}/runs/{run}/cancel` | run | Request cancellation (202); 409 when finished |
 | `POST /api/v1/streams/{name}/runs/{run}/retry` | run | Run the steps that did not succeed again; 409 when running, succeeded, or retried too often |
+| `POST /api/v1/streams/{name}/runs/{run}/steps/{step}/approve` | approve | Approve a waiting approval step `{comment?}`; returns the run; 409 when not waiting, 403 for self-approval when forbidden |
+| `POST /api/v1/streams/{name}/runs/{run}/steps/{step}/reject` | approve | Reject it (the step fails); same rules |
 | `GET /api/v1/streams/{name}/branches?connection=` | run | Branches of a Connection the Stream uses (branch params) |
+| `GET /api/v1/streams/{name}/images?connection=` | run | Images of a Connection an image param of the Stream uses |
 | `GET /api/v1/streams/{name}/runs/{run}/jobs/{providerRun}?step=` | view | Jobs of a pipeline run started by that step of the run |
 
 ### Backend API (access)
@@ -608,6 +725,7 @@ The page has the tabs **Streams** (default), **Connections**,
 | `PUT /api/v1/policy` | admin | Save `{policy, version}`; 400 with problems, 409 on a stale version or a read-only ConfigMap |
 | `POST /api/v1/policy/validate` | admin | `{policy}` or `{yaml}` -> normalized `{policy, problems, yaml}` |
 | `POST /api/v1/policy/evaluate` | admin | `{policy, user, groups}` -> `{isAdmin, roles, items}`: actions per existing item |
+| `GET /api/v1/audit?day=` | admin | `{days, day, events, dropped, retention}`: stored days and the events of one day, newest first |
 
 ### Plan
 
@@ -618,14 +736,16 @@ The page has the tabs **Streams** (default), **Connections**,
   history, import/export *(done)*.
 - **S4** retry of failed steps, run again, step jobs in the run view,
   history filters *(done)*.
-- **S5** `if` expressions, `image` params.
+- **S5** `image` params, locks and queueing, Argo CD sync steps *(done)*.
+- **S6** `if` expressions.
 - Later: passing outputs between steps (an artifact such as
   `zea-outputs.json`; neither provider exposes job outputs through the API).
 
 ## Deploy
 
-*Open topic - to be planned after phase 4. The notes below are the original
-sketch.*
+*Open topic. Today a Stream deploys through the repositories' own pipelines
+and verifies the result with an Argo CD sync step (see [Runs](#runs)); the
+notes below are the original sketch of a GitOps write-back.*
 
 An Application is linked to a Connection with the annotation
 `argocd-zea.io/connection: <name>` (plus `argocd-zea.io/image`,
@@ -665,9 +785,9 @@ with selfHeal would revert them.
    on Connections, images per branch with commit links *(done)*; GHCR and
    Docker Hub *(later)*.
 5. **Deploy** - plain-YAML app-of-apps write-back, parent refresh/sync.
-6. **Hardening** - caching, rate limits, audit log, error UX; access policy
-   with roles and bindings *(0.3.0)*.
+6. **Hardening** - caching, rate limits, error UX; access policy with roles
+   and bindings *(0.3.0)*; audit log *(done)*.
 7. **Streams** - multi-Connection pipelines, see [Streams](#streams)
-   *(S1-S4 done)*.
+   *(S1-S5 done)*.
 
 Later: more providers, Helm-generated parents, ApplicationSet generators.

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/harchschoolboy/argocd-zea/backend/internal/authz"
+	"github.com/harchschoolboy/argocd-zea/backend/internal/connections"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/streams"
 )
 
@@ -17,8 +18,12 @@ type runStepView struct {
 	streams.StepState
 	Name       string `json:"name,omitempty"`
 	Stage      int    `json:"stage"`
+	Type       string `json:"type,omitempty"`
 	Connection string `json:"connection"`
 	Pipeline   string `json:"pipeline"`
+	// NoSelfApproval is set on approval steps the run's starter may not
+	// decide.
+	NoSelfApproval bool `json:"noSelfApproval,omitempty"`
 }
 
 // runView is the client-facing shape of a Stream run.
@@ -45,6 +50,10 @@ type runView struct {
 	Tries []streams.StepTry `json:"tries,omitempty"`
 	// Spec is the snapshot the run executes; only sent for a single run.
 	Spec *streams.Spec `json:"spec,omitempty"`
+	// Lock, QueuedAt and BlockedBy describe the lock of the run.
+	Lock      string    `json:"lock,omitempty"`
+	QueuedAt  time.Time `json:"queuedAt,omitzero"`
+	BlockedBy string    `json:"blockedBy,omitempty"`
 }
 
 func runViewOf(r *streams.Run, withSpec bool) runView {
@@ -63,6 +72,9 @@ func runViewOf(r *streams.Run, withSpec bool) runView {
 		Attempt:         len(r.Attempts) + 1,
 		RetriedBy:       r.RetriedBy,
 		RetriedAt:       r.RetriedAt,
+		Lock:            r.Lock,
+		QueuedAt:        r.QueuedAt,
+		BlockedBy:       r.BlockedBy,
 	}
 	if v.Params == nil {
 		v.Params = map[string]string{}
@@ -79,7 +91,8 @@ func runViewOf(r *streams.Run, withSpec bool) runView {
 	}
 	for _, s := range r.Steps {
 		in := info[s.ID]
-		v.Steps = append(v.Steps, runStepView{StepState: s, Name: in.def.Name, Stage: in.stage, Connection: in.def.Connection, Pipeline: in.def.Pipeline})
+		v.Steps = append(v.Steps, runStepView{StepState: s, Name: in.def.Name, Stage: in.stage, Type: in.def.Type,
+			Connection: in.def.Connection, Pipeline: in.def.Pipeline, NoSelfApproval: in.def.NoSelfApproval})
 	}
 	if withSpec {
 		spec := r.Spec
@@ -150,6 +163,7 @@ func (a *api) handleStartStreamRun(w http.ResponseWriter, r *http.Request) {
 		a.writeErr(w, err)
 		return
 	}
+	noteAudit(r.Context(), "", run.ID)
 	writeJSON(w, http.StatusCreated, runViewOf(run, true))
 }
 
@@ -207,17 +221,57 @@ func (a *api) handleRetryStreamRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, runViewOf(updated, true))
 }
 
-// handleStreamBranches lists the branches of a Connection the Stream uses,
-// for users who may run the Stream without access to the Connection.
-func (a *api) handleStreamBranches(w http.ResponseWriter, r *http.Request) {
-	st, conns, ok := a.visibleStream(w, r, authz.ActionRun)
+// decisionInput carries an optional approval comment.
+type decisionInput struct {
+	Comment string `json:"comment"`
+}
+
+func (a *api) handleApproveStreamStep(w http.ResponseWriter, r *http.Request) {
+	a.decideStreamStep(w, r, true)
+}
+
+func (a *api) handleRejectStreamStep(w http.ResponseWriter, r *http.Request) {
+	a.decideStreamStep(w, r, false)
+}
+
+func (a *api) decideStreamStep(w http.ResponseWriter, r *http.Request, approve bool) {
+	run, ok := a.visibleRun(w, r, authz.ActionApprove)
 	if !ok {
 		return
+	}
+	var in decisionInput
+	if r.ContentLength != 0 && !decodeJSON(w, r, &in) {
+		return
+	}
+	updated, err := a.deps.StreamRuns.Decide(r.Context(), run.Stream, run.ID, r.PathValue("step"), IdentityFrom(r.Context()).Username, approve, in.Comment)
+	if err != nil {
+		a.writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, runViewOf(updated, true))
+}
+
+// streamConnection returns the Connection named by the "connection" query
+// parameter when the Stream uses it and the user may run the Stream. It lets
+// users list branches and images without access to the Connection itself.
+func (a *api) streamConnection(w http.ResponseWriter, r *http.Request) (*connections.Connection, bool) {
+	st, conns, ok := a.visibleStream(w, r, authz.ActionRun)
+	if !ok {
+		return nil, false
 	}
 	name := strings.TrimSpace(r.URL.Query().Get("connection"))
 	c := conns[name]
 	if c == nil || !slices.Contains(st.Connections(), name) {
 		writeError(w, http.StatusNotFound, fmt.Sprintf("the stream does not use connection %q", name))
+		return nil, false
+	}
+	return c, true
+}
+
+// handleStreamBranches lists the branches of a Connection the Stream uses.
+func (a *api) handleStreamBranches(w http.ResponseWriter, r *http.Request) {
+	c, ok := a.streamConnection(w, r)
+	if !ok {
 		return
 	}
 	p, err := a.providerOf(w, c)
@@ -230,6 +284,13 @@ func (a *api) handleStreamBranches(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, branches)
+}
+
+// handleStreamImages lists the images of a Connection the Stream uses.
+func (a *api) handleStreamImages(w http.ResponseWriter, r *http.Request) {
+	if c, ok := a.streamConnection(w, r); ok {
+		a.writeImages(w, r, c)
+	}
 }
 
 // stepRan reports whether the provider run was started for the step in any

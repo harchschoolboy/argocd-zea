@@ -1,5 +1,6 @@
 import * as React from 'react';
 import { describeError, ZeaClient } from './api';
+import { AffectedApp, AffectedAppsList, AffectedSummary } from './apps';
 import { BranchPicker } from './BranchPicker';
 import { RunFormPanel } from './RunForm';
 import { ImagesPanel } from './Images';
@@ -12,6 +13,8 @@ interface Props {
   client: ZeaClient;
   connection: Connection;
   provider?: ProviderInfo;
+  // Argo CD Applications running images of this connection.
+  affected?: AffectedApp[];
   // detail renders the full connection view instead of the compact card.
   detail?: boolean;
   initialRef?: string;
@@ -48,6 +51,7 @@ export const ConnectionCard = ({
   client,
   connection: c,
   provider,
+  affected,
   detail,
   initialRef,
   expandRunID,
@@ -175,6 +179,19 @@ export const ConnectionCard = ({
             {c.url}
           </a>
         </div>
+        {affected && affected.length > 0 && !detail && (
+          <div style={{ marginBottom: '0.8em' }}>
+            <AffectedSummary items={affected} />
+          </div>
+        )}
+        {affected && affected.length > 0 && detail && (
+          <div data-zea-nonav style={{ marginBottom: '0.8em', cursor: 'default' }}>
+            <div style={{ fontWeight: 600, margin: '0.3em 0' }}>
+              <i className='fa fa-cubes' /> Applications
+            </div>
+            <AffectedAppsList items={affected} />
+          </div>
+        )}
 
         <div data-zea-nonav style={{ display: 'flex', alignItems: 'center', gap: '0.5em', marginBottom: '0.8em', cursor: 'default' }}>
           <label style={{ fontWeight: 600 }}>Branch</label>

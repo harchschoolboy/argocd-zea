@@ -88,6 +88,7 @@ func TestProblems(t *testing.T) {
 			{Name: "env", Type: ParamString},
 			{Name: "flag", Type: ParamBoolean, Default: "yes"},
 			{Name: "br", Type: ParamBranch},
+			{Name: "img", Type: ParamImage},
 			{Name: "s", Type: ParamString, Options: []string{"a"}, Connection: "api"},
 			{Name: "t", Type: "number"},
 		},
@@ -115,8 +116,9 @@ func TestProblems(t *testing.T) {
 		`param "env": duplicate param name`,
 		`param "flag": boolean default`,
 		`param "br": a branch param needs a connection`,
+		`param "img": an image param needs a connection`,
 		`param "s": only choice params have options`,
-		`param "s": only branch params have a connection`,
+		`param "s": only branch and image params have a connection`,
 		`param "t": unknown type "number"`,
 		`step "a": ref: unknown param "nope"`,
 		`step "a": needs "b", which is not a step of an earlier stage`,
@@ -144,6 +146,38 @@ func TestProblems(t *testing.T) {
 	}
 	if ps := (&Stream{Name: "empty"}).Problems(); messages(ps) != "the stream has no stages" {
 		t.Fatalf("empty stream: %s", messages(ps))
+	}
+}
+
+func TestApprovalProblems(t *testing.T) {
+	st := &Stream{Name: "gates", Spec: Spec{Stages: []Stage{
+		{Steps: []Step{{ID: "build", Connection: "api", Pipeline: "1", Ref: "main", Message: "hi", NoSelfApproval: true}}},
+		{Steps: []Step{
+			{ID: "ok", Type: StepTypeApproval, Message: "Deploy ${{ steps.build.sha }} by ${{ zea.user }}?", Timeout: "48h", NoSelfApproval: true},
+			{ID: "bad", Type: StepTypeApproval, Connection: "api", Pipeline: "1", Ref: "main", Retries: 1, Message: "${{ steps.ok.user }}"},
+			{ID: "odd", Type: "manual"},
+		}},
+		{Steps: []Step{{ID: "deploy", Connection: "api", Pipeline: "2", Ref: "main", Inputs: map[string]string{"by": "${{ steps.ok.user }}"}}}},
+	}}}
+	got := messages(st.Problems())
+	for _, want := range []string{
+		`step "build": only approval steps have a message or noSelfApproval`,
+		`step "bad": an approval step has no connection, pipeline, ref, inputs or variables`,
+		`step "bad": an approval step is not retried automatically`,
+		`step "bad": message: step "ok" does not finish before this step`,
+		`step "odd": unknown type "manual"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing problem %q in:\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{`step "ok"`, `step "deploy"`, `step "odd": connection`} {
+		if strings.Contains("\n"+got, "\n"+unwanted) {
+			t.Errorf("unexpected problem %q in:\n%s", unwanted, got)
+		}
+	}
+	if conns := strings.Join(st.Connections(), ","); conns != "api" {
+		t.Fatalf("connections = %s", conns)
 	}
 }
 

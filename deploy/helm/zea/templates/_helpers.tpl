@@ -39,6 +39,20 @@ app.kubernetes.io/component: backend
 {{- $anchor }}
 {{- end }}
 
+{{- /* Namespaces of Applications Stream argocd steps may use, comma separated. */ -}}
+{{- define "zea.argocdNamespaces" -}}
+{{- $list := (.Values.argocd | default dict).applicationNamespaces | default list }}
+{{- if not $list }}
+{{- $list = list (splitList ":" (include "zea.anchorApplication" .) | first) }}
+{{- end }}
+{{- range $list }}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" .) }}
+{{- fail (printf "argocd.applicationNamespaces: invalid namespace %q" .) }}
+{{- end }}
+{{- end }}
+{{- join "," ($list | uniq) }}
+{{- end }}
+
 {{- define "zea.proxyTokenSource" -}}
 {{- $src := .Values.proxyToken.source | default "generate" }}
 {{- if not (has $src (list "generate" "value" "existing")) }}

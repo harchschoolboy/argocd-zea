@@ -1,5 +1,6 @@
 import * as React from 'react';
 import { describeError, ZeaClient } from './api';
+import { AffectedAppsList, AppHealth, appURL, useAffectedApps } from './apps';
 import { navigate } from './route';
 import { ago, duration, RunJobs, usePoll } from './Runs';
 import {
@@ -12,8 +13,9 @@ import {
   StreamStatusLabel,
   ValueField,
 } from './StreamFields';
-import { ConnData } from './streamModel';
-import { can, Stream, StreamAttempt, StreamRun, StreamRunStatus, StreamSpec, StreamStep } from './types';
+import { ConnData, DEFAULT_APPROVAL_TIMEOUT, isApproval, isArgoCD } from './streamModel';
+import { BranchPicker } from './BranchPicker';
+import { Branch, can, ImagesResult, Me, Stream, StreamAttempt, StreamRun, StreamRunStatus, StreamRunStep, StreamSpec, StreamStep } from './types';
 import { COLORS, ErrorText, Muted, useLoad } from './ui';
 
 const RUN_POLL_MS = 4_000;
@@ -23,7 +25,102 @@ const ACCENT = '#0dadea';
 
 type StepState = StreamAttempt['steps'][number];
 
-const ACTIVE_STEP = ['starting', 'running'];
+const ACTIVE_STEP = ['starting', 'running', 'waiting'];
+
+// runActive reports whether a run has not finished (running or queued).
+export const runActive = (status: StreamRunStatus) => status === 'running' || status === 'queued';
+
+// argoAppOf adapts an Argo CD step's state to the Application shape the app
+// helpers use.
+const argoAppOf = (s: Pick<StreamRunStep, 'app' | 'images' | 'sync' | 'health'>) => {
+  const [namespace, name] = (s.app ?? '').includes('/') ? (s.app ?? '').split('/', 2) : ['', s.app ?? ''];
+  return { namespace, name, project: '', images: s.images ? s.images.split(',') : [], sync: s.sync, health: s.health };
+};
+
+// ArgoBox shows what an Argo CD step waits for and the last seen state.
+const ArgoBox = ({ state }: { state: StreamRunStep }) => {
+  if (!state.app) {
+    return <Muted>{WAITING[state.status] ?? 'The step has not started.'}</Muted>;
+  }
+  const app = argoAppOf(state);
+  const row = { display: 'flex', gap: '0.5em', alignItems: 'baseline', flexWrap: 'wrap' as const, padding: '0.15em 0' };
+  return (
+    <div>
+      <div style={row}>
+        <Muted>Application</Muted>
+        <a href={appURL(app)} target='_blank' rel='noopener noreferrer' style={{ fontWeight: 600 }}>
+          {state.app}
+        </a>
+        {(state.health || state.sync) && (
+          <span>
+            <AppHealth app={app} /> {[state.sync, state.health].filter(Boolean).join(' / ')}
+          </span>
+        )}
+      </div>
+      {state.image && (
+        <div style={row}>
+          <Muted>Waits for image</Muted>
+          <code style={{ wordBreak: 'break-all' }}>{state.image}</code>
+        </div>
+      )}
+      {state.sha && (
+        <div style={row}>
+          <Muted>Synced revision</Muted>
+          <code>{state.sha.slice(0, 12)}</code>
+        </div>
+      )}
+      {app.images.length > 0 && (
+        <div style={row}>
+          <Muted>Running images</Muted>
+          <span style={{ display: 'flex', flexDirection: 'column' }}>
+            {app.images.map(i => (
+              <code key={i} style={{ wordBreak: 'break-all' }}>
+                {i}
+              </code>
+            ))}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// waitingSteps are the approval steps of a run that wait for a decision.
+export const waitingSteps = (run: StreamRun) => (run.status === 'running' ? run.steps.filter(s => s.status === 'waiting') : []);
+
+export const LockBadge = ({ lock }: { lock: string }) => (
+  <Badge title='Runs with the same lock, of any stream, run one at a time'>
+    <i className='fa fa-key' /> {lock}
+  </Badge>
+);
+
+const HolderLink = ({ blockedBy }: { blockedBy: string }) => {
+  const [stream, run] = blockedBy.split('/');
+  return (
+    <>
+      {' '}
+      <a style={{ cursor: 'pointer' }} onClick={() => navigate({ view: 'streams', stream, srun: run })}>
+        Open that run
+      </a>
+    </>
+  );
+};
+
+export const ApprovalBadge = ({ steps }: { steps: { id: string }[] }) => (
+  <Badge color={COLORS.warn} title={`Waiting for approval: ${steps.map(s => s.id).join(', ')}`}>
+    <i className='fa fa-hand-paper' /> waiting for approval
+  </Badge>
+);
+
+// goSeconds parses a Go duration such as 1h30m; NaN when it cannot.
+function goSeconds(v: string): number {
+  const units: Record<string, number> = { h: 3600, m: 60, s: 1, ms: 0.001 };
+  const parts = Array.from(v.matchAll(/(\d+(?:\.\d+)?)(ms|h|m|s)/g));
+  if (parts.length === 0 || parts.map(p => p[0]).join('') !== v) {
+    return NaN;
+  }
+  return parts.reduce((n, p) => n + Number(p[1]) * units[p[2]], 0);
+}
 
 interface EarlierTry {
   key: string;
@@ -122,12 +219,40 @@ const BoardStep = ({ data, step, state, retries, selected, onSelect }: BoardStep
           <span style={{ fontSize: '0.85em', color: COLORS.muted, whiteSpace: 'nowrap' }}>{duration(state.triggeredAt, state.finishedAt)}</span>
         )}
       </div>
-      <div style={{ ...ellipsis, fontWeight: 600, margin: '0.15em 0' }}>
-        {step.name || <PipelineName data={data} connection={step.connection} id={step.pipeline} />}
-      </div>
-      <div style={{ ...ellipsis, fontSize: '0.85em', color: COLORS.muted }} title={ref}>
-        {step.connection} · <i className='fa fa-code-branch' /> {ref}
-      </div>
+      {isApproval(step) ? (
+        <>
+          <div style={{ ...ellipsis, fontWeight: 600, margin: '0.15em 0' }}>
+            <i className='fa fa-user-check' style={{ color: COLORS.warn }} /> {step.name || 'Approval'}
+          </div>
+          <div style={{ ...ellipsis, fontSize: '0.85em', color: COLORS.muted }} title={state?.prompt || step.message}>
+            {state?.prompt || step.message || 'waits for approval'}
+          </div>
+        </>
+      ) : isArgoCD(step) ? (
+        <>
+          <div style={{ ...ellipsis, fontWeight: 600, margin: '0.15em 0' }}>
+            <i className='fa fa-sync' style={{ color: '#0dadea' }} /> {step.name || 'Argo CD sync'}
+          </div>
+          <div style={{ ...ellipsis, fontSize: '0.85em', color: COLORS.muted }} title={state?.image || step.image}>
+            {state?.app || step.app}
+            {state && (state.health || state.sync) && (
+              <>
+                {' · '}
+                <AppHealth app={argoAppOf(state)} />
+              </>
+            )}
+          </div>
+        </>
+      ) : (
+        <>
+          <div style={{ ...ellipsis, fontWeight: 600, margin: '0.15em 0' }}>
+            {step.name || <PipelineName data={data} connection={step.connection} id={step.pipeline} />}
+          </div>
+          <div style={{ ...ellipsis, fontSize: '0.85em', color: COLORS.muted }} title={ref}>
+            {step.connection} · <i className='fa fa-code-branch' /> {ref}
+          </div>
+        </>
+      )}
       {state && (state.url || state.runNumber || state.sha) && (
         <div style={{ fontSize: '0.85em', marginTop: '0.2em', display: 'flex', gap: '0.5em', flexWrap: 'wrap' }}>
           <RunLink state={state} />
@@ -236,6 +361,7 @@ const AttemptRow = ({ client, run, stepID, connection, entry }: { client: ZeaCli
       {state.message && (
         <div style={{ fontSize: '0.85em', color: state.status === 'failed' ? COLORS.error : COLORS.muted, wordBreak: 'break-word', marginLeft: '2.4em' }}>
           {state.message}
+          {state.comment && <>: &quot;{state.comment}&quot;</>}
         </div>
       )}
       {open && state.runId && (
@@ -252,20 +378,114 @@ const WAITING: Record<string, string> = {
   starting: 'The pipeline was triggered; waiting for the provider to report its run.',
 };
 
+// Decision is what the run view knows about the user's right to decide
+// approval steps.
+interface Decision {
+  // The user has the approve action on the stream.
+  allowed: boolean;
+  // The user started (or retried) the run.
+  starter: boolean;
+  busy: boolean;
+  onDecide: (step: string, approve: boolean, comment: string) => void;
+}
+
+type RunStep = StreamRun['steps'][number];
+
+const ApprovalBox = ({ run, state, timeout, decision }: { run: StreamRun; state: RunStep; timeout?: string; decision: Decision }) => {
+  const [comment, setComment] = React.useState('');
+  const waiting = state.status === 'waiting' && run.status === 'running';
+  const limit = goSeconds(timeout || DEFAULT_APPROVAL_TIMEOUT);
+  const deadline = state.triggeredAt && !isNaN(limit) ? new Date(new Date(state.triggeredAt).getTime() + limit * 1000) : undefined;
+  const selfBlocked = !!state.noSelfApproval && decision.starter;
+  const decide = (approve: boolean) => {
+    const what = approve ? 'Approve' : 'Reject';
+    if (window.confirm(`${what} step ${state.id}?${approve ? ' The run continues.' : ' The step fails.'}`)) {
+      decision.onDecide(state.id, approve, comment);
+    }
+  };
+  return (
+    <div>
+      {state.prompt ? (
+        <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontWeight: 600 }}>{state.prompt}</div>
+      ) : (
+        <Muted>{state.status === 'pending' ? 'Waiting for the steps it depends on.' : 'No message.'}</Muted>
+      )}
+      {state.decidedBy && (
+        <div style={{ marginTop: '0.4em' }}>
+          {state.status === 'succeeded' ? 'Approved' : 'Rejected'} by <b>{state.decidedBy}</b> <Muted>{ago(state.finishedAt)}</Muted>
+          {state.comment && <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: COLORS.muted }}>&quot;{state.comment}&quot;</div>}
+        </div>
+      )}
+      {waiting && (
+        <div style={{ marginTop: '0.6em' }}>
+          {deadline && <Help>Fails if nobody decides by {deadline.toLocaleString()}.</Help>}
+          {state.noSelfApproval && <Help>The user who started the run may not decide.</Help>}
+          {!decision.allowed ? (
+            <Muted>Waiting for a user with the approve action on this stream.</Muted>
+          ) : selfBlocked ? (
+            <Muted>You started this run; someone else must decide.</Muted>
+          ) : (
+            <div style={{ display: 'flex', gap: '0.5em', alignItems: 'flex-start', marginTop: '0.4em', flexWrap: 'wrap' }}>
+              <textarea
+                className='argo-field'
+                rows={2}
+                maxLength={1000}
+                style={{ flex: '1 1 300px', minWidth: 0, resize: 'vertical' }}
+                value={comment}
+                placeholder='Comment (optional)'
+                onChange={e => setComment(e.target.value)}
+              />
+              <button className='argo-button argo-button--base' disabled={decision.busy} onClick={() => decide(true)}>
+                <i className='fa fa-check' /> Approve
+              </button>
+              <button className='argo-button argo-button--base-o' disabled={decision.busy} onClick={() => decide(false)}>
+                <i className='fa fa-times' /> Reject
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
 // StepDetails shows the provider jobs of a run step and its earlier attempts.
-const StepDetails = ({ client, data, run, stepID, onClose }: { client: ZeaClient; data: ConnData; run: StreamRun; stepID: string; onClose: () => void }) => {
+const StepDetails = ({
+  client,
+  data,
+  run,
+  stepID,
+  decision,
+  onClose,
+}: {
+  client: ZeaClient;
+  data: ConnData;
+  run: StreamRun;
+  stepID: string;
+  decision: Decision;
+  onClose: () => void;
+}) => {
   const state = run.steps.find(s => s.id === stepID);
   if (!state) {
     return null;
   }
   const earlier = earlierTries(run, stepID);
   const def = run.spec?.stages.flatMap(s => s.steps).find(s => s.id === stepID);
+  const approval = isApproval(state);
   return (
     <div className='white-box' style={{ padding: '0.8em 1em', marginTop: '0.8em' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
         <StreamStatusIcon status={state.status} />
         <code>{state.id}</code>
-        <b style={{ ...ellipsis }}>{state.name || <PipelineName data={data} connection={state.connection} id={state.pipeline} />}</b>
+        <b style={{ ...ellipsis }}>
+          {approval ? (
+            state.name || 'Approval'
+          ) : isArgoCD(state) ? (
+            state.name || 'Argo CD sync'
+          ) : (
+            state.name || <PipelineName data={data} connection={state.connection} id={state.pipeline} />
+          )}
+        </b>
         <Muted>
           {state.connection}
           {state.ref && (
@@ -300,7 +520,11 @@ const StepDetails = ({ client, data, run, stepID, onClose }: { client: ZeaClient
         </div>
       )}
       <div style={{ marginTop: '0.5em' }}>
-        {state.runId ? (
+        {approval ? (
+          <ApprovalBox key={`${run.attempt}.${state.triggeredAt ?? ''}`} run={run} state={state} timeout={def?.timeout} decision={decision} />
+        ) : isArgoCD(state) ? (
+          <ArgoBox state={state} />
+        ) : state.runId ? (
           <RunJobs
             key={state.runId}
             client={client}
@@ -364,6 +588,55 @@ const BranchParam = ({ client, stream, connection, value, onChange }: BranchPara
   );
 };
 
+// imageTags lists the tags of every repository once, newest first, with the
+// repositories that have each tag.
+export function imageTags(result: ImagesResult): { tags: Branch[]; notes: Record<string, string> } {
+  const seen = new Map<string, { pushed: string; repos: string[]; commit?: string }>();
+  for (const repo of result.repositories) {
+    for (const t of repo.tags) {
+      const e = seen.get(t.name) ?? { pushed: '', repos: [] };
+      e.repos.push(repo.name);
+      e.pushed = (t.pushedAt ?? '') > e.pushed ? t.pushedAt ?? '' : e.pushed;
+      e.commit = e.commit ?? t.commit;
+      seen.set(t.name, e);
+    }
+  }
+  const names = [...seen.keys()].sort((a, b) => (seen.get(b)!.pushed || '').localeCompare(seen.get(a)!.pushed || ''));
+  const notes: Record<string, string> = {};
+  for (const n of names) {
+    const e = seen.get(n)!;
+    notes[n] = [e.pushed ? ago(e.pushed) : '', e.repos.join(', ')].filter(Boolean).join(' \u00b7 ');
+  }
+  return { tags: names.map(name => ({ name, protected: false })), notes };
+}
+
+// ImageParam lists image tags through the stream, so run access to the
+// stream is enough.
+const ImageParam = ({ client, stream, connection, value, onChange }: BranchParamProps) => {
+  const [images] = useLoad(
+    () => (connection ? client.streamImages(stream, connection) : Promise.resolve(undefined)),
+    [client, stream, connection],
+  );
+  const list = React.useMemo(() => (images.state === 'ok' && images.data ? imageTags(images.data) : undefined), [images]);
+  const errors = images.state === 'ok' ? images.data?.errors ?? [] : [];
+  return (
+    <>
+      <BranchPicker
+        value={value}
+        branches={list?.tags ?? []}
+        notes={list?.notes}
+        placeholder={images.state === 'loading' ? 'Loading images...' : 'Image tag'}
+        emptyText={images.state === 'loading' ? 'Loading images...' : 'No matching images. The typed tag is used as is.'}
+        onChange={onChange}
+      />
+      {images.state === 'error' && <ErrorText text={images.error} />}
+      {errors.map((e, i) => (
+        <ErrorText key={i} text={e.error} />
+      ))}
+    </>
+  );
+};
+
 // StreamRunForm asks for the params of a Stream and starts it.
 export const StreamRunForm = ({ client, stream, initial, title, onStarted, onClose }: RunFormProps) => {
   const [values, setValues] = React.useState<Record<string, string>>(() =>
@@ -416,6 +689,8 @@ export const StreamRunForm = ({ client, stream, initial, title, onStarted, onClo
             </select>
           ) : p.type === 'branch' ? (
             <BranchParam client={client} stream={stream.name} connection={p.connection} value={values[p.name] ?? ''} onChange={v => set(p.name, v)} />
+          ) : p.type === 'image' ? (
+            <ImageParam client={client} stream={stream.name} connection={p.connection} value={values[p.name] ?? ''} onChange={v => set(p.name, v)} />
           ) : (
             <input className='argo-field' style={{ width: '100%' }} value={values[p.name] ?? ''} onChange={e => set(p.name, e.target.value)} />
           )}
@@ -476,6 +751,7 @@ const StepDots = ({ run }: { run: StreamRun }) => (
 const FILTERS: { key: 'all' | StreamRunStatus; label: string }[] = [
   { key: 'all', label: 'All' },
   { key: 'running', label: 'Running' },
+  { key: 'queued', label: 'Queued' },
   { key: 'failed', label: 'Failed' },
   { key: 'succeeded', label: 'Succeeded' },
   { key: 'cancelled', label: 'Cancelled' },
@@ -487,7 +763,7 @@ export const StreamRunHistory = ({ client, stream, refreshKey }: { client: ZeaCl
     () => client.streamRuns(stream),
     [client, stream, refreshKey],
     HISTORY_POLL_MS,
-    d => (d ?? []).some(r => r.status === 'running'),
+    d => (d ?? []).some(r => runActive(r.status)),
   );
   const [filter, setFilter] = React.useState<'all' | StreamRunStatus>('all');
   const [shown, setShown] = React.useState(HISTORY_PAGE);
@@ -542,6 +818,7 @@ export const StreamRunHistory = ({ client, stream, refreshKey }: { client: ZeaCl
                 )}
                 <Muted>{[r.user, ago(r.createdAt), duration(r.retriedAt || r.createdAt, r.finishedAt)].filter(Boolean).join(' · ')}</Muted>
                 <StepDots run={r} />
+                {waitingSteps(r).length > 0 && <ApprovalBadge steps={waitingSteps(r)} />}
               </div>
               {(params.length > 0 || r.message) && (
                 <div style={{ ...ellipsis, fontSize: '0.85em', color: COLORS.muted }}>
@@ -572,12 +849,37 @@ function focusStep(run: StreamRun): string | undefined {
 }
 
 // StreamRunView follows one run until it finishes.
-export const StreamRunView = ({ client, data, stream, runID }: { client: ZeaClient; data: ConnData; stream: string; runID: string }) => {
+// RunApps lists the Argo CD Applications running images of the run's
+// Connections and marks those running a commit a step of the run built.
+const RunApps = ({ client, run }: { client: ZeaClient; run: StreamRun }) => {
+  const steps = run.steps.filter(s => !isApproval(s) && s.connection);
+  const conns = Array.from(new Set(steps.map(s => s.connection))).sort();
+  const affected = useAffectedApps(client, conns.length > 0);
+  const shown = conns.filter(c => (affected.data?.[c] ?? []).length > 0);
+  if (shown.length === 0) {
+    return null;
+  }
+  return (
+    <div className='white-box' style={{ padding: '0.8em 1em', marginTop: '0.8em' }}>
+      <div style={{ fontWeight: 600, marginBottom: '0.4em' }}>
+        <i className='fa fa-cubes' /> Applications
+      </div>
+      {shown.map(c => (
+        <div key={c} style={{ marginBottom: '0.5em' }}>
+          <Muted>{c}</Muted>
+          <AffectedAppsList items={affected.data![c]} current={steps.filter(s => s.connection === c && s.sha).map(s => s.sha!)} />
+        </div>
+      ))}
+    </div>
+  );
+};
+
+export const StreamRunView = ({ client, data, me, stream, runID }: { client: ZeaClient; data: ConnData; me: Me; stream: string; runID: string }) => {
   const run = usePoll(
     () => client.streamRun(stream, runID),
     [client, stream, runID],
     RUN_POLL_MS,
-    d => !d || d.status === 'running',
+    d => !d || runActive(d.status),
   );
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState('');
@@ -586,6 +888,7 @@ export const StreamRunView = ({ client, data, stream, runID }: { client: ZeaClie
   // loaded (e.g. deleted) the backend decides.
   const [st] = useLoad(() => client.stream(stream), [client, stream]);
   const canRun = st.state === 'error' || (st.state === 'ok' && can(st.data.actions, 'run'));
+  const canApprove = st.state === 'error' || (st.state === 'ok' && can(st.data.actions, 'approve'));
   // undefined follows the active step; null means the panel was closed.
   const [picked, setPicked] = React.useState<string | null>();
   const r = run.data;
@@ -617,7 +920,15 @@ export const StreamRunView = ({ client, data, stream, runID }: { client: ZeaClie
     }
   };
 
+  const decision: Decision = {
+    allowed: canApprove,
+    starter: !!r && !!me.username && (me.username === r.user || me.username === r.retriedBy),
+    busy,
+    onDecide: (step, approve, comment) => act(() => client.decideStreamStep(stream, runID, step, approve, comment)),
+  };
+
   const retryable = r && (r.status === 'failed' || r.status === 'cancelled') && r.steps.some(s => s.status !== 'succeeded');
+  const waiting = r ? waitingSteps(r) : [];
   const params = Object.entries(r?.params ?? {});
   return (
     <div>
@@ -633,6 +944,8 @@ export const StreamRunView = ({ client, data, stream, runID }: { client: ZeaClie
               Run <code>{r.id}</code>
             </b>
             {r.attempt > 1 && <Badge>attempt {r.attempt}</Badge>}
+            {r.lock && <LockBadge lock={r.lock} />}
+            {waiting.length > 0 && <ApprovalBadge steps={waiting} />}
             <Muted>
               {[
                 `by ${r.user}`,
@@ -646,7 +959,7 @@ export const StreamRunView = ({ client, data, stream, runID }: { client: ZeaClie
           </>
         )}
         <div style={{ flex: 1 }} />
-        {canRun && r?.status === 'running' && (
+        {canRun && r && runActive(r.status) && (
           <button className='argo-button argo-button--base-o' disabled={busy || r.cancelRequested} onClick={cancel}>
             <i className={r.cancelRequested ? 'fa fa-circle-notch fa-spin' : 'fa fa-stop'} /> {r.cancelRequested ? 'Cancelling...' : 'Cancel'}
           </button>
@@ -656,7 +969,7 @@ export const StreamRunView = ({ client, data, stream, runID }: { client: ZeaClie
             <i className='fa fa-redo' /> Retry failed
           </button>
         )}
-        {canRun && r && r.status !== 'running' && (
+        {canRun && r && !runActive(r.status) && (
           <button className='argo-button argo-button--base-o' disabled={busy} onClick={() => setAgain(!again)} title='Start a new run with these params'>
             <i className='fa fa-play' /> Run again
           </button>
@@ -670,12 +983,13 @@ export const StreamRunView = ({ client, data, stream, runID }: { client: ZeaClie
       {!r && run.loading && <Muted>Loading...</Muted>}
       {r && (
         <>
-          {again && r.status !== 'running' && (
+          {again && !runActive(r.status) && (
             <RunAgain client={client} stream={stream} params={r.params} onClose={() => setAgain(false)} />
           )}
           {r.message && (
             <div style={{ color: r.status === 'failed' ? COLORS.error : COLORS.muted, marginBottom: '0.6em', wordBreak: 'break-word' }}>
               {r.message}
+              {r.status === 'queued' && r.blockedBy && <HolderLink blockedBy={r.blockedBy} />}
             </div>
           )}
           {params.length > 0 && (
@@ -690,8 +1004,11 @@ export const StreamRunView = ({ client, data, stream, runID }: { client: ZeaClie
           {r.spec ? (
             <>
               <StagesBoard data={data} spec={r.spec} run={r} selected={selected} onSelect={id => setPicked(id === selected ? null : id)} />
-              <Help>Click a step to see its jobs and earlier attempts.</Help>
-              {selected && <StepDetails client={client} data={data} run={r} stepID={selected} onClose={() => setPicked(null)} />}
+              <Help>Click a step to see its jobs, approval and earlier attempts.</Help>
+              {selected && (
+                <StepDetails client={client} data={data} run={r} stepID={selected} decision={decision} onClose={() => setPicked(null)} />
+              )}
+              <RunApps client={client} run={r} />
             </>
           ) : (
             <Help>The run has no stages.</Help>

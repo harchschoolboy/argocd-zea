@@ -32,12 +32,24 @@ const (
 	minTimeout         = time.Minute
 	maxTimeout         = 72 * time.Hour
 	maxRetryDelay      = time.Hour
+	// MaxLockLen caps the lock template and its rendered key.
+	MaxLockLen = 200
 )
 
 // Step retry limits.
 const (
 	MaxStepRetries    = 5
 	DefaultRetryDelay = 30 * time.Second
+)
+
+// Step types.
+const (
+	// StepTypePipeline (the default, empty type) runs a pipeline.
+	StepTypePipeline = ""
+	// StepTypeApproval waits until a user approves or rejects it.
+	StepTypeApproval = "approval"
+	// DefaultApprovalTimeout is how long an approval waits by default.
+	DefaultApprovalTimeout = 24 * time.Hour
 )
 
 // Parameter types.
@@ -47,6 +59,9 @@ const (
 	ParamBoolean = "boolean"
 	// ParamBranch is a branch of Param.Connection, picked from a list.
 	ParamBranch = "branch"
+	// ParamImage is an image tag of Param.Connection's image sources,
+	// picked from a list.
+	ParamImage = "image"
 )
 
 // Step conditions relative to the step's dependencies.
@@ -79,9 +94,13 @@ var (
 
 // Spec is the editable content of a Stream, stored as YAML.
 type Spec struct {
-	Description string  `json:"description,omitempty" yaml:"description,omitempty"`
-	Params      []Param `json:"params" yaml:"params,omitempty"`
-	Stages      []Stage `json:"stages" yaml:"stages"`
+	Description string `json:"description,omitempty" yaml:"description,omitempty"`
+	// Lock names a lock held while a run is active; runs with the same
+	// rendered lock, of any Stream, wait in a queue and start one at a time.
+	// It may reference params and zea.user / stream.name.
+	Lock   string  `json:"lock,omitempty" yaml:"lock,omitempty"`
+	Params []Param `json:"params" yaml:"params,omitempty"`
+	Stages []Stage `json:"stages" yaml:"stages"`
 }
 
 // Param is a value asked when the Stream starts, referenced in steps as
@@ -93,8 +112,14 @@ type Param struct {
 	Default     string   `json:"default,omitempty" yaml:"default,omitempty"`
 	Required    bool     `json:"required,omitempty" yaml:"required,omitempty"`
 	Options     []string `json:"options,omitempty" yaml:"options,omitempty"`
-	// Connection lists the branches of a branch parameter.
+	// Connection lists the branches of a branch param or the image tags of
+	// an image param.
 	Connection string `json:"connection,omitempty" yaml:"connection,omitempty"`
+}
+
+// HasConnection reports whether the param lists its values from a Connection.
+func (p Param) HasConnection() bool {
+	return p.Type == ParamBranch || p.Type == ParamImage
 }
 
 // Stage groups steps that run in parallel.
@@ -103,14 +128,17 @@ type Stage struct {
 	Steps []Step `json:"steps" yaml:"steps"`
 }
 
-// Step runs one pipeline of a Connection. Ref, Inputs and Variables may
-// contain ${{ ... }} references.
+// Step runs one pipeline of a Connection, waits for an approval, or waits
+// for an Argo CD Application. Ref, Inputs, Variables, Message, App and
+// Image may contain ${{ ... }} references.
 type Step struct {
-	ID         string            `json:"id" yaml:"id"`
-	Name       string            `json:"name,omitempty" yaml:"name,omitempty"`
-	Connection string            `json:"connection" yaml:"connection"`
-	Pipeline   string            `json:"pipeline" yaml:"pipeline"`
-	Ref        string            `json:"ref" yaml:"ref"`
+	ID   string `json:"id" yaml:"id"`
+	Name string `json:"name,omitempty" yaml:"name,omitempty"`
+	// Type is empty for a pipeline step, StepTypeApproval or StepTypeArgoCD.
+	Type       string            `json:"type,omitempty" yaml:"type,omitempty"`
+	Connection string            `json:"connection" yaml:"connection,omitempty"`
+	Pipeline   string            `json:"pipeline" yaml:"pipeline,omitempty"`
+	Ref        string            `json:"ref" yaml:"ref,omitempty"`
 	Inputs     map[string]string `json:"inputs,omitempty" yaml:"inputs,omitempty"`
 	Variables  map[string]string `json:"variables,omitempty" yaml:"variables,omitempty"`
 	// Needs lists the steps this one waits for. Empty means every step of
@@ -127,7 +155,24 @@ type Step struct {
 	// RetryDelay is a Go duration to wait before a retry; empty uses
 	// DefaultRetryDelay.
 	RetryDelay string `json:"retryDelay,omitempty" yaml:"retryDelay,omitempty"`
+	// Message is shown to approvers of an approval step.
+	Message string `json:"message,omitempty" yaml:"message,omitempty"`
+	// NoSelfApproval keeps the user who started the run (or its current
+	// attempt) from deciding an approval step.
+	NoSelfApproval bool `json:"noSelfApproval,omitempty" yaml:"noSelfApproval,omitempty"`
+	// App is the "<namespace>/<name>" or "<name>" of the Application an
+	// argocd step waits for.
+	App string `json:"app,omitempty" yaml:"app,omitempty"`
+	// Image makes an argocd step wait until the image (a full reference, a
+	// repository:tag or a tag) is live; without it the step waits for a
+	// sync that finishes after the step started.
+	Image string `json:"image,omitempty" yaml:"image,omitempty"`
+	// NoRefresh skips asking Argo CD to refresh the Application.
+	NoRefresh bool `json:"noRefresh,omitempty" yaml:"noRefresh,omitempty"`
 }
+
+// IsApproval reports whether the step waits for an approval.
+func (s Step) IsApproval() bool { return s.Type == StepTypeApproval }
 
 // Stream is a named Spec with storage metadata.
 type Stream struct {
@@ -187,6 +232,9 @@ func (s *Stream) Validate() error {
 	if len(s.Description) > maxDescriptionLen {
 		return fmt.Errorf("description is longer than %d characters", maxDescriptionLen)
 	}
+	if len(s.Lock) > MaxLockLen {
+		return fmt.Errorf("lock is longer than %d characters", MaxLockLen)
+	}
 	if len(s.Params) > MaxParams {
 		return fmt.Errorf("at most %d params are allowed", MaxParams)
 	}
@@ -239,14 +287,17 @@ func (s *Stream) Validate() error {
 
 func validateStepSize(step Step) error {
 	if len(step.ID) > maxKeyLen || len(step.Connection) > maxKeyLen || len(step.Pipeline) > maxKeyLen ||
-		len(step.When) > maxKeyLen || len(step.Timeout) > maxKeyLen || len(step.RetryDelay) > maxKeyLen {
-		return errors.New("step id, connection, pipeline, when, timeout or retry delay is too long")
+		len(step.When) > maxKeyLen || len(step.Timeout) > maxKeyLen || len(step.RetryDelay) > maxKeyLen || len(step.Type) > maxKeyLen {
+		return errors.New("step id, type, connection, pipeline, when, timeout or retry delay is too long")
+	}
+	if len(step.Message) > maxDescriptionLen {
+		return fmt.Errorf("step %q: message is longer than %d characters", step.ID, maxDescriptionLen)
 	}
 	if len(step.Name) > maxStepNameLen {
 		return fmt.Errorf("step %q: name is longer than %d characters", step.ID, maxStepNameLen)
 	}
-	if len(step.Ref) > maxValueLen {
-		return fmt.Errorf("step %q: ref is too long", step.ID)
+	if len(step.Ref) > maxValueLen || len(step.App) > maxValueLen || len(step.Image) > maxValueLen {
+		return fmt.Errorf("step %q: ref, app or image is too long", step.ID)
 	}
 	if len(step.Needs) > MaxSteps {
 		return fmt.Errorf("step %q: too many needs", step.ID)
@@ -289,6 +340,12 @@ func (s *Stream) Problems() []Problem {
 		}
 	}
 
+	for _, msg := range checkTemplate(s.Lock, params, nil) {
+		add(Problem{Message: "lock: " + msg})
+	}
+	if strings.Contains(s.Lock, "stream.run") {
+		add(Problem{Message: "lock: stream.run is different for every run, so it would never make runs wait"})
+	}
 	if len(s.Stages) == 0 {
 		add(Problem{Message: "the stream has no stages"})
 	}
@@ -336,6 +393,10 @@ func paramProblems(p Param) []string {
 		if p.Connection == "" {
 			out = append(out, "a branch param needs a connection to list branches from")
 		}
+	case ParamImage:
+		if p.Connection == "" {
+			out = append(out, "an image param needs a connection to list images from")
+		}
 	case "":
 		out = append(out, "type is required")
 	default:
@@ -344,8 +405,8 @@ func paramProblems(p Param) []string {
 	if p.Type != ParamChoice && len(p.Options) > 0 {
 		out = append(out, "only choice params have options")
 	}
-	if p.Type != ParamBranch && p.Connection != "" {
-		out = append(out, "only branch params have a connection")
+	if !p.HasConnection() && p.Connection != "" {
+		out = append(out, "only branch and image params have a connection")
 	}
 	return out
 }
@@ -354,14 +415,34 @@ func paramProblems(p Param) []string {
 // upstream the steps it waits for, directly or not.
 func stepProblems(step Step, earlier, upstream, params map[string]bool) []string {
 	var out []string
-	if step.Connection == "" {
-		out = append(out, "connection is required")
+	switch step.Type {
+	case StepTypePipeline:
+		if step.Connection == "" {
+			out = append(out, "connection is required")
+		}
+		if step.Pipeline == "" {
+			out = append(out, "pipeline is required")
+		}
+		if strings.TrimSpace(step.Ref) == "" {
+			out = append(out, "ref (branch or tag) is required")
+		}
+		if step.Message != "" || step.NoSelfApproval {
+			out = append(out, "only approval steps have a message or noSelfApproval")
+		}
+	case StepTypeApproval:
+		if step.Connection != "" || step.Pipeline != "" || step.Ref != "" || len(step.Inputs)+len(step.Variables) > 0 {
+			out = append(out, "an approval step has no connection, pipeline, ref, inputs or variables")
+		}
+		if step.Retries != 0 || step.RetryDelay != "" {
+			out = append(out, "an approval step is not retried automatically")
+		}
+	case StepTypeArgoCD:
+		out = append(out, argoProblems(step)...)
+	default:
+		out = append(out, fmt.Sprintf("unknown type %q: leave it empty for a pipeline or use approval or argocd", step.Type))
 	}
-	if step.Pipeline == "" {
-		out = append(out, "pipeline is required")
-	}
-	if strings.TrimSpace(step.Ref) == "" {
-		out = append(out, "ref (branch or tag) is required")
+	if !step.IsArgoCD() && (step.App != "" || step.Image != "" || step.NoRefresh) {
+		out = append(out, "only argocd steps have app, image or noRefresh")
 	}
 	for _, n := range step.Needs {
 		switch {
@@ -407,6 +488,9 @@ func stepProblems(step Step, earlier, upstream, params map[string]bool) []string
 		}
 	}
 	check("ref", step.Ref)
+	check("message", step.Message)
+	check("app", step.App)
+	check("image", step.Image)
 	for _, k := range sortedKeys(step.Inputs) {
 		check("input "+k, step.Inputs[k])
 	}
@@ -427,7 +511,7 @@ func (s *Stream) Connections() []string {
 		}
 	}
 	for _, p := range s.Params {
-		if p.Type == ParamBranch {
+		if p.HasConnection() {
 			add(p.Connection)
 		}
 	}

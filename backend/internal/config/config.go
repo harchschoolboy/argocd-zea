@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 // Config holds runtime settings for the Zea backend.
@@ -51,6 +53,13 @@ type Config struct {
 	StreamStepTimeout time.Duration
 	// StreamRunHistory is how many finished runs are kept per Stream.
 	StreamRunHistory int
+	// AuditRetentionDays is how many days audit events are stored; 0 only
+	// logs them.
+	AuditRetentionDays int
+	// ArgoAppNamespaces are the namespaces of the Applications Stream
+	// argocd steps may wait for; the first is the default. Defaults to the
+	// anchor Application's namespace.
+	ArgoAppNamespaces []string
 }
 
 // Load reads configuration from the environment and validates it.
@@ -70,6 +79,8 @@ func Load() (*Config, error) {
 		StreamPollInterval:      10 * time.Second,
 		StreamStepTimeout:       6 * time.Hour,
 		StreamRunHistory:        30,
+		AuditRetentionDays:      30,
+		ArgoAppNamespaces:       SplitList(os.Getenv("ZEA_ARGOCD_APP_NAMESPACES")),
 	}
 
 	skip, err := parseBool("ZEA_INSECURE_SKIP_PROXY_AUTH", false)
@@ -103,9 +114,25 @@ func Load() (*Config, error) {
 		}
 		cfg.StreamRunHistory = n
 	}
+	if v := getEnv("ZEA_AUDIT_RETENTION_DAYS", ""); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 || n > 366 {
+			return nil, fmt.Errorf("invalid ZEA_AUDIT_RETENTION_DAYS %q: expected a number between 0 and 366", v)
+		}
+		cfg.AuditRetentionDays = n
+	}
 
-	if _, _, ok := strings.Cut(cfg.AnchorApp, ":"); cfg.AnchorApp != "" && !ok {
+	anchorNs, _, ok := strings.Cut(cfg.AnchorApp, ":")
+	if cfg.AnchorApp != "" && !ok {
 		return nil, fmt.Errorf("invalid ZEA_ANCHOR_APP %q: expected <namespace>:<application>", cfg.AnchorApp)
+	}
+	if len(cfg.ArgoAppNamespaces) == 0 && anchorNs != "" {
+		cfg.ArgoAppNamespaces = []string{anchorNs}
+	}
+	for _, ns := range cfg.ArgoAppNamespaces {
+		if errs := validation.IsDNS1123Label(ns); len(errs) > 0 {
+			return nil, fmt.Errorf("invalid ZEA_ARGOCD_APP_NAMESPACES entry %q: %s", ns, strings.Join(errs, "; "))
+		}
 	}
 
 	if cfg.ProxyToken == "" && !cfg.InsecureSkipProxyAuth {

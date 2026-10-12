@@ -734,3 +734,217 @@ func TestEngineAutoRetrySkipsCancelledPipeline(t *testing.T) {
 		t.Fatalf("build = %+v, tries = %d, run = %s", s, len(r.Tries), r.Status)
 	}
 }
+
+func approval(id, msg string) Step {
+	return Step{ID: id, Type: StepTypeApproval, Message: msg}
+}
+
+func TestEngineApproval(t *testing.T) {
+	env := newEngineEnv(EngineConfig{})
+	ctx := context.Background()
+	deploy := step("deploy", "infra", "deploy.yml")
+	deploy.Inputs = map[string]string{"approver": "${{ steps.gate.user }}"}
+	st := flow(Stage{Steps: []Step{step("build", "app", "build.yml")}},
+		Stage{Steps: []Step{approval("gate", "Deploy ${{ steps.build.sha }}?")}},
+		Stage{Steps: []Step{deploy}})
+	r := env.start(t, st, nil)
+	r = env.tick(t, r)
+	if _, err := env.e.Decide(ctx, r.Stream, r.ID, "gate", "bob", true, ""); !errors.Is(err, ErrNotWaiting) {
+		t.Fatalf("decide before waiting: %v", err)
+	}
+	env.ci.finish(t, "build.yml", providers.StatusSuccess)
+	r = env.tick(t, r)
+	wantSteps(t, r, map[string]string{"build": StepSucceeded, "gate": StepWaiting, "deploy": StepPending})
+	if got := stepStatus(r, "gate").Prompt; got != "Deploy sha-1?" {
+		t.Fatalf("prompt = %q", got)
+	}
+	if _, err := env.e.Decide(ctx, r.Stream, r.ID, "build", "bob", true, ""); !errors.Is(err, ErrNotWaiting) {
+		t.Fatalf("decide a pipeline step: %v", err)
+	}
+	if _, err := env.e.Decide(ctx, r.Stream, r.ID, "gate", "bob", true, strings.Repeat("x", MaxCommentLen+1)); !errors.Is(err, ErrInvalidParams) {
+		t.Fatalf("long comment: %v", err)
+	}
+	got, err := env.e.Decide(ctx, r.Stream, r.ID, "gate", "alice", true, " ship it ")
+	if err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	if s := stepStatus(got, "gate"); s.Status != StepSucceeded || s.DecidedBy != "alice" || s.Comment != "ship it" || s.FinishedAt.IsZero() {
+		t.Fatalf("gate = %+v", s)
+	}
+	if _, err := env.e.Decide(ctx, r.Stream, r.ID, "gate", "bob", false, ""); !errors.Is(err, ErrNotWaiting) {
+		t.Fatalf("second decision: %v", err)
+	}
+	r = env.tick(t, r)
+	wantSteps(t, r, map[string]string{"deploy": StepRunning})
+	if in := env.ci.lastTrigger("deploy.yml").Inputs; in["approver"] != "alice" {
+		t.Fatalf("deploy inputs = %v", in)
+	}
+}
+
+func TestEngineApprovalReject(t *testing.T) {
+	env := newEngineEnv(EngineConfig{})
+	ctx := context.Background()
+	gate := approval("gate", "")
+	gate.NoSelfApproval = true
+	notify := step("notify", "app", "notify.yml")
+	notify.When = WhenFailure
+	st := flow(Stage{Steps: []Step{gate}}, Stage{Steps: []Step{step("deploy", "infra", "deploy.yml"), notify}})
+	r := env.start(t, st, nil)
+	r = env.tick(t, r)
+	wantSteps(t, r, map[string]string{"gate": StepWaiting})
+	if _, err := env.e.Decide(ctx, r.Stream, r.ID, "gate", "alice", true, ""); !errors.Is(err, ErrSelfApproval) {
+		t.Fatalf("self approval: %v", err)
+	}
+	if _, err := env.e.Decide(ctx, r.Stream, r.ID, "gate", "bob", false, "not today"); err != nil {
+		t.Fatalf("reject: %v", err)
+	}
+	r = env.tick(t, r)
+	wantSteps(t, r, map[string]string{"gate": StepFailed, "deploy": StepSkipped, "notify": StepRunning})
+	if s := stepStatus(r, "gate"); s.DecidedBy != "bob" || s.Message != "rejected by bob" {
+		t.Fatalf("gate = %+v", s)
+	}
+	env.ci.finish(t, "notify.yml", providers.StatusSuccess)
+	r = env.tick(t, r)
+	if r.Status != RunFailed {
+		t.Fatalf("run = %s", r.Status)
+	}
+
+	// A retry opens the approval again; its starter may not decide it.
+	if _, err := env.e.Retry(ctx, r.Stream, r.ID, "carol"); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	r = env.tick(t, r)
+	wantSteps(t, r, map[string]string{"gate": StepWaiting})
+	if s := stepStatus(r, "gate"); s.DecidedBy != "" || s.Comment != "" {
+		t.Fatalf("gate kept the old decision: %+v", s)
+	}
+	if _, err := env.e.Decide(ctx, r.Stream, r.ID, "gate", "carol", true, ""); !errors.Is(err, ErrSelfApproval) {
+		t.Fatalf("self approval after retry: %v", err)
+	}
+	if _, err := env.e.Decide(ctx, r.Stream, r.ID, "gate", "bob", true, ""); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+}
+
+func TestEngineApprovalTimeoutAndCancel(t *testing.T) {
+	env := newEngineEnv(EngineConfig{})
+	ctx := context.Background()
+	gate := approval("gate", "")
+	gate.Timeout = "1h"
+	r := env.start(t, flow(Stage{Steps: []Step{gate}}), nil)
+	r = env.tick(t, r)
+	env.advance(59 * time.Minute)
+	r = env.tick(t, r)
+	wantSteps(t, r, map[string]string{"gate": StepWaiting})
+	env.advance(2 * time.Minute)
+	r = env.tick(t, r)
+	wantSteps(t, r, map[string]string{"gate": StepFailed})
+	if r.Status != RunFailed || !strings.Contains(stepStatus(r, "gate").Message, "not approved within 1h0m0s") {
+		t.Fatalf("run = %s, gate = %+v", r.Status, stepStatus(r, "gate"))
+	}
+
+	r = env.start(t, flow(Stage{Steps: []Step{approval("gate", "")}}), nil)
+	r = env.tick(t, r)
+	env.advance(23 * time.Hour)
+	r = env.tick(t, r)
+	wantSteps(t, r, map[string]string{"gate": StepWaiting})
+	if _, err := env.e.Cancel(ctx, r.Stream, r.ID, "bob"); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	if _, err := env.e.Decide(ctx, r.Stream, r.ID, "gate", "bob", true, ""); !errors.Is(err, ErrRunFinished) {
+		t.Fatalf("decide a cancelled run: %v", err)
+	}
+	r = env.tick(t, r)
+	wantSteps(t, r, map[string]string{"gate": StepCancelled})
+	if r.Status != RunCancelled {
+		t.Fatalf("run = %s", r.Status)
+	}
+}
+
+func TestEngineLockQueue(t *testing.T) {
+	env := newEngineEnv(EngineConfig{})
+	ctx := context.Background()
+	locked := func(name, pipeline string) *Stream {
+		return &Stream{Name: name, Spec: Spec{
+			Lock:   "deploy-${{ params.env }}",
+			Params: []Param{{Name: "env", Type: ParamString, Required: true}},
+			Stages: []Stage{{Steps: []Step{step("deploy", "app", pipeline)}}},
+		}}
+	}
+	first := env.start(t, locked("flow", "a.yml"), map[string]string{"env": "prod"})
+	if first.Status != RunQueued || first.Lock != "deploy-prod" {
+		t.Fatalf("new locked run = %s %q", first.Status, first.Lock)
+	}
+	first = env.tick(t, first)
+	if first.Status != RunRunning || stepStatus(first, "deploy").Status != StepRunning {
+		t.Fatalf("free lock: run %s step %s", first.Status, stepStatus(first, "deploy").Status)
+	}
+
+	env.advance(time.Second)
+	second := env.start(t, locked("other", "b.yml"), map[string]string{"env": "prod"})
+	env.advance(time.Second)
+	dev := env.start(t, locked("flow", "c.yml"), map[string]string{"env": "dev"})
+	env.advance(time.Second)
+	cancelled := env.start(t, locked("flow", "d.yml"), map[string]string{"env": "prod"})
+	second = env.tick(t, second)
+	if second.Status != RunQueued || second.BlockedBy != "flow/"+first.ID || !strings.Contains(second.Message, "deploy-prod") {
+		t.Fatalf("second = %s %q %q", second.Status, second.BlockedBy, second.Message)
+	}
+	if dev = env.tick(t, dev); dev.Status != RunRunning {
+		t.Fatalf("other lock key must not wait: %s", dev.Status)
+	}
+	if got := env.ci.triggered(); strings.Join(got, ",") != "a.yml,c.yml" {
+		t.Fatalf("triggered = %v", got)
+	}
+
+	if _, err := env.e.Cancel(ctx, "flow", cancelled.ID, "bob"); err != nil {
+		t.Fatal(err)
+	}
+	cancelled = env.tick(t, cancelled)
+	if cancelled.Status != RunCancelled || stepStatus(cancelled, "deploy").Status != StepSkipped || cancelled.BlockedBy != "" {
+		t.Fatalf("cancelled queued run = %s %+v", cancelled.Status, cancelled.Steps)
+	}
+
+	env.ci.finish(t, "a.yml", providers.StatusSuccess)
+	second = env.tick(t, second)
+	if second.Status != RunRunning || second.BlockedBy != "" || stepStatus(second, "deploy").Status != StepRunning {
+		t.Fatalf("second after release = %s %q %+v", second.Status, second.BlockedBy, second.Steps)
+	}
+
+	env.ci.finish(t, "b.yml", providers.StatusFailed)
+	if second = env.tick(t, second); second.Status != RunFailed {
+		t.Fatalf("second = %s", second.Status)
+	}
+	retried, err := env.e.Retry(ctx, "other", second.ID, "bob")
+	if err != nil || retried.Status != RunQueued {
+		t.Fatalf("retry = %v %v", retried, err)
+	}
+	if retried = env.tick(t, retried); retried.Status != RunRunning {
+		t.Fatalf("retried = %s", retried.Status)
+	}
+}
+
+func TestLockProblems(t *testing.T) {
+	st := flow(Stage{Steps: []Step{step("a", "app", "a.yml")}})
+	st.Lock = "${{ stream.run }}"
+	if !hasProblem(st.Problems(), "stream.run") {
+		t.Fatalf("problems = %v", st.Problems())
+	}
+	st.Lock = "${{ params.missing }}"
+	if !hasProblem(st.Problems(), "lock:") {
+		t.Fatalf("problems = %v", st.Problems())
+	}
+	st.Lock = "${{ stream.name }}-${{ zea.user }}"
+	if len(st.Problems()) != 0 {
+		t.Fatalf("problems = %v", st.Problems())
+	}
+}
+
+func hasProblem(ps []Problem, part string) bool {
+	for _, p := range ps {
+		if strings.Contains(p.String(), part) {
+			return true
+		}
+	}
+	return false
+}

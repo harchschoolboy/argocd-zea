@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { describeError, ZeaClient } from './api';
+import { describeError, fetchArgoApps, ZeaClient } from './api';
 import { isBranchInput } from './RunForm';
 import {
   Badge,
@@ -9,14 +9,21 @@ import {
   KeyValueEditor,
   PipelineName,
   ProblemList,
+  RefSelect,
   useDebounced,
   ValueField,
 } from './StreamFields';
 import {
   allSteps,
+  APPROVAL,
+  ARGOCD,
   ConnData,
+  DEFAULT_APPROVAL_TIMEOUT,
+  DEFAULT_ARGO_TIMEOUT,
   emptySpec,
   insertStep,
+  isApproval,
+  isArgoCD,
   isTemplate,
   MAX_STREAM_NAME,
   moveStage,
@@ -43,7 +50,24 @@ import { COLORS, ErrorText, Muted, ProviderBadge, useLoad } from './ui';
 const ACCENT = '#0dadea';
 const COLUMN_WIDTH = 250;
 
-type Drag = { kind: 'conn'; name: string } | { kind: 'step'; from: StepPos } | { kind: 'stage'; from: number };
+// A source drag adds a new step: a pipeline of a connection, an approval or
+// an Argo CD sync.
+type Source = { kind: 'conn'; name: string } | { kind: 'approval' } | { kind: 'argocd' };
+
+const isSource = (d: { kind: string }): d is Source => d.kind === 'conn' || d.kind === 'approval' || d.kind === 'argocd';
+
+// Steps that are not pipelines, offered above the connections.
+const CONTROL_STEPS: { kind: 'approval' | 'argocd'; label: string; icon: string; color: string; title: string }[] = [
+  { kind: 'approval', label: 'Approval', icon: 'fa fa-user-check', color: COLORS.warn, title: 'Pauses the run until someone approves' },
+  {
+    kind: 'argocd',
+    label: 'Argo CD sync',
+    icon: 'fa fa-sync',
+    color: '#0dadea',
+    title: 'Waits until an Argo CD application is synced (optionally to an image) and healthy',
+  },
+];
+type Drag = Source | { kind: 'step'; from: StepPos } | { kind: 'stage'; from: number };
 // A step drop with stage equal to the stage count creates a new stage.
 type Drop = { kind: 'step'; stage: number; index: number } | { kind: 'stage'; index: number };
 
@@ -84,21 +108,57 @@ const StepCard = ({ data, step, problems, selected, onSelect, onDragStart, onDra
         </span>
       )}
     </div>
-    <div style={{ ...ellipsis, fontWeight: 600, margin: '0.15em 0' }}>
-      {step.name || <PipelineName data={data} connection={step.connection} id={step.pipeline} />}
-    </div>
-    <div style={{ ...ellipsis, fontSize: '0.85em', color: COLORS.muted }}>
-      {step.connection || '(no connection)'}
-      {' · '}
-      <i className='fa fa-code-branch' /> {step.ref || 'no ref'}
-    </div>
-    {(step.when && step.when !== 'success') || (step.needs?.length ?? 0) > 0 || step.continueOnError || step.timeout || step.retries ? (
+    {isApproval(step) ? (
+      <>
+        <div style={{ ...ellipsis, fontWeight: 600, margin: '0.15em 0' }}>
+          <i className='fa fa-user-check' style={{ color: COLORS.warn }} /> {step.name || 'Approval'}
+        </div>
+        <div style={{ ...ellipsis, fontSize: '0.85em', color: COLORS.muted }} title={step.message}>
+          {step.message || 'waits for approval'}
+        </div>
+      </>
+    ) : isArgoCD(step) ? (
+      <>
+        <div style={{ ...ellipsis, fontWeight: 600, margin: '0.15em 0' }}>
+          <i className='fa fa-sync' style={{ color: '#0dadea' }} /> {step.name || 'Argo CD sync'}
+        </div>
+        <div style={{ ...ellipsis, fontSize: '0.85em', color: COLORS.muted }} title={[step.app, step.image].filter(Boolean).join('\n')}>
+          {step.app || '(no application)'}
+          {step.image && (
+            <>
+              {' · '}
+              <i className='fa fa-cube' /> {step.image}
+            </>
+          )}
+        </div>
+      </>
+    ) : (
+      <>
+        <div style={{ ...ellipsis, fontWeight: 600, margin: '0.15em 0' }}>
+          {step.name || <PipelineName data={data} connection={step.connection} id={step.pipeline} />}
+        </div>
+        <div style={{ ...ellipsis, fontSize: '0.85em', color: COLORS.muted }}>
+          {step.connection || '(no connection)'}
+          {' · '}
+          <i className='fa fa-code-branch' /> {step.ref || 'no ref'}
+        </div>
+      </>
+    )}
+    {(step.when && step.when !== 'success') ||
+    (step.needs?.length ?? 0) > 0 ||
+    step.continueOnError ||
+    step.timeout ||
+    step.retries ||
+    step.noSelfApproval ||
+    step.noRefresh ? (
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25em', marginTop: '0.3em' }}>
         {step.when && step.when !== 'success' && <Badge color={COLORS.warn}>on {step.when}</Badge>}
         {(step.needs?.length ?? 0) > 0 && <Badge title='Waits only for these steps'>needs {step.needs?.join(', ')}</Badge>}
         {step.continueOnError && <Badge>continue on error</Badge>}
         {step.timeout && <Badge>timeout {step.timeout}</Badge>}
         {!!step.retries && <Badge title='Automatic retries of a failed pipeline'>retry x{step.retries}</Badge>}
+        {step.noSelfApproval && <Badge title='The user who started the run may not decide'>no self-approval</Badge>}
+        {step.noRefresh && <Badge title='Argo CD is not asked to refresh the application'>no refresh</Badge>}
       </div>
     ) : null}
   </div>
@@ -136,7 +196,12 @@ const WHEN_HELP: Record<string, string> = {
 
 const StepPanel = ({ data, spec, step, pos, connections, problems, onChange, onRename, onDelete, onClose }: StepPanelProps) => {
   const set = (patch: Partial<StreamStep>) => onChange({ ...step, ...patch });
+  const approval = isApproval(step);
+  const argocd = isArgoCD(step);
+  const pipelineStep = !approval && !argocd;
   const [idText, setIdText] = React.useState(step.id);
+  const [argoApps] = useLoad(() => (argocd ? fetchArgoApps() : Promise.resolve([])), [argocd]);
+  const appNames = argoApps.state === 'ok' ? argoApps.data.map(a => `${a.namespace}/${a.name}`).sort() : [];
   React.useEffect(() => setIdText(step.id), [step.id]);
 
   const conn = step.connection;
@@ -185,7 +250,7 @@ const StepPanel = ({ data, spec, step, pos, connections, problems, onChange, onR
       style={{ flex: '0 0 440px', maxWidth: 440, padding: '0.8em 1em', alignSelf: 'flex-start', position: 'sticky', top: 0 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', marginBottom: '0.8em' }}>
         <b style={{ ...ellipsis, flex: 1 }}>
-          Step <code>{step.id}</code> <Muted>· stage {pos.stage + 1}</Muted>
+          {approval ? 'Approval' : argocd ? 'Argo CD sync' : 'Step'} <code>{step.id}</code> <Muted>· stage {pos.stage + 1}</Muted>
         </b>
         <button className='argo-button argo-button--base-o' title='Delete step' onClick={onDelete}>
           <i className='fa fa-trash' />
@@ -220,118 +285,205 @@ const StepPanel = ({ data, spec, step, pos, connections, problems, onChange, onR
               className='argo-field'
               style={{ width: '100%' }}
               value={step.name ?? ''}
-              placeholder='pipeline name'
+              placeholder={approval ? 'Approval' : argocd ? 'Argo CD sync' : 'pipeline name'}
               onChange={e => set({ name: e.target.value || undefined })}
             />
           </Field>
         </div>
       </div>
 
-      <Field label='Connection' required>
-        <select
-          className='argo-field'
-          style={{ width: '100%' }}
-          value={conn}
-          onChange={e => set({ connection: e.target.value, pipeline: '', inputs: undefined, variables: undefined })}>
-          <option value=''>Select a connection...</option>
-          {connections.map(c => (
-            <option key={c.name} value={c.name}>
-              {c.name}
-            </option>
-          ))}
-          {conn && !connections.some(c => c.name === conn) && <option value={conn}>{conn} (missing)</option>}
-        </select>
-      </Field>
+      {approval && (
+        <>
+          <Field label='Message' help='Shown to approvers. May use references, e.g. the commit a build produced.'>
+            <div style={{ display: 'flex', gap: '0.3em', alignItems: 'flex-start' }}>
+              <textarea
+                className='argo-field'
+                rows={3}
+                style={{ flex: 1, minWidth: 0, resize: 'vertical', fontFamily: isTemplate(step.message ?? '') ? 'monospace' : undefined }}
+                value={step.message ?? ''}
+                placeholder='Deploy ${{ steps.build.sha }} to production?'
+                spellCheck={false}
+                onChange={e => set({ message: e.target.value || undefined })}
+              />
+              {refs.length > 0 && <RefSelect refs={refs} onPick={v => set({ message: (step.message ?? '') + v })} />}
+            </div>
+          </Field>
+          <label style={{ display: 'block', cursor: 'pointer' }}>
+            <input
+              type='checkbox'
+              checked={!!step.noSelfApproval}
+              onChange={e => set({ noSelfApproval: e.target.checked || undefined })}
+            />{' '}
+            Someone else must decide
+          </label>
+          <Help>
+            The user who started the run (or retried it) may not approve or reject. Users with the approve action on this stream
+            and admins decide; a rejection or a timeout fails the step.
+          </Help>
+          <div style={{ marginBottom: '0.7em' }} />
+        </>
+      )}
 
-      <Field
-        label='Branch or tag'
-        required
-        help={isTemplate(step.ref) ? `Resolved when the step starts. Pipelines and inputs below are read from ${formRef || 'the default branch'}.` : undefined}>
-        <ValueField value={step.ref} branches={bl} refs={refs} placeholder='main or ${{ params.branch }}' onChange={v => set({ ref: v })} />
-      </Field>
+      {argocd && (
+        <>
+          <Field
+            label='Application'
+            required
+            help='<namespace>/<name>, or only the name for the first namespace Zea is allowed to use. May use references.'>
+            <div style={{ display: 'flex', gap: '0.3em', alignItems: 'center' }}>
+              <input
+                className='argo-field'
+                style={{ flex: 1, minWidth: 0, fontFamily: 'monospace' }}
+                list={`zea-apps-${step.id}`}
+                value={step.app ?? ''}
+                placeholder={argoApps.state === 'loading' ? 'Loading applications...' : 'argocd/my-app'}
+                spellCheck={false}
+                onChange={e => set({ app: e.target.value.trim() || undefined })}
+              />
+              <datalist id={`zea-apps-${step.id}`}>
+                {appNames.map(n => (
+                  <option key={n} value={n} />
+                ))}
+              </datalist>
+              {refs.length > 0 && <RefSelect refs={refs} onPick={v => set({ app: (step.app ?? '') + v })} />}
+            </div>
+          </Field>
+          <Field
+            label='Image'
+            help='Optional. Wait until the application runs this image: a full reference or only a tag, e.g. ${{ params.tag }}. Empty: wait for a sync that finishes after the step starts.'>
+            <div style={{ display: 'flex', gap: '0.3em', alignItems: 'center' }}>
+              <input
+                className='argo-field'
+                style={{ flex: 1, minWidth: 0, fontFamily: 'monospace' }}
+                value={step.image ?? ''}
+                placeholder='${{ params.tag }}'
+                spellCheck={false}
+                onChange={e => set({ image: e.target.value.trim() || undefined })}
+              />
+              {refs.length > 0 && <RefSelect refs={refs} onPick={v => set({ image: (step.image ?? '') + v })} />}
+            </div>
+          </Field>
+          <label style={{ display: 'block', cursor: 'pointer', marginBottom: '0.2em' }}>
+            <input type='checkbox' checked={!step.noRefresh} onChange={e => set({ noRefresh: e.target.checked ? undefined : true })} /> Refresh
+            the application first
+          </label>
+          <Help>
+            Zea does not sync or change the application: a pipeline or Argo CD auto-sync deploys it, the step only waits until it is
+            synced and healthy. Degraded for 5 minutes fails the step.
+          </Help>
+          <div style={{ marginBottom: '0.7em' }} />
+        </>
+      )}
 
-      <Field label='Pipeline' required>
-        <select
-          className='argo-field'
-          style={{ width: '100%' }}
-          value={step.pipeline}
-          disabled={!conn}
-          onChange={e => set({ pipeline: e.target.value })}>
-          <option value=''>{pipelines.state === 'loading' && conn ? 'Loading...' : 'Select a pipeline...'}</option>
-          {list.map(p => (
-            <option key={p.id} value={p.id} disabled={!p.dispatchable} title={p.reason}>
-              {p.name}
-              {p.path ? ` (${p.path})` : ''}
-              {!p.dispatchable ? ' - cannot be started' : ''}
-            </option>
-          ))}
-          {step.pipeline && !list.some(p => p.id === step.pipeline) && <option value={step.pipeline}>{step.pipeline}</option>}
-        </select>
-        {pipelines.state === 'error' && <ErrorText text={pipelines.error} />}
-      </Field>
+      {pipelineStep && (
+        <>
+          <Field label='Connection' required>
+            <select
+              className='argo-field'
+              style={{ width: '100%' }}
+              value={conn}
+              onChange={e => set({ connection: e.target.value, pipeline: '', inputs: undefined, variables: undefined })}>
+              <option value=''>Select a connection...</option>
+              {connections.map(c => (
+                <option key={c.name} value={c.name}>
+                  {c.name}
+                </option>
+              ))}
+              {conn && !connections.some(c => c.name === conn) && <option value={conn}>{conn} (missing)</option>}
+            </select>
+          </Field>
 
-      {step.pipeline && (
-        <div style={{ borderTop: `1px solid ${COLORS.border}`, paddingTop: '0.6em', marginBottom: '0.6em' }}>
-          <div style={{ fontWeight: 600, marginBottom: '0.5em' }}>Parameters</div>
-          {form.state === 'loading' && <Muted>Reading the pipeline inputs...</Muted>}
-          {form.state === 'error' && <ErrorText text={form.error} />}
-          {fd?.warning && (
-            <div style={{ color: COLORS.warn, marginBottom: '0.5em' }}>
-              <i className='fa fa-exclamation-triangle' /> {fd.warning}
+          <Field
+            label='Branch or tag'
+            required
+            help={isTemplate(step.ref) ? `Resolved when the step starts. Pipelines and inputs below are read from ${formRef || 'the default branch'}.` : undefined}>
+            <ValueField value={step.ref} branches={bl} refs={refs} placeholder='main or ${{ params.branch }}' onChange={v => set({ ref: v })} />
+          </Field>
+
+          <Field label='Pipeline' required>
+            <select
+              className='argo-field'
+              style={{ width: '100%' }}
+              value={step.pipeline}
+              disabled={!conn}
+              onChange={e => set({ pipeline: e.target.value })}>
+              <option value=''>{pipelines.state === 'loading' && conn ? 'Loading...' : 'Select a pipeline...'}</option>
+              {list.map(p => (
+                <option key={p.id} value={p.id} disabled={!p.dispatchable} title={p.reason}>
+                  {p.name}
+                  {p.path ? ` (${p.path})` : ''}
+                  {!p.dispatchable ? ' - cannot be started' : ''}
+                </option>
+              ))}
+              {step.pipeline && !list.some(p => p.id === step.pipeline) && <option value={step.pipeline}>{step.pipeline}</option>}
+            </select>
+            {pipelines.state === 'error' && <ErrorText text={pipelines.error} />}
+          </Field>
+
+          {step.pipeline && (
+            <div style={{ borderTop: `1px solid ${COLORS.border}`, paddingTop: '0.6em', marginBottom: '0.6em' }}>
+              <div style={{ fontWeight: 600, marginBottom: '0.5em' }}>Parameters</div>
+              {form.state === 'loading' && <Muted>Reading the pipeline inputs...</Muted>}
+              {form.state === 'error' && <ErrorText text={form.error} />}
+              {fd?.warning && (
+                <div style={{ color: COLORS.warn, marginBottom: '0.5em' }}>
+                  <i className='fa fa-exclamation-triangle' /> {fd.warning}
+                </div>
+              )}
+              {fd && fd.inputs.length === 0 && prefilled.length === 0 && !fd.variables && <Muted>This pipeline has no inputs.</Muted>}
+              {fd?.inputs.map(i => (
+                <Field key={i.name} label={<code>{i.name}</code>} hint={i.type} required={i.required && !i.default} help={i.description}>
+                  <ValueField
+                    value={step.inputs?.[i.name] ?? ''}
+                    refs={refs}
+                    options={i.type === 'choice' ? i.options : i.type === 'boolean' ? ['true', 'false'] : undefined}
+                    branches={isBranchInput(i) ? bl : undefined}
+                    placeholder={i.default ? `default: ${i.default}` : ''}
+                    onChange={v => set({ inputs: setKey(step.inputs, i.name, v) })}
+                  />
+                </Field>
+              ))}
+              {(form.state === 'error' || extraInputs.length > 0) && (
+                <Field
+                  label='Other inputs'
+                  help={form.state === 'error' ? 'The pipeline inputs could not be read; enter them by name.' : 'Not declared by this pipeline.'}>
+                  <KeyValueEditor
+                    entries={step.inputs}
+                    exclude={declared}
+                    refs={refs}
+                    keyPlaceholder='input'
+                    addLabel='Add input'
+                    onChange={inputs => set({ inputs })}
+                  />
+                </Field>
+              )}
+              {prefilled.map(p => (
+                <Field key={p.name} label={<code>{p.name}</code>} hint='variable' help={p.description}>
+                  <ValueField
+                    value={step.variables?.[p.name] ?? ''}
+                    refs={refs}
+                    options={p.options?.length ? p.options : undefined}
+                    placeholder={p.default ? `default: ${p.default}` : ''}
+                    mono
+                    onChange={v => set({ variables: setKey(step.variables, p.name, v) })}
+                  />
+                </Field>
+              ))}
+              {(fd?.variables || freeVars.length > 0) && (
+                <Field label={prefilled.length > 0 ? 'Other variables' : 'Variables'}>
+                  <KeyValueEditor
+                    entries={step.variables}
+                    exclude={prefilled.map(p => p.name)}
+                    refs={refs}
+                    keyPlaceholder='NAME'
+                    addLabel='Add variable'
+                    onChange={variables => set({ variables })}
+                  />
+                </Field>
+              )}
             </div>
           )}
-          {fd && fd.inputs.length === 0 && prefilled.length === 0 && !fd.variables && <Muted>This pipeline has no inputs.</Muted>}
-          {fd?.inputs.map(i => (
-            <Field key={i.name} label={<code>{i.name}</code>} hint={i.type} required={i.required && !i.default} help={i.description}>
-              <ValueField
-                value={step.inputs?.[i.name] ?? ''}
-                refs={refs}
-                options={i.type === 'choice' ? i.options : i.type === 'boolean' ? ['true', 'false'] : undefined}
-                branches={isBranchInput(i) ? bl : undefined}
-                placeholder={i.default ? `default: ${i.default}` : ''}
-                onChange={v => set({ inputs: setKey(step.inputs, i.name, v) })}
-              />
-            </Field>
-          ))}
-          {(form.state === 'error' || extraInputs.length > 0) && (
-            <Field
-              label='Other inputs'
-              help={form.state === 'error' ? 'The pipeline inputs could not be read; enter them by name.' : 'Not declared by this pipeline.'}>
-              <KeyValueEditor
-                entries={step.inputs}
-                exclude={declared}
-                refs={refs}
-                keyPlaceholder='input'
-                addLabel='Add input'
-                onChange={inputs => set({ inputs })}
-              />
-            </Field>
-          )}
-          {prefilled.map(p => (
-            <Field key={p.name} label={<code>{p.name}</code>} hint='variable' help={p.description}>
-              <ValueField
-                value={step.variables?.[p.name] ?? ''}
-                refs={refs}
-                options={p.options?.length ? p.options : undefined}
-                placeholder={p.default ? `default: ${p.default}` : ''}
-                mono
-                onChange={v => set({ variables: setKey(step.variables, p.name, v) })}
-              />
-            </Field>
-          ))}
-          {(fd?.variables || freeVars.length > 0) && (
-            <Field label={prefilled.length > 0 ? 'Other variables' : 'Variables'}>
-              <KeyValueEditor
-                entries={step.variables}
-                exclude={prefilled.map(p => p.name)}
-                refs={refs}
-                keyPlaceholder='NAME'
-                addLabel='Add variable'
-                onChange={variables => set({ variables })}
-              />
-            </Field>
-          )}
-        </div>
+        </>
       )}
 
       <div style={{ borderTop: `1px solid ${COLORS.border}`, paddingTop: '0.6em' }}>
@@ -375,50 +527,61 @@ const StepPanel = ({ data, spec, step, pos, connections, problems, onChange, onR
                 className='argo-field'
                 style={{ width: '100%' }}
                 value={step.timeout ?? ''}
-                placeholder='default'
+                placeholder={approval ? DEFAULT_APPROVAL_TIMEOUT : argocd ? DEFAULT_ARGO_TIMEOUT : 'default'}
                 onChange={e => set({ timeout: e.target.value.trim() || undefined })}
               />
             </Field>
           </div>
         </div>
-        <Help>{WHEN_HELP[step.when || 'success']} Timeout: e.g. 90m or 2h.</Help>
-        <div style={{ display: 'flex', gap: '0.6em', marginTop: '0.6em' }}>
-          <div style={{ flex: 1 }}>
-            <Field label='Retries'>
-              <select
-                className='argo-field'
-                style={{ width: '100%' }}
-                value={step.retries ?? 0}
-                onChange={e => {
-                  const n = Number(e.target.value);
-                  set(n > 0 ? { retries: n } : { retries: undefined, retryDelay: undefined });
-                }}>
-                <option value={0}>manual only</option>
-                {[1, 2, 3, 4, 5].map(n => (
-                  <option key={n} value={n}>
-                    {n} automatic
-                  </option>
-                ))}
-              </select>
-            </Field>
-          </div>
-          <div style={{ flex: '0 0 35%' }}>
-            <Field label='Retry delay'>
-              <input
-                className='argo-field'
-                style={{ width: '100%' }}
-                value={step.retryDelay ?? ''}
-                placeholder='30s'
-                disabled={!step.retries}
-                onChange={e => set({ retryDelay: e.target.value.trim() || undefined })}
-              />
-            </Field>
-          </div>
-        </div>
         <Help>
-          A failed or timed out pipeline, or a failed trigger, is started again before the steps after it react. A pipeline
-          cancelled in the provider is not retried. Without retries, use Retry failed on the run.
+          {WHEN_HELP[step.when || 'success']}{' '}
+          {approval
+            ? `Timeout: how long to wait for a decision, ${DEFAULT_APPROVAL_TIMEOUT} by default.`
+            : argocd
+            ? `Timeout: how long to wait for the application, ${DEFAULT_ARGO_TIMEOUT} by default.`
+            : 'Timeout: e.g. 90m or 2h.'}
         </Help>
+        {pipelineStep && (
+          <>
+            <div style={{ display: 'flex', gap: '0.6em', marginTop: '0.6em' }}>
+              <div style={{ flex: 1 }}>
+                <Field label='Retries'>
+                  <select
+                    className='argo-field'
+                    style={{ width: '100%' }}
+                    value={step.retries ?? 0}
+                    onChange={e => {
+                      const n = Number(e.target.value);
+                      set(n > 0 ? { retries: n } : { retries: undefined, retryDelay: undefined });
+                    }}>
+                    <option value={0}>manual only</option>
+                    {[1, 2, 3, 4, 5].map(n => (
+                      <option key={n} value={n}>
+                        {n} automatic
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              </div>
+              <div style={{ flex: '0 0 35%' }}>
+                <Field label='Retry delay'>
+                  <input
+                    className='argo-field'
+                    style={{ width: '100%' }}
+                    value={step.retryDelay ?? ''}
+                    placeholder='30s'
+                    disabled={!step.retries}
+                    onChange={e => set({ retryDelay: e.target.value.trim() || undefined })}
+                  />
+                </Field>
+              </div>
+            </div>
+            <Help>
+              A failed or timed out pipeline, or a failed trigger, is started again before the steps after it react. A pipeline
+              cancelled in the provider is not retried. Without retries, use Retry failed on the run.
+            </Help>
+          </>
+        )}
         <label style={{ display: 'block', cursor: 'pointer', marginTop: '0.6em' }}>
           <input
             type='checkbox'
@@ -471,7 +634,7 @@ const ParamRow = ({ data, param, connections, problems, onChange, onRename, onDe
       type,
       default: type === 'boolean' ? 'false' : type === param.type ? param.default : undefined,
       options: type === 'choice' ? param.options : undefined,
-      connection: type === 'branch' ? param.connection : undefined,
+      connection: type === 'branch' || type === 'image' ? param.connection : undefined,
     });
 
   return (
@@ -494,24 +657,27 @@ const ParamRow = ({ data, param, connections, problems, onChange, onRename, onDe
           <select className='argo-field' style={{ width: '100%' }} value={param.type} onChange={e => setType(e.target.value)}>
             <option value='string'>text</option>
             <option value='branch'>branch</option>
+            <option value='image'>image</option>
             <option value='choice'>choice</option>
             <option value='boolean'>boolean</option>
           </select>
         </div>
-        {param.type === 'branch' && (
+        {(param.type === 'branch' || param.type === 'image') && (
           <div style={{ flex: '1 1 140px' }}>
-            <Help>Branches of</Help>
+            <Help>{param.type === 'image' ? 'Image tags of' : 'Branches of'}</Help>
             <select
               className='argo-field'
               style={{ width: '100%' }}
               value={param.connection ?? ''}
               onChange={e => set({ connection: e.target.value || undefined })}>
               <option value=''>Select a connection...</option>
-              {connections.map(c => (
-                <option key={c.name} value={c.name}>
-                  {c.name}
-                </option>
-              ))}
+              {connections
+                .filter(c => param.type !== 'image' || c.images.length > 0 || c.name === param.connection)
+                .map(c => (
+                  <option key={c.name} value={c.name}>
+                    {c.name}
+                  </option>
+                ))}
             </select>
           </div>
         )}
@@ -694,16 +860,29 @@ export const StreamEditor = ({ client, data, connections, existing, onSaved, onC
 
   const selectByID = (id: string) => select(spec.stages.flatMap(s => s.steps).find(s => s.id === id) ?? null);
 
-  const addStep = (connection: string, pos: StepPos) => {
-    const branch = spec.params.find(p => p.type === 'branch' && p.connection === connection && PARAM_NAME_RE.test(p.name));
-    const step: StreamStep = {
-      id: uniqueStepId(spec, connection),
-      connection,
-      pipeline: '',
-      ref: branch ? `\${{ params.${branch.name} }}` : '',
-    };
+  const addStep = (src: Source, pos: StepPos) => {
+    let step: StreamStep;
+    if (src.kind === 'approval') {
+      step = { id: uniqueStepId(spec, 'approve'), type: APPROVAL, connection: '', pipeline: '', ref: '' };
+    } else if (src.kind === 'argocd') {
+      step = { id: uniqueStepId(spec, 'sync'), type: ARGOCD, connection: '', pipeline: '', ref: '' };
+    } else {
+      const connection = src.name;
+      const branch = spec.params.find(p => p.type === 'branch' && p.connection === connection && PARAM_NAME_RE.test(p.name));
+      step = {
+        id: uniqueStepId(spec, connection),
+        connection,
+        pipeline: '',
+        ref: branch ? `\${{ params.${branch.name} }}` : '',
+      };
+    }
     change(insertStep(spec, step, pos));
     select(step);
+  };
+
+  const addToLastStage = (src: Source) => {
+    const last = Math.max(0, spec.stages.length - 1);
+    addStep(src, { stage: last, index: spec.stages[last]?.steps.length ?? 0 });
   };
 
   const deleteStage = (s: number) => {
@@ -744,15 +923,15 @@ export const StreamEditor = ({ client, data, connections, existing, onSaved, onC
         return;
       }
       change(moveStep(spec, d.from, { stage: t.stage, index: t.index }));
-    } else if (d.kind === 'conn' && t.kind === 'step') {
-      addStep(d.name, { stage: t.stage, index: t.index });
+    } else if (isSource(d) && t.kind === 'step') {
+      addStep(d, { stage: t.stage, index: t.index });
     }
   };
 
   const startDrag = (e: React.DragEvent, d: Drag) => {
     e.stopPropagation();
     drag.current = d;
-    e.dataTransfer.effectAllowed = d.kind === 'conn' ? 'copy' : 'move';
+    e.dataTransfer.effectAllowed = isSource(d) ? 'copy' : 'move';
     // Firefox starts a drag only when some data is set.
     e.dataTransfer.setData('text/plain', d.kind === 'conn' ? d.name : d.kind);
   };
@@ -877,6 +1056,19 @@ export const StreamEditor = ({ client, data, connections, existing, onSaved, onC
               />
             </Field>
           </div>
+          <div style={{ flex: '1 1 220px' }}>
+            <Field
+              label='Lock'
+              help='Runs with the same lock, of any stream, run one at a time; later ones wait in a queue. May use ${{ params.<name> }}, e.g. deploy-${{ params.env }}. Empty: runs never wait.'>
+              <input
+                className='argo-field'
+                style={{ width: '100%' }}
+                value={spec.lock ?? ''}
+                placeholder='no lock'
+                onChange={e => change({ ...spec, lock: e.target.value || undefined })}
+              />
+            </Field>
+          </div>
         </div>
         <div
           style={{ fontWeight: 600, cursor: 'pointer', userSelect: 'none', marginTop: '0.2em' }}
@@ -893,6 +1085,33 @@ export const StreamEditor = ({ client, data, connections, existing, onSaved, onC
 
       <div style={{ display: 'flex', gap: '1em', alignItems: 'flex-start' }}>
         <div className='white-box' style={{ flex: '0 0 190px', padding: '0.8em', alignSelf: 'flex-start' }}>
+          <div style={{ fontWeight: 600, marginBottom: '0.3em' }}>Control</div>
+          <div style={{ margin: '0.4em 0 0.8em' }}>
+            {CONTROL_STEPS.map(c => (
+              <div
+                key={c.kind}
+                draggable
+                onDragStart={e => startDrag(e, { kind: c.kind })}
+                onDragEnd={endDrag}
+                onClick={() => addToLastStage({ kind: c.kind })}
+                title={c.title}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.4em',
+                  border: `1px solid ${COLORS.border}`,
+                  borderRadius: 4,
+                  padding: '0.35em 0.5em',
+                  marginBottom: '0.3em',
+                  cursor: 'grab',
+                  userSelect: 'none',
+                }}>
+                <i className='fa fa-grip-vertical' style={{ color: COLORS.muted }} />
+                <span style={{ ...ellipsis, flex: 1 }}>{c.label}</span>
+                <i className={c.icon} style={{ color: c.color }} />
+              </div>
+            ))}
+          </div>
           <div style={{ fontWeight: 600, marginBottom: '0.3em' }}>Connections</div>
           <Help>Drag onto a stage, or click to add to the last stage.</Help>
           {connections.length === 0 && <Muted>No connections.</Muted>}
@@ -902,10 +1121,7 @@ export const StreamEditor = ({ client, data, connections, existing, onSaved, onC
               draggable
               onDragStart={e => startDrag(e, { kind: 'conn', name: c.name })}
               onDragEnd={endDrag}
-              onClick={() => {
-                const last = Math.max(0, spec.stages.length - 1);
-                addStep(c.name, { stage: last, index: spec.stages[last]?.steps.length ?? 0 });
-              }}
+              onClick={() => addToLastStage({ kind: 'conn', name: c.name })}
               title={c.url}
               style={{
                 display: 'flex',
@@ -1009,7 +1225,7 @@ export const StreamEditor = ({ client, data, connections, existing, onSaved, onC
                         textAlign: 'center',
                         color: COLORS.muted,
                       }}>
-                      Drop a connection here
+                      Drop a connection or a control step here
                     </div>
                   )}
                 </div>

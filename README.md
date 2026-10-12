@@ -9,10 +9,12 @@ follow its jobs and logs, and deploy a built image the GitOps way (a commit to
 the app-of-apps repo).
 
 > Status: phase 4 and Streams. Connections (GitHub and GitLab), branches, starting
-> pipelines with parameters, run status and jobs, cancel and rerun, and
+> pipelines with parameters, run status and jobs, cancel and rerun,
 > container images per branch (DigitalOcean, Google Artifact Registry and OCI
-> registries) and Streams (multi-repo pipelines) work. Logs
-> and Deploy are in progress - see [docs/design.md](docs/design.md).
+> registries) with the Applications that run them, Streams (multi-repo
+> pipelines with approvals, locks and Argo CD sync steps), an access policy
+> and an audit log work. Logs and GitOps write-back are in progress - see
+> [docs/design.md](docs/design.md).
 
 ## How it fits into Argo CD
 
@@ -24,7 +26,7 @@ the app-of-apps repo).
   Zea admins create them in the UI, or you commit them declaratively.
 - **Access**: Argo CD RBAC (`extensions, invoke, zea` + `get` on the anchor
   Application that deploys Zea), then Zea's own access policy: roles with
-  view / run / edit on Streams, Connections and Registries, bound to users
+  view / run / approve / edit on Streams, Connections and Registries, bound to users
   and SSO groups.
 
 ## Install
@@ -50,7 +52,7 @@ prints a ready-to-merge values snippet for the argo-cd chart.
   `argocd-server` to `github.com` to download the UI extension at startup.
 
 In the commands below the Argo CD namespace is `argocd`, the Helm release and
-the anchor Application are both called `zea`, and the release is `v0.3.0`.
+the anchor Application are both called `zea`, and the release is `v0.4.0`.
 
 ### Step 1. Install the backend
 
@@ -103,7 +105,7 @@ set `image.tag`.
 #### Option B: with the Helm CLI
 
 ```bash
-helm install zea oci://ghcr.io/harchschoolboy/charts/zea --version 0.3.0 \
+helm install zea oci://ghcr.io/harchschoolboy/charts/zea --version 0.4.0 \
   -n argocd \
   --set anchorApplication=argocd:<existing-app> \
   --set 'admins.users={admin}'
@@ -154,11 +156,11 @@ server:
           - name: EXTENSION_NAME
             value: zea
           - name: EXTENSION_VERSION
-            value: v0.3.0
+            value: v0.4.0
           - name: EXTENSION_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.3.0/extension-zea.tar.gz
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.4.0/extension-zea.tar.gz
           - name: EXTENSION_CHECKSUM_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.3.0/extension-zea_checksums.txt
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.4.0/extension-zea_checksums.txt
 
 configs:
   params:
@@ -246,11 +248,11 @@ one Zea installation.
                - name: EXTENSION_NAME
                  value: zea
                - name: EXTENSION_VERSION
-                 value: v0.3.0
+                 value: v0.4.0
                - name: EXTENSION_URL
-                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.3.0/extension-zea.tar.gz
+                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.4.0/extension-zea.tar.gz
                - name: EXTENSION_CHECKSUM_URL
-                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.3.0/extension-zea_checksums.txt
+                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.4.0/extension-zea_checksums.txt
              securityContext:
                runAsNonRoot: true
                runAsUser: 1000
@@ -326,9 +328,11 @@ and imports and exports it as YAML.
 |--------|---------|-------------|------------|
 | view | See it, its runs and jobs; export | See it, branches, pipelines, runs, images | See it |
 | run | Start, cancel, retry runs | Start, cancel, rerun pipelines | - |
+| approve | Approve or reject approval steps of runs | - | - |
 | edit | Create, change, delete, draft, import | Create, change, delete | Create, change, delete, test |
 
-Run and edit include view. Running a Stream needs only run on the Stream,
+Every action includes view; approve does not include run, so approvers
+need not be able to start the Stream. Zea admins may always approve. Running a Stream needs only run on the Stream,
 not on its Connections; saving one needs run on every Connection it uses.
 
 The policy is the ConfigMap `zea-policy` (key `policy.yaml`) in the
@@ -337,6 +341,14 @@ and commit it as a ConfigMap, see
 [deploy/examples/zea-policy.yaml](deploy/examples/zea-policy.yaml); a
 ConfigMap committed like that is read-only in Zea.
 Details: [docs/design.md](docs/design.md#access).
+
+**Audit log.** Every change made through Zea (policy, Connections,
+Registries, Streams, starting, cancelling and retrying runs, approvals) is
+written to the backend log as an `audit` line with the user, the action, the
+target and the result. Admins also see it on the **Audit** tab: the events
+are kept in one ConfigMap per day (`zea-audit-YYYYMMDD` in the Connections
+namespace) for `audit.retentionDays` (30 by default; 0 keeps only the log
+lines). Parameter values and credentials are never recorded.
 
 Upgrading from 0.2: on the first start the backend turns the old
 per-Connection `allowedGroups` into the policy (one role per group with view
@@ -464,6 +476,14 @@ reference.
 Registry results are cached for a minute; the refresh button next to the list
 reloads them.
 
+**Where images run.** Zea reads the Applications you can see in Argo CD (with
+your own Argo CD permissions) and matches their running images to the image
+sources of the Connections. Connection cards show where the Connection is
+deployed with the sync and health status, the Connection view lists the
+Applications with the branch and commit they run, and a Stream run marks the
+Applications that run a commit the run built. No registry is contacted for
+this; the list refreshes every 30 seconds.
+
 #### Cloud registries
 
 Zea reads registries with its own identity, not the nodes': node credentials
@@ -551,10 +571,33 @@ first:
 - **New stream** (edit access to streams): drag Connections into stage columns, pick the
   branch and pipeline of each step, fill its inputs. Values may use
   `${{ params.<name> }}` (params asked when the Stream starts) and
-  `${{ steps.<id>.ref|sha|runId|url|status }}` of upstream steps. A step can
+  `${{ steps.<id>.ref|sha|runId|url|status }}` of upstream steps. Params
+  are text, a choice, a boolean, a branch of a Connection or an **image**
+  tag (picked from the images of a Connection, newest first). A step can
   wait for specific steps (`needs`), run only on success, failure or always,
   continue on error, and retry a failed pipeline automatically (`retries`,
   up to 5, with `retryDelay`; manual retry by default).
+- **Approval** steps (dragged from the palette like Connections) pause the
+  run until a user with approve access approves or rejects it, with an
+  optional comment. The message may use references; rejecting or not
+  deciding within `timeout` (24h by default) fails the step. A step can
+  require that someone other than the user who started the run decides.
+  Later steps can read `${{ steps.<id>.user }}` (who decided). Stream
+  cards and the run history show runs waiting for approval.
+- **Argo CD sync** steps (from the same palette) wait until an Argo CD
+  Application is synced and healthy, optionally running a given image
+  (a full reference or just a tag, e.g. `${{ params.tag }}`). Zea never
+  syncs or changes the Application: a pipeline or auto-sync deploys it,
+  and the step asks Argo CD to refresh it and waits (30 minutes by
+  default). A failed sync, or Degraded for 5 minutes, fails the step.
+  Later steps can read `${{ steps.<id>.revision|health|images }}`. Only
+  Applications in `argocd.applicationNamespaces` (by default the namespace of
+  the anchor Application) can be used; the chart grants Zea `get` and
+  `patch` on Applications there. Anyone who may run the Stream sees the
+  health and images of the Applications it names.
+- **Lock**: runs with the same rendered lock (e.g. `deploy-${{ params.env }}`),
+  of this or any other Stream, run one at a time. Later runs are **queued**
+  and start in order; the run view links the run that holds the lock.
 - **Run** on a stream card starts it with the default params after a
   confirmation.
 - **Run**: fill the params and follow the steps live; click a step to see
@@ -567,7 +610,7 @@ first:
 
 Who sees, runs and edits a Stream is set in the access policy. Polling
 interval, step timeout and run history are set under `streams:` in the chart
-values.
+values, Argo CD sync steps under `argocd:`.
 
 ### Upgrade
 
@@ -620,6 +663,10 @@ kubectl -n argocd rollout restart deploy/zea deploy/argocd-server
 | `proxyToken.source` | `generate` | `generate`: hook Job creates it; `value`: rendered from `proxyToken.value`; `existing`: you create it ([example](deploy/examples/zea-proxy-secret.yaml)) |
 | `proxyToken.secretName` / `proxyToken.key` | `zea-proxy` / `token` | Must match `$<secret>:<key>` in `extension.config.zea` |
 | `httpTimeout` | `20s` | Timeout for GitHub and GitLab API calls |
+| `streams.pollInterval` / `streams.stepTimeout` / `streams.runHistory` | `10s` / `6h` / `30` | Stream engine: poll interval, default step timeout, finished runs kept per Stream |
+| `audit.retentionDays` | `30` | Days the audit log is kept for the Audit tab; `0` writes it only to the backend log |
+| `argocd.applicationNamespaces` | `[]` (anchor namespace) | Namespaces of Applications that Argo CD sync steps may wait for; the first is the default |
+| `argocd.rbac` | `true` | Role and RoleBinding (`get`, `patch` on Applications) in each of those namespaces |
 | `registries.tokenRequest` | `true` | Allow Zea to request tokens for its own service account (Artifact Registry Workload Identity Federation) |
 | `registries.pullSecrets` | `[]` | `{namespace, name}` of image pull Secrets that registries may use; the chart grants `get` on exactly these |
 | `gcp.workloadIdentityFederation.*` | disabled | Google Workload Identity Federation for Artifact Registry outside GKE: `enabled`, `audience`, optional `serviceAccountEmail` to impersonate, `tokenAudience`, `tokenExpirationSeconds` |
@@ -643,6 +690,8 @@ security contexts, scheduling).
 | Install or sync stuck on the hook Job | `kubectl -n argocd logs job/zea-proxy-token` |
 | `... is not permitted in project` / `do not match any of the allowed destinations` | The Application's project does not allow the chart source or namespaces. Use the `zea` AppProject from the example, or extend your project the same way |
 | `failed to fetch chart` / `401` / `403` from `ghcr.io` | The chart version is not released, or the ghcr package is not public |
+| Argo CD sync step: `not allowed to read the application` or `is not one of the application namespaces` | Add the namespace to `argocd.applicationNamespaces` (with `argocd.rbac` the chart creates the Role there) |
+| A Stream run stays **queued** | Another run holds the same lock; the run view links it. Cancel it or wait |
 | `GitHub API returned 401` / `GitLab API returned 401` | Credentials of the Connection; use **Test** in the Connection view |
 | `GitHub API returned 403` on Run, Cancel or Rerun | The GitHub App or token needs **Actions** read and write (an App owner must also accept the new permissions on the installation) |
 | `Unexpected inputs provided` (GitHub) | The workflow file on the branch changed after the form was opened; close and reopen the form |

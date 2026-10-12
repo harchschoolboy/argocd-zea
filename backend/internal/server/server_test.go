@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/harchschoolboy/argocd-zea/backend/internal/argocd"
+	"github.com/harchschoolboy/argocd-zea/backend/internal/audit"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/authz"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/config"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/connections"
@@ -99,6 +100,7 @@ type testEnv struct {
 	eng   *streams.Engine
 	// policy holds the access policy; tests may replace it with SetRaw.
 	policy *authz.MemoryPolicyStore
+	audit  *audit.Recorder
 }
 
 func newEnv(skip bool) *testEnv {
@@ -123,6 +125,7 @@ func newEnv(skip bool) *testEnv {
 	provs := providers.NewRegistry(fakeProvider{})
 	eng := streams.NewEngine(streams.NewMemoryRunStore(), store, provs, streams.EngineConfig{}, nil)
 	policy := authz.NewMemoryPolicyStore()
+	recorder := audit.NewRecorder(audit.NewMemoryStore(), 30, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	deps := Deps{
 		Store:         store,
 		Providers:     provs,
@@ -132,13 +135,14 @@ func newEnv(skip bool) *testEnv {
 		Images:        images.NewResolver(regs, kinds, 0),
 		Streams:       strms,
 		StreamRuns:    eng,
+		Audit:         recorder,
 	}
 	// The fixtures grant access through the deprecated allowedGroups, which
 	// the migration turns into the policy, as on a real upgrade.
 	if _, err := MigrateLegacyAccess(context.Background(), deps, policy); err != nil {
 		panic(err)
 	}
-	return &testEnv{h: New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), deps), store: store, regs: regs, strms: strms, eng: eng, policy: policy}
+	return &testEnv{h: New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), deps), store: store, regs: regs, strms: strms, eng: eng, policy: policy, audit: recorder}
 }
 
 type reqOpt func(*http.Request)

@@ -1,6 +1,8 @@
 import * as React from 'react';
 import { AccessView } from './Access';
+import { AuditView } from './Audit';
 import { ANCHOR_LABEL, findAnchors, ZeaClient } from './api';
+import { useAffectedApps } from './apps';
 import { ConnectionCard } from './ConnectionCard';
 import { ConnectionForm } from './ConnectionForm';
 import { RegistriesView } from './Registries';
@@ -24,6 +26,8 @@ const Connections = ({ client, ctx }: { client: ZeaClient; ctx: Context }) => {
   const route = useRoute();
   const { me, providers } = ctx;
   const canCreate = can(me.permissions.connections, 'edit');
+  const withImages = conns.state === 'ok' && conns.data.some(c => c.images.length > 0);
+  const affected = useAffectedApps(client, withImages);
 
   const saved = () => {
     setEditing({ mode: 'none' });
@@ -41,6 +45,7 @@ const Connections = ({ client, ctx }: { client: ZeaClient; ctx: Context }) => {
       client={client}
       connection={c}
       provider={providers.find(p => p.id === c.provider)}
+      affected={affected.data?.[c.name]}
       detail={detail}
       initialRef={detail ? route.ref : undefined}
       expandRunID={detail ? route.run : undefined}
@@ -136,13 +141,14 @@ const Workspace = ({ client }: { client: ZeaClient }) => {
   return <Pages client={client} ctx={ctx.data} />;
 };
 
-type Page = 'streams' | 'connections' | 'registries' | 'access';
+type Page = 'streams' | 'connections' | 'registries' | 'access' | 'audit';
 
 const TABS: { view: Page; label: string; icon: string; shown?: (me: Me) => boolean }[] = [
   { view: 'streams', label: 'Streams', icon: 'fa fa-stream' },
   { view: 'connections', label: 'Connections', icon: 'fa fa-plug' },
   { view: 'registries', label: 'Registries', icon: 'fa fa-database', shown: me => can(me.permissions.registries, 'view') },
   { view: 'access', label: 'Access', icon: 'fa fa-user-shield', shown: me => me.isAdmin },
+  { view: 'audit', label: 'Audit', icon: 'fa fa-history', shown: me => me.isAdmin },
 ];
 
 const tabsFor = (me: Me) => TABS.filter(t => !t.shown || t.shown(me));
@@ -189,6 +195,7 @@ const Pages = ({ client, ctx }: { client: ZeaClient; ctx: Context }) => {
       {page === 'connections' && <Connections client={client} ctx={ctx} />}
       {page === 'registries' && <RegistriesView client={client} canCreate={can(ctx.me.permissions.registries, 'edit')} />}
       {page === 'access' && <AccessView client={client} />}
+      {page === 'audit' && <AuditView client={client} />}
     </>
   );
 };

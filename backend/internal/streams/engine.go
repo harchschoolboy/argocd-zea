@@ -44,6 +44,11 @@ type EngineConfig struct {
 	StepTimeout  time.Duration
 	History      int
 	StartGrace   time.Duration
+	// Apps reads Argo CD Applications for argocd steps; nil fails them.
+	Apps AppClient
+	// AppNamespaces are the namespaces argocd steps may watch; the first
+	// is used when a step names only the Application.
+	AppNamespaces []string
 }
 
 // Engine executes Stream runs. All state lives in the RunStore, so a
@@ -103,7 +108,7 @@ func (e *Engine) Start(ctx context.Context, st *Stream, params map[string]string
 // Cancel asks the Engine to stop a run.
 func (e *Engine) Cancel(ctx context.Context, stream, id, user string) (*Run, error) {
 	r, err := Mutate(ctx, e.runs, stream, id, func(r *Run) error {
-		if r.Status != RunRunning {
+		if !RunActive(r.Status) {
 			return ErrRunFinished
 		}
 		r.CancelRequested = true
@@ -136,6 +141,23 @@ func (e *Engine) Retry(ctx context.Context, stream, id, user string) (*Run, erro
 	return r, nil
 }
 
+// Decide approves or rejects a waiting approval step. The caller has
+// checked that user may approve the run's Stream.
+func (e *Engine) Decide(ctx context.Context, stream, id, step, user string, approve bool, comment string) (*Run, error) {
+	comment = strings.TrimSpace(comment)
+	if len(comment) > MaxCommentLen {
+		return nil, fmt.Errorf("%w: the comment is longer than %d characters", ErrInvalidParams, MaxCommentLen)
+	}
+	now := e.now()
+	r, err := Mutate(ctx, e.runs, stream, id, func(r *Run) error { return r.decideApproval(step, user, approve, comment, now) })
+	if err != nil {
+		return nil, err
+	}
+	e.log.Info("stream approval decided", "stream", stream, "run", id, "step", step, "user", user, "approved", approve)
+	e.Kick()
+	return r, nil
+}
+
 // Kick makes the Engine reconcile soon.
 func (e *Engine) Kick() {
 	select {
@@ -146,7 +168,8 @@ func (e *Engine) Kick() {
 
 // Run reconciles active runs until ctx is done.
 func (e *Engine) Run(ctx context.Context) {
-	e.log.Info("stream engine started", "pollInterval", e.cfg.PollInterval.String(), "stepTimeout", e.cfg.StepTimeout.String(), "history", e.cfg.History)
+	e.log.Info("stream engine started", "pollInterval", e.cfg.PollInterval.String(), "stepTimeout", e.cfg.StepTimeout.String(), "history", e.cfg.History,
+		"appNamespaces", e.cfg.AppNamespaces)
 	t := time.NewTicker(e.cfg.PollInterval)
 	defer t.Stop()
 	for {
@@ -172,12 +195,75 @@ func (e *Engine) ReconcileAll(ctx context.Context) {
 		return
 	}
 	sort.Slice(runs, func(i, j int) bool { return runs[i].CreatedAt.Before(runs[j].CreatedAt) })
+	var queued []*Run
 	for _, r := range runs {
 		if ctx.Err() != nil {
 			return
 		}
+		if r.Status == RunQueued && !r.CancelRequested {
+			queued = append(queued, r)
+			continue
+		}
 		e.reconcile(ctx, r)
 	}
+	// Runs that finished above released their locks.
+	held := map[string]*Run{}
+	for _, r := range runs {
+		if r.Status == RunRunning && r.Lock != "" {
+			held[r.Lock] = r
+		}
+	}
+	sort.SliceStable(queued, func(i, j int) bool { return queued[i].QueuedAt.Before(queued[j].QueuedAt) })
+	for _, r := range queued {
+		if ctx.Err() != nil {
+			return
+		}
+		if h := held[r.Lock]; h != nil {
+			e.waitForLock(ctx, r, h)
+			continue
+		}
+		if e.dequeue(ctx, r) {
+			held[r.Lock] = r
+			e.reconcile(ctx, r)
+		}
+	}
+}
+
+// waitForLock records which run holds the lock a queued run waits for.
+func (e *Engine) waitForLock(ctx context.Context, run, holder *Run) {
+	by := holder.Stream + "/" + holder.ID
+	if run.BlockedBy == by {
+		return
+	}
+	msg := fmt.Sprintf("waiting for lock %q held by run %s of stream %s", run.Lock, holder.ID, holder.Stream)
+	err := e.save(ctx, run, func(r *Run) error {
+		if r.Status != RunQueued {
+			return errStale
+		}
+		r.BlockedBy, r.Message = by, msg
+		return nil
+	})
+	if err != nil {
+		e.logSaveError(ctx, run, err)
+	}
+}
+
+// dequeue starts a queued run whose lock is free.
+func (e *Engine) dequeue(ctx context.Context, run *Run) bool {
+	err := e.save(ctx, run, func(r *Run) error {
+		if r.Status != RunQueued {
+			return errStale
+		}
+		r.Status, r.BlockedBy, r.Message = RunRunning, "", ""
+		return nil
+	})
+	if err != nil {
+		e.logSaveError(ctx, run, err)
+		return false
+	}
+	e.log.Info("stream run took its lock", "stream", run.Stream, "run", run.ID, "lock", run.Lock,
+		"waited", e.now().Sub(run.QueuedAt).Round(time.Second).String())
+	return true
 }
 
 func (e *Engine) reconcile(ctx context.Context, run *Run) {
@@ -191,7 +277,13 @@ func (e *Engine) reconcile(ctx context.Context, run *Run) {
 		case StepStarting:
 			e.correlate(ctx, run, i, defs[run.Steps[i].ID])
 		case StepRunning:
-			e.poll(ctx, run, i, defs[run.Steps[i].ID])
+			if def := defs[run.Steps[i].ID]; def.IsArgoCD() {
+				e.watchApp(ctx, run, i, def)
+			} else {
+				e.poll(ctx, run, i, def)
+			}
+		case StepWaiting:
+			e.expireApproval(ctx, run, i, defs[run.Steps[i].ID])
 		}
 		if ctx.Err() != nil {
 			return
@@ -289,6 +381,24 @@ func (e *Engine) start(ctx context.Context, run *Run, i int, def Step) {
 		})
 	}
 	vals := run.values()
+	if def.IsApproval() {
+		prompt, err := Render(def.Message, vals)
+		if err != nil {
+			fail("message: " + err.Error())
+			return
+		}
+		now := e.now()
+		if e.setStep(ctx, run, i, func(s *StepState) {
+			s.Status, s.Prompt, s.TriggeredAt, s.Message, s.RetryAt = StepWaiting, prompt, now, "waiting for approval", time.Time{}
+		}) {
+			e.log.Info("stream step waiting for approval", "stream", run.Stream, "run", run.ID, "step", def.ID)
+		}
+		return
+	}
+	if def.IsArgoCD() {
+		e.startArgo(ctx, run, i, def, fail)
+		return
+	}
 	ref, err := Render(def.Ref, vals)
 	if err != nil {
 		fail("ref: " + err.Error())
@@ -535,6 +645,20 @@ func (e *Engine) failStep(ctx context.Context, run *Run, i int, def Step, failed
 	time.AfterFunc(delay, e.Kick)
 }
 
+// expireApproval fails an approval step nobody decided in time.
+func (e *Engine) expireApproval(ctx context.Context, run *Run, i int, def Step) {
+	limit := stepTimeout(def, DefaultApprovalTimeout)
+	now := e.now()
+	if now.Sub(run.Steps[i].TriggeredAt) <= limit {
+		return
+	}
+	if e.setStep(ctx, run, i, func(s *StepState) {
+		s.Status, s.FinishedAt, s.Message = StepFailed, now, fmt.Sprintf("not approved within %s", limit)
+	}) {
+		e.log.Info("stream approval timed out", "stream", run.Stream, "run", run.ID, "step", def.ID)
+	}
+}
+
 func retryDelay(def Step) time.Duration {
 	if d, err := time.ParseDuration(def.RetryDelay); err == nil && d >= 0 {
 		return d
@@ -567,13 +691,19 @@ func (e *Engine) cancelRun(ctx context.Context, run *Run, defs map[string]Step) 
 		}
 	}
 	now := e.now()
-	err := e.saveRun(ctx, run, func(r *Run) {
+	err := e.save(ctx, run, func(r *Run) error {
+		if !RunActive(r.Status) {
+			return errStale
+		}
+		r.BlockedBy = ""
 		for i := range r.Steps {
 			s := &r.Steps[i]
 			switch s.Status {
+			case StepWaiting:
+				s.Status, s.FinishedAt, s.Message = StepCancelled, now, "the stream run was cancelled"
 			case StepRunning, StepStarting:
 				s.Status, s.FinishedAt, s.Message = StepCancelled, now, "the stream run was cancelled"
-				if s.RunID == "" {
+				if s.RunID == "" && !defs[s.ID].IsArgoCD() {
 					s.Message = "the stream run was cancelled; the pipeline run was not identified and may still be running"
 				}
 			case StepPending:
@@ -585,6 +715,7 @@ func (e *Engine) cancelRun(ctx context.Context, run *Run, defs map[string]Step) 
 		if r.CancelledBy != "" {
 			r.Message = "cancelled by " + r.CancelledBy
 		}
+		return nil
 	})
 	if err != nil {
 		e.logSaveError(ctx, run, err)

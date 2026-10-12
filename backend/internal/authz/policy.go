@@ -23,6 +23,8 @@ const (
 	ActionView = "view"
 	ActionRun  = "run"
 	ActionEdit = "edit"
+	// ActionApprove decides the approval steps of a Stream's runs.
+	ActionApprove = "approve"
 )
 
 // Everyone as a binding group matches every user who can open Zea.
@@ -45,7 +47,7 @@ type ResourceInfo struct {
 }
 
 var resources = []ResourceInfo{
-	{Name: ResourceStreams, Actions: []string{ActionView, ActionRun, ActionEdit}},
+	{Name: ResourceStreams, Actions: []string{ActionView, ActionRun, ActionApprove, ActionEdit}},
 	{Name: ResourceConnections, Actions: []string{ActionView, ActionRun, ActionEdit}},
 	{Name: ResourceRegistries, Actions: []string{ActionView, ActionEdit}},
 }

@@ -12,10 +12,13 @@ import (
 	"syscall"
 	"time"
 
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
+	"github.com/harchschoolboy/argocd-zea/backend/internal/argocd"
+	"github.com/harchschoolboy/argocd-zea/backend/internal/audit"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/authz"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/config"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/connections"
@@ -83,9 +86,13 @@ func run() error {
 		log.Warn("proxy token check is DISABLED; never run like this in a cluster")
 	}
 
-	kube, err := kubeClient()
+	rc, err := restConfig()
 	if err != nil {
 		return err
+	}
+	kube, err := kubernetes.NewForConfig(rc)
+	if err != nil {
+		return fmt.Errorf("kubernetes client: %w", err)
 	}
 	httpClient := &http.Client{Timeout: cfg.HTTPTimeout, Transport: http.DefaultTransport.(*http.Transport).Clone()}
 	regStore := registries.NewSecretStore(kube, cfg.ConnectionsNamespace)
@@ -102,11 +109,18 @@ func run() error {
 	regKinds.SetPullSecrets(registries.NewKubePullSecrets(kube, cfg.RegistryPullSecrets))
 	connStore := connections.NewSecretStore(kube, cfg.ConnectionsNamespace)
 	provs := providers.NewRegistry(github.New(httpClient), gitlab.New(httpClient))
+	dyn, err := dynamic.NewForConfig(rc)
+	if err != nil {
+		return fmt.Errorf("kubernetes dynamic client: %w", err)
+	}
 	engine := streams.NewEngine(streams.NewConfigMapRunStore(kube, cfg.ConnectionsNamespace), connStore, provs, streams.EngineConfig{
-		PollInterval: cfg.StreamPollInterval,
-		StepTimeout:  cfg.StreamStepTimeout,
-		History:      cfg.StreamRunHistory,
+		PollInterval:  cfg.StreamPollInterval,
+		StepTimeout:   cfg.StreamStepTimeout,
+		History:       cfg.StreamRunHistory,
+		Apps:          argocd.NewApps(dyn),
+		AppNamespaces: cfg.ArgoAppNamespaces,
 	}, log)
+	auditor := audit.NewRecorder(audit.NewConfigMapStore(kube, cfg.ConnectionsNamespace), cfg.AuditRetentionDays, log)
 	policyStore := authz.NewConfigMapPolicyStore(kube, cfg.ConnectionsNamespace)
 	deps := server.Deps{
 		Store:         connStore,
@@ -117,6 +131,7 @@ func run() error {
 		Images:        images.NewResolver(regStore, regKinds, imagesCacheTTL),
 		Streams:       streams.NewConfigMapStore(kube, cfg.ConnectionsNamespace),
 		StreamRuns:    engine,
+		Audit:         auditor,
 	}
 	if len(cfg.AdminUsers) == 0 && len(cfg.AdminGroups) == 0 {
 		log.Warn("no Zea admins configured (ZEA_ADMIN_USERS / ZEA_ADMIN_GROUPS); the access policy can only be managed declaratively")
@@ -140,6 +155,13 @@ func run() error {
 		engine.Run(ctx)
 		close(engineDone)
 	}()
+	auditCtx, stopAudit := context.WithCancel(context.Background())
+	defer stopAudit()
+	auditDone := make(chan struct{})
+	go func() {
+		auditor.Run(auditCtx)
+		close(auditDone)
+	}()
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -162,6 +184,12 @@ func run() error {
 	err = srv.Shutdown(shutdownCtx)
 	select {
 	case <-engineDone:
+	case <-shutdownCtx.Done():
+	}
+	// Requests finished above; store their events last.
+	stopAudit()
+	select {
+	case <-auditDone:
 	case <-shutdownCtx.Done():
 	}
 	return err
@@ -194,9 +222,9 @@ func migrateAccess(log *slog.Logger, deps server.Deps, store authz.PolicyStore) 
 	}
 }
 
-// kubeClient uses the in-cluster service account, falling back to the
+// restConfig uses the in-cluster service account, falling back to the
 // standard kubeconfig loading rules (KUBECONFIG, ~/.kube/config) for local runs.
-func kubeClient() (kubernetes.Interface, error) {
+func restConfig() (*rest.Config, error) {
 	rc, err := rest.InClusterConfig()
 	if err != nil {
 		rules := clientcmd.NewDefaultClientConfigLoadingRules()
@@ -206,5 +234,13 @@ func kubeClient() (kubernetes.Interface, error) {
 		}
 	}
 	rc.UserAgent = "argocd-zea/" + server.Version
+	return rc, nil
+}
+
+func kubeClient() (kubernetes.Interface, error) {
+	rc, err := restConfig()
+	if err != nil {
+		return nil, err
+	}
 	return kubernetes.NewForConfig(rc)
 }

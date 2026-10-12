@@ -5,12 +5,13 @@ import { AccessBinding, AccessPolicy, AccessRole, AccessRule, PolicyDocument, Po
 import { COLORS, ErrorText, Muted, useLoad } from './ui';
 
 const EVERYONE = '*';
-const ACTIONS = ['view', 'run', 'edit'];
+const ACTIONS = ['view', 'run', 'approve', 'edit'];
 const VALIDATE_DELAY_MS = 400;
 
 const ACTION_HELP: Record<string, string> = {
   view: 'See the item, its runs and images',
   run: 'Start, cancel and retry runs',
+  approve: 'Approve or reject the approval steps of runs',
   edit: 'Create, change and delete; see which credentials are set',
 };
 
@@ -62,19 +63,104 @@ const ProblemsBox = ({ problems }: { problems: PolicyProblem[] }) =>
     </div>
   );
 
+// Matches Go path.Match closely enough to preview which items a glob covers.
+function globRegExp(glob: string): RegExp | null {
+  let re = '';
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === '*') {
+      re += '.*';
+    } else if (c === '?') {
+      re += '.';
+    } else if (c === '[') {
+      const end = glob.indexOf(']', i + 2);
+      if (end < 0) {
+        return null;
+      }
+      re += '[' + glob.slice(i + 1, end).replace(/\\/g, '\\\\') + ']';
+      i = end;
+    } else {
+      re += c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+  }
+  try {
+    return new RegExp('^' + re + '$');
+  } catch {
+    return null;
+  }
+}
+
+const CUSTOM_PATTERN = ' custom';
+
+interface PatternPickerProps {
+  pattern: string;
+  names: string[];
+  onChange: (pattern: string) => void;
+}
+
+const PatternPicker = ({ pattern, names, onChange }: PatternPickerProps) => {
+  const value = pattern || '*';
+  const [chosen, setChosen] = React.useState(false);
+  const custom = chosen || (value !== '*' && !names.includes(value));
+  const re = custom ? globRegExp(value) : null;
+  const matched = re ? names.filter(n => re.test(n)) : [];
+  return (
+    <div style={{ display: 'flex', gap: '0.4em', alignItems: 'center' }}>
+      <select
+        className='argo-field'
+        style={{ minWidth: 160, width: custom ? 160 : '100%' }}
+        value={custom ? CUSTOM_PATTERN : value}
+        onChange={e => {
+          if (e.target.value === CUSTOM_PATTERN) {
+            setChosen(true);
+          } else {
+            setChosen(false);
+            onChange(e.target.value);
+          }
+        }}>
+        <option value='*'>All (*)</option>
+        {names.map(n => (
+          <option key={n} value={n}>
+            {n}
+          </option>
+        ))}
+        <option value={CUSTOM_PATTERN}>Pattern...</option>
+      </select>
+      {custom && (
+        <>
+          <input
+            className='argo-field'
+            style={{ flex: 1, minWidth: 120, fontFamily: 'monospace' }}
+            value={pattern}
+            placeholder='dev-*'
+            title='Glob over item names: * matches any characters, ? one character, [abc] a set'
+            onChange={e => onChange(e.target.value)}
+          />
+          <span
+            style={{ whiteSpace: 'nowrap', fontSize: '0.9em', color: re && matched.length === 0 ? COLORS.warn : COLORS.muted }}
+            title={matched.length > 0 ? matched.join(', ') : undefined}>
+            {re ? `${matched.length} ${matched.length === 1 ? 'match' : 'matches'}` : 'invalid'}
+          </span>
+        </>
+      )}
+    </div>
+  );
+};
+
 interface RuleRowProps {
   rule: AccessRule;
   resources: ResourceInfo[];
+  names: Record<string, string[]>;
   onChange: (r: AccessRule) => void;
   onDelete: () => void;
 }
 
-const RuleRow = ({ rule, resources, onChange, onDelete }: RuleRowProps) => {
+const RuleRow = ({ rule, resources, names, onChange, onDelete }: RuleRowProps) => {
   const supported = resources.find(r => r.name === rule.resource)?.actions ?? [];
   const toggle = (a: string, on: boolean) => {
     let next = on ? [...rule.actions, a] : rule.actions.filter(x => x !== a);
     if (next.length === 0 && a !== 'view') {
-      // Dropping run or edit keeps the view they implied.
+      // Dropping the last other action keeps the view it implied.
       next = ['view'];
     }
     onChange({ ...rule, actions: ACTIONS.filter(x => next.includes(x)) });
@@ -86,8 +172,8 @@ const RuleRow = ({ rule, resources, onChange, onDelete }: RuleRowProps) => {
   };
   return (
     <tr>
-      <td style={cell}>
-        <select className='argo-field' value={rule.resource} onChange={e => changeResource(e.target.value)}>
+      <td style={{ ...cell, whiteSpace: 'nowrap' }}>
+        <select className='argo-field' style={{ minWidth: 130 }} value={rule.resource} onChange={e => changeResource(e.target.value)}>
           {!supported.length && <option value={rule.resource}>{rule.resource || '(choose)'}</option>}
           {resources.map(r => (
             <option key={r.name} value={r.name}>
@@ -97,14 +183,7 @@ const RuleRow = ({ rule, resources, onChange, onDelete }: RuleRowProps) => {
         </select>
       </td>
       <td style={{ ...cell, width: '100%' }}>
-        <input
-          className='argo-field'
-          style={{ width: '100%', fontFamily: 'monospace' }}
-          value={rule.pattern}
-          placeholder='*'
-          title='Glob over item names: * matches any characters, ? one character, [abc] a set'
-          onChange={e => onChange({ ...rule, pattern: e.target.value })}
-        />
+        <PatternPicker pattern={rule.pattern} names={names[rule.resource] ?? []} onChange={pattern => onChange({ ...rule, pattern })} />
       </td>
       {ACTIONS.map(a => {
         const ok = supported.includes(a);
@@ -116,7 +195,7 @@ const RuleRow = ({ rule, resources, onChange, onDelete }: RuleRowProps) => {
                 type='checkbox'
                 checked={implied || rule.actions.includes(a)}
                 disabled={implied}
-                title={implied ? 'Implied by run and edit' : ACTION_HELP[a]}
+                title={implied ? 'Implied by the other actions' : ACTION_HELP[a]}
                 onChange={e => toggle(a, e.target.checked)}
               />
             ) : (
@@ -139,12 +218,13 @@ const RuleRow = ({ rule, resources, onChange, onDelete }: RuleRowProps) => {
 interface RoleCardProps {
   role: AccessRole;
   resources: ResourceInfo[];
+  names: Record<string, string[]>;
   invalid: boolean;
   onChange: (r: AccessRole) => void;
   onDelete: () => void;
 }
 
-const RoleCard = ({ role, resources, invalid, onChange, onDelete }: RoleCardProps) => {
+const RoleCard = ({ role, resources, names, invalid, onChange, onDelete }: RoleCardProps) => {
   // The name is committed on blur, so bindings follow a rename once and not
   // on every keystroke.
   const [name, setName] = React.useState(role.name);
@@ -196,7 +276,7 @@ const RoleCard = ({ role, resources, invalid, onChange, onDelete }: RoleCardProp
           <thead>
             <tr>
               <th style={head}>Resource</th>
-              <th style={head}>Names (glob)</th>
+              <th style={head}>Items</th>
               {ACTIONS.map(a => (
                 <th key={a} style={{ ...head, textAlign: 'center' }} title={ACTION_HELP[a]}>
                   {a}
@@ -211,6 +291,7 @@ const RoleCard = ({ role, resources, invalid, onChange, onDelete }: RoleCardProp
                 key={i}
                 rule={r}
                 resources={resources}
+                names={names}
                 onChange={next => setRule(i, next)}
                 onDelete={() => onChange({ ...role, rules: role.rules.filter((_, j) => j !== i) })}
               />
@@ -280,7 +361,7 @@ const BindingsMatrix = ({ policy, onChange }: MatrixProps) => {
                         </span>
                       ) : (
                         <span style={{ display: 'inline-flex', gap: '0.4em' }}>
-                          <select className='argo-field' value={b.user !== undefined ? 'user' : 'group'} onChange={e => setKind(i, e.target.value as 'group' | 'user')}>
+                          <select className='argo-field' style={{ minWidth: 90 }} value={b.user !== undefined ? 'user' : 'group'} onChange={e => setKind(i, e.target.value as 'group' | 'user')}>
                             <option value='group'>group</option>
                             <option value='user'>user</option>
                           </select>
@@ -643,8 +724,8 @@ const PolicyEditor = ({ client, initial, onReload }: { client: ZeaClient; initia
         title={`Roles (${draft.roles.length})`}
         help={
           <>
-            A rule grants actions on the items of a resource whose names match the glob, for example <code>*</code>, <code>dev-*</code>{' '}
-            or <code>backend</code>. Any action includes view. Saving a stream also needs run access to every connection it uses.
+            A rule grants actions on all items of a resource, on one item, or on the items whose names match a pattern (<b>Pattern...</b>), for
+            example <code>dev-*</code>. Any action includes view; approve (streams only) does not include run. Saving a stream also needs run access to every connection it uses.
           </>
         }>
         {draft.roles.map((r, i) => (
@@ -652,6 +733,7 @@ const PolicyEditor = ({ client, initial, onReload }: { client: ZeaClient; initia
             key={i}
             role={r}
             resources={doc.resources}
+            names={doc.names ?? {}}
             invalid={problems.some(p => p.path.startsWith(`roles[${i}]`))}
             onChange={next => setRole(i, next)}
             onDelete={() => deleteRole(i)}

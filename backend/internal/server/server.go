@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/harchschoolboy/argocd-zea/backend/internal/argocd"
+	"github.com/harchschoolboy/argocd-zea/backend/internal/audit"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/authz"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/config"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/connections"
@@ -29,6 +30,8 @@ type Deps struct {
 	Streams streams.Store
 	// StreamRuns executes Streams; nil disables the stream runs API.
 	StreamRuns *streams.Engine
+	// Audit records changes; nil disables auditing.
+	Audit *audit.Recorder
 }
 
 type api struct {
@@ -49,6 +52,7 @@ func New(cfg *config.Config, log *slog.Logger, deps Deps) http.Handler {
 	mux.HandleFunc("GET /api/v1/version", handleVersion)
 	mux.HandleFunc("GET /api/v1/providers", a.handleProviders)
 	mux.HandleFunc("GET /api/v1/policy", a.adminOnly(a.handleGetPolicy))
+	mux.HandleFunc("GET /api/v1/audit", a.adminOnly(a.handleAudit))
 	mux.HandleFunc("PUT /api/v1/policy", a.adminOnly(a.handleSavePolicy))
 	mux.HandleFunc("POST /api/v1/policy/validate", a.adminOnly(a.handleValidatePolicy))
 	mux.HandleFunc("POST /api/v1/policy/evaluate", a.adminOnly(a.handleEvaluatePolicy))
@@ -68,6 +72,7 @@ func New(cfg *config.Config, log *slog.Logger, deps Deps) http.Handler {
 	mux.HandleFunc("POST /api/v1/connections/{name}/runs/{run}/retry", a.handleRetryRun)
 	mux.HandleFunc("GET /api/v1/connections/{name}/images", a.handleConnectionImages)
 	mux.HandleFunc("POST /api/v1/images/preview", requireAny(authz.ResourceConnections, authz.ActionEdit, a.handleImagesPreview))
+	mux.HandleFunc("POST /api/v1/images/match", a.handleMatchImages)
 	mux.HandleFunc("GET /api/v1/registry-kinds", a.handleRegistryKinds)
 	mux.HandleFunc("GET /api/v1/registries", a.handleListRegistries)
 	mux.HandleFunc("POST /api/v1/registries", requireAny(authz.ResourceRegistries, authz.ActionEdit, a.handleCreateRegistry))
@@ -85,15 +90,18 @@ func New(cfg *config.Config, log *slog.Logger, deps Deps) http.Handler {
 	mux.HandleFunc("POST /api/v1/streams/{name}/draft", requireAny(authz.ResourceStreams, authz.ActionEdit, a.handleDraftStream))
 	mux.HandleFunc("GET /api/v1/streams/{name}/export", a.handleExportStream)
 	mux.HandleFunc("GET /api/v1/streams/{name}/branches", a.handleStreamBranches)
+	mux.HandleFunc("GET /api/v1/streams/{name}/images", a.handleStreamImages)
 	mux.HandleFunc("GET /api/v1/streams/{name}/runs", a.handleListStreamRuns)
 	mux.HandleFunc("POST /api/v1/streams/{name}/runs", a.handleStartStreamRun)
 	mux.HandleFunc("GET /api/v1/streams/{name}/runs/{run}", a.handleGetStreamRun)
 	mux.HandleFunc("POST /api/v1/streams/{name}/runs/{run}/cancel", a.handleCancelStreamRun)
 	mux.HandleFunc("POST /api/v1/streams/{name}/runs/{run}/retry", a.handleRetryStreamRun)
+	mux.HandleFunc("POST /api/v1/streams/{name}/runs/{run}/steps/{step}/approve", a.handleApproveStreamStep)
+	mux.HandleFunc("POST /api/v1/streams/{name}/runs/{run}/steps/{step}/reject", a.handleRejectStreamStep)
 	mux.HandleFunc("GET /api/v1/streams/{name}/runs/{run}/jobs/{providerRun}", a.handleStreamRunJobs)
 
 	protected := requireProxyToken(cfg.ProxyToken, cfg.InsecureSkipProxyAuth, log,
-		requireIdentity(requireAnchor(cfg.AnchorApp, a.withAccess(mux))))
+		requireIdentity(requireAnchor(cfg.AnchorApp, a.withAccess(a.audited(mux)))))
 
 	root := http.NewServeMux()
 	root.HandleFunc("GET /healthz", handleHealth)

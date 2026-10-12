@@ -68,6 +68,11 @@ spec:
             - name: ZEA_STREAM_RUN_HISTORY
               value: {{ .runHistory | default 30 | quote }}
             {{- end }}
+            - name: ZEA_ARGOCD_APP_NAMESPACES
+              value: {{ include "zea.argocdNamespaces" . | quote }}
+            - name: ZEA_AUDIT_RETENTION_DAYS
+              {{- $retention := (.Values.audit | default dict).retentionDays }}
+              value: {{ if kindIs "invalid" $retention }}"30"{{ else }}{{ $retention | quote }}{{ end }}
             {{- if (.Values.registries | default dict).tokenRequest }}
             - name: ZEA_SERVICE_ACCOUNT_NAMESPACE
               valueFrom:

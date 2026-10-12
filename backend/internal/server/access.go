@@ -96,7 +96,7 @@ func requireAny(resource, action string, next http.HandlerFunc) http.HandlerFunc
 func (a *api) adminOnly(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !AccessFrom(r.Context()).IsAdmin() {
-			writeError(w, http.StatusForbidden, "only Zea admins can manage the access policy")
+			writeError(w, http.StatusForbidden, "only Zea admins can do this")
 			return
 		}
 		next(w, r)
@@ -113,6 +113,8 @@ type policyResponse struct {
 	Error    string               `json:"error,omitempty"`
 	Admins   adminsView           `json:"admins"`
 	Resource []authz.ResourceInfo `json:"resources"`
+	// Names lists the existing items per resource for the rule editor.
+	Names map[string][]string `json:"names"`
 }
 
 type adminsView struct {
@@ -120,7 +122,11 @@ type adminsView struct {
 	Groups []string `json:"groups"`
 }
 
-func (a *api) policyResponseOf(doc *authz.Document) policyResponse {
+func (a *api) policyResponseOf(ctx context.Context, doc *authz.Document) (policyResponse, error) {
+	names, err := a.itemNames(ctx)
+	if err != nil {
+		return policyResponse{}, err
+	}
 	raw, _ := authz.FormatPolicy(doc.Policy)
 	users, groups := a.deps.Authz.Admins()
 	return policyResponse{
@@ -132,7 +138,54 @@ func (a *api) policyResponseOf(doc *authz.Document) policyResponse {
 		Error:    doc.Error,
 		Admins:   adminsView{Users: users, Groups: groups},
 		Resource: authz.Resources(),
+		Names:    names,
+	}, nil
+}
+
+// itemNames lists the names of all existing items per resource, sorted.
+func (a *api) itemNames(ctx context.Context) (map[string][]string, error) {
+	names := map[string][]string{}
+	for _, res := range authz.Resources() {
+		names[res.Name] = []string{}
 	}
+	conns, err := a.deps.Store.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, c := range conns {
+		names[authz.ResourceConnections] = append(names[authz.ResourceConnections], c.Name)
+	}
+	if a.deps.Streams != nil {
+		all, err := a.deps.Streams.List(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, st := range all {
+			names[authz.ResourceStreams] = append(names[authz.ResourceStreams], st.Name)
+		}
+	}
+	if a.deps.Registries != nil {
+		all, err := a.deps.Registries.List(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, reg := range all {
+			names[authz.ResourceRegistries] = append(names[authz.ResourceRegistries], reg.Name)
+		}
+	}
+	for _, list := range names {
+		sort.Strings(list)
+	}
+	return names, nil
+}
+
+func (a *api) writePolicy(w http.ResponseWriter, r *http.Request, doc *authz.Document) {
+	resp, err := a.policyResponseOf(r.Context(), doc)
+	if err != nil {
+		a.writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (a *api) handleGetPolicy(w http.ResponseWriter, r *http.Request) {
@@ -141,7 +194,7 @@ func (a *api) handleGetPolicy(w http.ResponseWriter, r *http.Request) {
 		a.writeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, a.policyResponseOf(doc))
+	a.writePolicy(w, r, doc)
 }
 
 type policyInput struct {
@@ -164,7 +217,7 @@ func (a *api) handleSavePolicy(w http.ResponseWriter, r *http.Request) {
 	}
 	a.log.Info("access policy saved", "roles", len(doc.Policy.Roles), "bindings", len(doc.Policy.Bindings),
 		"user", IdentityFrom(r.Context()).Username)
-	writeJSON(w, http.StatusOK, a.policyResponseOf(doc))
+	a.writePolicy(w, r, doc)
 }
 
 // validatePolicyInput carries either YAML (import) or a policy (editor).
@@ -235,41 +288,15 @@ func (a *api) handleEvaluatePolicy(w http.ResponseWriter, r *http.Request) {
 	id := &argocd.Identity{Username: strings.TrimSpace(in.User), Groups: groups}
 	acc := a.deps.Authz.ForPolicy(in.Policy, id)
 
-	names := map[string][]string{}
-	conns, err := a.deps.Store.List(r.Context())
+	names, err := a.itemNames(r.Context())
 	if err != nil {
 		a.writeErr(w, err)
 		return
 	}
-	for _, c := range conns {
-		names[authz.ResourceConnections] = append(names[authz.ResourceConnections], c.Name)
-	}
-	if a.deps.Streams != nil {
-		all, err := a.deps.Streams.List(r.Context())
-		if err != nil {
-			a.writeErr(w, err)
-			return
-		}
-		for _, st := range all {
-			names[authz.ResourceStreams] = append(names[authz.ResourceStreams], st.Name)
-		}
-	}
-	if a.deps.Registries != nil {
-		all, err := a.deps.Registries.List(r.Context())
-		if err != nil {
-			a.writeErr(w, err)
-			return
-		}
-		for _, reg := range all {
-			names[authz.ResourceRegistries] = append(names[authz.ResourceRegistries], reg.Name)
-		}
-	}
 	items := map[string][]accessItem{}
 	for _, res := range authz.Resources() {
 		list := []accessItem{}
-		sorted := names[res.Name]
-		sort.Strings(sorted)
-		for _, n := range sorted {
+		for _, n := range names[res.Name] {
 			if acts := acc.Actions(res.Name, n); len(acts) > 0 {
 				list = append(list, accessItem{Name: n, Actions: acts})
 			}

@@ -5,7 +5,7 @@ import { ago, usePoll } from './Runs';
 import { Badge, ellipsis, Help, ProblemList, StreamStatusIcon, StreamStatusLabel } from './StreamFields';
 import { StreamEditor } from './StreamEditor';
 import { ConnData } from './streamModel';
-import { StagesBoard, StreamRunForm, StreamRunHistory, StreamRunView } from './StreamRun';
+import { ApprovalBadge, LockBadge, runActive, StagesBoard, StreamRunForm, StreamRunHistory, StreamRunView, waitingSteps } from './StreamRun';
 import { can, Connection, Me, Stream, StreamExport, StreamRun } from './types';
 import { COLORS, ErrorText, Muted, useLoad } from './ui';
 
@@ -17,6 +17,7 @@ const StreamBadges = ({ stream }: { stream: Stream }) => (
         <i className='fa fa-lock' /> git
       </Badge>
     )}
+    {stream.lock && <LockBadge lock={stream.lock} />}
     {stream.problems.length > 0 ? (
       <Badge color={COLORS.warn} title={stream.problems.map(p => p.message).join('\n')}>
         {stream.problems.length} problem{stream.problems.length > 1 ? 's' : ''}
@@ -38,17 +39,27 @@ const LastStreamRun = ({ stream, runs }: { stream: string; runs: { data?: Stream
   if (!r) {
     return <Muted>No runs yet.</Muted>;
   }
+  const open = (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    navigate({ view: 'streams', stream, srun: id });
+  };
+  // Older runs may wait for an approval too; link the oldest one.
+  const waiting = runs.data.filter(x => waitingSteps(x).length > 0);
+  const first = waiting[waiting.length - 1];
   return (
-    <span
-      style={{ cursor: 'pointer' }}
-      onClick={e => {
-        e.stopPropagation();
-        navigate({ view: 'streams', stream, srun: r.id });
-      }}>
-      <StreamStatusIcon status={r.status} /> <StreamStatusLabel status={r.status} />{' '}
-      <Muted>
-        {ago(r.createdAt)} by {r.user}
-      </Muted>
+    <span style={{ display: 'inline-flex', gap: '0.5em', alignItems: 'baseline', flexWrap: 'wrap' }}>
+      <span style={{ cursor: 'pointer' }} onClick={e => open(e, r.id)}>
+        <StreamStatusIcon status={r.status} /> <StreamStatusLabel status={r.status} />{' '}
+        <Muted>
+          {ago(r.createdAt)} by {r.user}
+        </Muted>
+      </span>
+      {first && (
+        <span style={{ cursor: 'pointer' }} onClick={e => open(e, first.id)}>
+          <ApprovalBadge steps={waiting.flatMap(waitingSteps)} />
+          {waiting.length > 1 && <Muted> {waiting.length} runs</Muted>}
+        </span>
+      )}
     </span>
   );
 };
@@ -73,7 +84,7 @@ const StreamCard = ({ client, stream }: { client: ZeaClient; stream: Stream }) =
     () => client.streamRuns(stream.name),
     [client, stream.name],
     CARD_POLL_MS,
-    d => (d ?? []).some(r => r.status === 'running'),
+    d => (d ?? []).some(r => runActive(r.status)),
   );
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState('');
@@ -467,7 +478,7 @@ export const StreamsView = ({ client, me }: { client: ZeaClient; me: Me }) => {
       return <EditorPage key={route.stream} client={client} data={data} name={route.stream} />;
     }
     if (route.srun) {
-      return <StreamRunView client={client} data={data} stream={route.stream} runID={route.srun} />;
+      return <StreamRunView client={client} data={data} me={me} stream={route.stream} runID={route.srun} />;
     }
     return <StreamDetail key={route.stream} client={client} data={data} me={me} name={route.stream} openRun={route.mode === 'run'} />;
   }

@@ -86,8 +86,15 @@ func streamProblems(st *streams.Stream, conns map[string]*connections.Connection
 		return out
 	}
 	for _, p := range st.Params {
-		if p.Type == streams.ParamBranch && p.Connection != "" && conns[p.Connection] == nil {
+		if !p.HasConnection() || p.Connection == "" {
+			continue
+		}
+		c := conns[p.Connection]
+		switch {
+		case c == nil:
 			out = append(out, streams.Problem{Param: p.Name, Message: fmt.Sprintf("connection %q does not exist", p.Connection)})
+		case p.Type == streams.ParamImage && len(c.Images) == 0 && c.ImagesError == "":
+			out = append(out, streams.Problem{Param: p.Name, Message: fmt.Sprintf("connection %q has no image sources", p.Connection)})
 		}
 	}
 	for _, stage := range st.Stages {
@@ -205,6 +212,7 @@ func (a *api) handleCreateStream(w http.ResponseWriter, r *http.Request) {
 	}
 	st := in.toStream()
 	st.ResourceVersion = ""
+	noteAudit(r.Context(), st.Name, "")
 	if !allowNew(w, r, authz.ResourceStreams, authz.ActionEdit, st.Name) {
 		return
 	}
@@ -318,6 +326,7 @@ func (a *api) handleDraftStream(w http.ResponseWriter, r *http.Request) {
 	if draft.Name == "" {
 		draft.Name = src.Name + "-draft"
 	}
+	noteAudit(r.Context(), draft.Name, "from "+src.Name)
 	if !allowNew(w, r, authz.ResourceStreams, authz.ActionEdit, draft.Name) {
 		return
 	}
@@ -377,6 +386,7 @@ func (a *api) handleImportStream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	noteAudit(r.Context(), st.Name, "")
 	if err := st.Validate(); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return

@@ -111,6 +111,7 @@ func (a *api) handleCreateConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c := in.toConnection()
+	noteAudit(r.Context(), c.Name, "")
 	if !allowNew(w, r, authz.ResourceConnections, authz.ActionEdit, c.Name) {
 		return
 	}
@@ -357,8 +358,11 @@ func (a *api) writeErr(w http.ResponseWriter, err error) {
 	case errors.Is(err, connections.ErrAlreadyExists), errors.Is(err, connections.ErrReadOnly),
 		errors.Is(err, registries.ErrAlreadyExists), errors.Is(err, registries.ErrReadOnly),
 		errors.Is(err, streams.ErrAlreadyExists), errors.Is(err, streams.ErrReadOnly), errors.Is(err, streams.ErrConflict),
-		errors.Is(err, streams.ErrRunFinished), errors.Is(err, streams.ErrNotRetryable), errors.Is(err, streams.ErrRunConflict), errors.Is(err, streams.ErrNotRunnable):
+		errors.Is(err, streams.ErrRunFinished), errors.Is(err, streams.ErrNotRetryable), errors.Is(err, streams.ErrRunConflict), errors.Is(err, streams.ErrNotRunnable),
+		errors.Is(err, streams.ErrNotWaiting):
 		writeError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, streams.ErrSelfApproval):
+		writeError(w, http.StatusForbidden, err.Error())
 	case errors.Is(err, providers.ErrInvalidRequest), errors.Is(err, providers.ErrUnsupported), errors.Is(err, streams.ErrInvalidParams):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.As(err, &ue) && (ue.Status == http.StatusBadRequest || ue.Status == http.StatusUnprocessableEntity):

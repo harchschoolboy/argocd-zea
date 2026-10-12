@@ -1,0 +1,34 @@
+{{- /* Read and refresh Applications for Stream argocd steps, one Role per namespace. */ -}}
+{{- $argo := .Values.argocd | default dict }}
+{{- if or (not (hasKey $argo "rbac")) $argo.rbac }}
+{{- range splitList "," (include "zea.argocdNamespaces" .) }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "zea.fullname" $ }}-applications
+  namespace: {{ . }}
+  labels:
+    {{- include "zea.labels" $ | nindent 4 }}
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "zea.fullname" $ }}-applications
+  namespace: {{ . }}
+  labels:
+    {{- include "zea.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "zea.fullname" $ }}-applications
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "zea.serviceAccountName" $ }}
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
+{{- end }}

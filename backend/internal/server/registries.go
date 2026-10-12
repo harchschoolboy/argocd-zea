@@ -145,6 +145,7 @@ func (a *api) handleCreateRegistry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reg := in.toRegistry()
+	noteAudit(r.Context(), reg.Name, "")
 	if !allowNew(w, r, authz.ResourceRegistries, authz.ActionEdit, reg.Name) {
 		return
 	}
@@ -334,10 +335,14 @@ type imagesResponse struct {
 }
 
 func (a *api) handleConnectionImages(w http.ResponseWriter, r *http.Request) {
-	c, ok := a.usableConnection(w, r, authz.ActionView)
-	if !ok {
-		return
+	if c, ok := a.usableConnection(w, r, authz.ActionView); ok {
+		a.writeImages(w, r, c)
 	}
+}
+
+// writeImages answers with the images of a Connection; the query may set
+// ref, refresh and limit.
+func (a *api) writeImages(w http.ResponseWriter, r *http.Request, c *connections.Connection) {
 	if c.ImagesError != "" {
 		writeJSON(w, http.StatusOK, imagesResponse{Configured: true, Result: &images.Result{
 			Repositories: []images.Repository{},

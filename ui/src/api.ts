@@ -1,10 +1,13 @@
 import {
   AccessPolicy,
+  AuditPage,
   Application,
   ApplicationList,
+  ArgoApp,
   BranchList,
   Connection,
   ConnectionInput,
+  ImageMatch,
   ImageSource,
   ImagesResult,
   Me,
@@ -74,6 +77,34 @@ export async function findAnchors(): Promise<Application[]> {
   return (list.items ?? []).sort((a, b) =>
     `${a.metadata.namespace}/${a.metadata.name}`.localeCompare(`${b.metadata.namespace}/${b.metadata.name}`),
   );
+}
+
+interface RawApp {
+  metadata: { name: string; namespace: string };
+  spec?: { project?: string };
+  status?: { summary?: { images?: string[] }; sync?: { status?: string }; health?: { status?: string } };
+}
+
+// Lists Applications with their images through the regular Argo CD API, so
+// only the ones the user may see are returned.
+export async function fetchArgoApps(): Promise<ArgoApp[]> {
+  const fields = [
+    'items.metadata.name',
+    'items.metadata.namespace',
+    'items.spec.project',
+    'items.status.summary.images',
+    'items.status.sync.status',
+    'items.status.health.status',
+  ].join(',');
+  const list = await request<{ items: RawApp[] | null }>(`api/v1/applications?fields=${encodeURIComponent(fields)}`);
+  return (list.items ?? []).map(a => ({
+    name: a.metadata.name,
+    namespace: a.metadata.namespace,
+    project: a.spec?.project ?? '',
+    images: a.status?.summary?.images ?? [],
+    sync: a.status?.sync?.status,
+    health: a.status?.health?.status,
+  }));
 }
 
 // Client for the Zea backend. Every call goes through the Argo CD proxy
@@ -185,6 +216,12 @@ export class ZeaClient {
     return this.call<ImagesResult>('api/v1/images/preview', { method: 'POST', json: { images, ref } });
   }
 
+  // Maps image references to the Connections (visible to the user) whose
+  // image sources cover them.
+  async matchImages(images: string[]): Promise<ImageMatch[]> {
+    return (await this.call<{ matches: ImageMatch[] }>('api/v1/images/match', { method: 'POST', json: { images } })).matches;
+  }
+
   async registryKinds(): Promise<RegistryKind[]> {
     return (await this.call<{ kinds: RegistryKind[] }>('api/v1/registry-kinds')).kinds;
   }
@@ -273,9 +310,20 @@ export class ZeaClient {
     return this.call<StreamRun>(`api/v1/streams/${encodeURIComponent(name)}/runs/${encodeURIComponent(id)}/retry`, { method: 'POST' });
   }
 
+  // Approves or rejects a waiting approval step; needs the approve action on the stream.
+  decideStreamStep(name: string, id: string, step: string, approve: boolean, comment: string): Promise<StreamRun> {
+    const path = `api/v1/streams/${encodeURIComponent(name)}/runs/${encodeURIComponent(id)}/steps/${encodeURIComponent(step)}`;
+    return this.call<StreamRun>(`${path}/${approve ? 'approve' : 'reject'}`, { method: 'POST', json: { comment } });
+  }
+
   // Branches of a connection the stream uses; needs run access to the stream only.
   streamBranches(name: string, connection: string): Promise<BranchList> {
     return this.call<BranchList>(`api/v1/streams/${encodeURIComponent(name)}/branches?connection=${encodeURIComponent(connection)}`);
+  }
+
+  // Images of a connection the stream uses; needs run access to the stream only.
+  streamImages(name: string, connection: string): Promise<ImagesResult> {
+    return this.call<ImagesResult>(`api/v1/streams/${encodeURIComponent(name)}/images?connection=${encodeURIComponent(connection)}`);
   }
 
   // Jobs of a pipeline run a step of the stream run started; needs view access to the stream only.
@@ -299,6 +347,10 @@ export class ZeaClient {
 
   evaluatePolicy(policy: AccessPolicy, user: string, groups: string[]): Promise<PolicyEvaluation> {
     return this.call<PolicyEvaluation>('api/v1/policy/evaluate', { method: 'POST', json: { policy, user, groups } });
+  }
+
+  audit(day?: string): Promise<AuditPage> {
+    return this.call<AuditPage>(`api/v1/audit${day ? `?day=${encodeURIComponent(day)}` : ''}`);
   }
 }
 

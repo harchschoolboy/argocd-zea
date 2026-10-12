@@ -13,7 +13,9 @@ import (
 
 // Run statuses.
 const (
-	RunRunning   = "running"
+	RunRunning = "running"
+	// RunQueued waits for the lock held by another run.
+	RunQueued    = "queued"
 	RunSucceeded = "succeeded"
 	RunFailed    = "failed"
 	RunCancelled = "cancelled"
@@ -24,8 +26,10 @@ const (
 	// StepPending waits for its dependencies.
 	StepPending = "pending"
 	// StepStarting was triggered, but its pipeline run is not known yet.
-	StepStarting  = "starting"
-	StepRunning   = "running"
+	StepStarting = "starting"
+	StepRunning  = "running"
+	// StepWaiting is an approval step waiting for a decision.
+	StepWaiting   = "waiting"
 	StepSucceeded = "succeeded"
 	StepFailed    = "failed"
 	StepCancelled = "cancelled"
@@ -47,7 +51,16 @@ var (
 	ErrNotRunnable = errors.New("stream cannot run")
 	// ErrNotRetryable is returned when a run cannot be retried.
 	ErrNotRetryable = errors.New("stream run cannot be retried")
+	// ErrNotWaiting is returned when deciding a step that does not wait
+	// for an approval.
+	ErrNotWaiting = errors.New("the step is not waiting for an approval")
+	// ErrSelfApproval is returned when the user who started a run decides
+	// an approval step that forbids it.
+	ErrSelfApproval = errors.New("this step must be decided by someone other than the user who started the run")
 )
+
+// MaxCommentLen caps approval comments.
+const MaxCommentLen = 1000
 
 // MaxAttempts limits how often one run may be retried.
 const MaxAttempts = 20
@@ -76,6 +89,13 @@ type Run struct {
 	// Tries are the failed tries of steps that were retried automatically,
 	// oldest first.
 	Tries []StepTry `json:"tries,omitempty"`
+	// Lock is the rendered lock of the Stream; empty when it has none.
+	Lock string `json:"lock,omitempty"`
+	// QueuedAt orders the runs waiting for a lock.
+	QueuedAt time.Time `json:"queuedAt,omitzero"`
+	// BlockedBy is "<stream>/<run>" of the run holding the lock a queued
+	// run waits for.
+	BlockedBy string `json:"blockedBy,omitempty"`
 	// ResourceVersion guards updates against concurrent writers.
 	ResourceVersion string `json:"-"`
 }
@@ -99,6 +119,22 @@ type StepState struct {
 	Try int `json:"try,omitempty"`
 	// RetryAt delays the start of a pending step that is retried.
 	RetryAt time.Time `json:"retryAt,omitzero"`
+	// Prompt is the rendered message of an approval step.
+	Prompt string `json:"prompt,omitempty"`
+	// DecidedBy and Comment record the decision of an approval step.
+	DecidedBy string `json:"decidedBy,omitempty"`
+	Comment   string `json:"comment,omitempty"`
+	// App and Image are the rendered target of an argocd step; Health,
+	// Sync and Images (comma separated) its Application's last state. SHA
+	// holds the synced revision.
+	App    string `json:"app,omitempty"`
+	Image  string `json:"image,omitempty"`
+	Health string `json:"health,omitempty"`
+	Sync   string `json:"sync,omitempty"`
+	Images string `json:"images,omitempty"`
+	// DegradedAt is when the Application turned Degraded after reaching
+	// the expected state.
+	DegradedAt time.Time `json:"degradedAt,omitzero"`
 }
 
 // StepTry is a failed try of a step that was retried automatically.
@@ -120,6 +156,10 @@ type Attempt struct {
 	// are kept by the retry and are not listed.
 	Steps []StepState `json:"steps"`
 }
+
+// RunActive reports whether a run has not finished: it runs or waits in
+// the queue of its lock.
+func RunActive(status string) bool { return status == RunRunning || status == RunQueued }
 
 // StepFinished reports whether a step status is final.
 func StepFinished(status string) bool {
@@ -161,6 +201,16 @@ func NewRun(st *Stream, given map[string]string, user string, now time.Time) (*R
 			r.Steps = append(r.Steps, StepState{ID: step.ID, Status: StepPending})
 		}
 	}
+	lock, err := Render(st.Lock, r.values())
+	if err != nil {
+		return nil, fmt.Errorf("%w: lock: %s", ErrInvalidParams, err)
+	}
+	if lock = strings.TrimSpace(lock); len(lock) > MaxLockLen {
+		return nil, fmt.Errorf("%w: the lock is longer than %d characters", ErrInvalidParams, MaxLockLen)
+	}
+	if lock != "" {
+		r.Lock, r.Status, r.QueuedAt = lock, RunQueued, r.CreatedAt
+	}
 	return r, nil
 }
 
@@ -197,7 +247,7 @@ func ResolveParams(defs []Param, given map[string]string) (map[string]string, er
 			if v != "" && !contains(p.Options, v) {
 				return nil, fmt.Errorf("%w: param %q must be one of %s", ErrInvalidParams, p.Name, strings.Join(p.Options, ", "))
 			}
-		case ParamBranch:
+		case ParamBranch, ParamImage:
 			v = strings.TrimSpace(v)
 		}
 		if p.Required && strings.TrimSpace(v) == "" {
@@ -252,8 +302,43 @@ func (r *Run) values() map[string]string {
 		v[p+"url"] = s.URL
 		v[p+"sha"] = s.SHA
 		v[p+"ref"] = s.Ref
+		v[p+"user"] = s.DecidedBy
+		v[p+"revision"] = s.SHA
+		v[p+"health"] = s.Health
+		v[p+"images"] = s.Images
 	}
 	return v
+}
+
+// decide approves or rejects a waiting approval step.
+func (r *Run) decideApproval(stepID, user string, approve bool, comment string, now time.Time) error {
+	if r.Status != RunRunning || r.CancelRequested {
+		return ErrRunFinished
+	}
+	def, ok := r.StepDefs()[stepID]
+	if !ok || !def.IsApproval() {
+		return ErrNotWaiting
+	}
+	if def.NoSelfApproval && (user == r.User || (r.RetriedBy != "" && user == r.RetriedBy)) {
+		return ErrSelfApproval
+	}
+	for i := range r.Steps {
+		s := &r.Steps[i]
+		if s.ID != stepID {
+			continue
+		}
+		if s.Status != StepWaiting {
+			return ErrNotWaiting
+		}
+		s.DecidedBy, s.Comment, s.FinishedAt = user, comment, now.UTC()
+		if approve {
+			s.Status, s.Message = StepSucceeded, "approved by "+user
+		} else {
+			s.Status, s.Message = StepFailed, "rejected by "+user
+		}
+		return nil
+	}
+	return ErrNotWaiting
 }
 
 // failedHard reports a step failure that dependants and the Run must not
@@ -266,7 +351,7 @@ func failedHard(s StepState, def Step) bool {
 // again; succeeded steps and their values are kept. The run's snapshot is
 // reused, so later edits of the Stream do not apply.
 func (r *Run) retry(user string, now time.Time) error {
-	if r.Status == RunRunning {
+	if RunActive(r.Status) {
 		return fmt.Errorf("%w: it is still running", ErrNotRetryable)
 	}
 	if len(r.Attempts)+1 >= MaxAttempts {
@@ -300,5 +385,8 @@ func (r *Run) retry(user string, now time.Time) error {
 	r.Status, r.Message, r.FinishedAt = RunRunning, "", time.Time{}
 	r.CancelRequested, r.CancelledBy = false, ""
 	r.RetriedBy, r.RetriedAt = user, now.UTC()
+	if r.Lock != "" {
+		r.Status, r.QueuedAt, r.BlockedBy = RunQueued, now.UTC(), ""
+	}
 	return nil
 }
