@@ -8,6 +8,8 @@ repositories (GitHub Actions, GitLab CI), pick a branch, start a pipeline,
 follow its jobs and logs, and deploy a built image the GitOps way (a commit to
 the app-of-apps repo).
 
+See the [screenshots](docs/screenshots.md).
+
 > Status: phase 4 and Streams. Connections (GitHub and GitLab), branches, starting
 > pipelines with parameters, run status and jobs, cancel and rerun,
 > container images per branch (DigitalOcean, Google Artifact Registry and OCI
