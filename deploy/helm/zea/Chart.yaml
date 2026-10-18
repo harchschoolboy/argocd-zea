@@ -7,6 +7,8 @@ appVersion: "0.4.0"
 home: https://github.com/harchschoolboy/argocd-zea
 sources:
   - https://github.com/harchschoolboy/argocd-zea
+annotations:
+  artifacthub.io/license: Apache-2.0
 keywords:
   - argocd
   - argo-cd-extension

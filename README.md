@@ -751,3 +751,12 @@ Releases are built by GitHub Actions on `v*` tags (`v1.2.3` -> version
 GitHub creates new ghcr packages as private. After the first release, set
 both packages (`argocd-zea-backend` and `charts/zea`) to **Public** in the
 package settings, otherwise anonymous pulls fail.
+
+## Security
+
+To report a vulnerability, see [SECURITY.md](SECURITY.md). Do not open a
+public issue.
+
+## License
+
+Zea is licensed under the [Apache License 2.0](LICENSE).
