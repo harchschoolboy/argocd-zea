@@ -107,9 +107,15 @@ func TestGitLabValidate(t *testing.T) {
 	for _, c := range []*connections.Connection{
 		{URL: "https://gitlab.com/proj", Credentials: map[string]string{KeyToken: "t"}},
 		{URL: "https://gitlab.com/g/p"},
+		// A trigger token alone cannot read the project.
+		{URL: "https://gitlab.com/g/p", Credentials: map[string]string{KeyTriggerToken: "glptt"}},
 	} {
 		if p.Validate(c) == nil {
 			t.Errorf("%+v should fail", c)
 		}
+	}
+	ok := &connections.Connection{URL: "https://gitlab.com/g/p", Credentials: map[string]string{KeyToken: "t", KeyTriggerToken: "glptt"}}
+	if err := p.Validate(ok); err != nil {
+		t.Errorf("token with trigger token: %v", err)
 	}
 }

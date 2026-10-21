@@ -315,9 +315,9 @@ with user, Connection, pipeline, ref and parameter names (not values).
 
 | | |
 |-|-|
-| Auth | Project Access Token (one project, role Developer, scope `api`) or Group Access Token; `read_api` + trigger token for trigger-only setups |
+| Auth | Project Access Token (one project, role Developer, scope `api`) or Group Access Token; or `read_api` (Reporter) plus an optional pipeline trigger token (`triggerToken`) for starting pipelines |
 | Branches | `GET /projects/:id/repository/branches` |
-| Trigger | `POST /projects/:id/pipeline` with `{ref, variables, inputs}` - returns the pipeline |
+| Trigger | `POST /projects/:id/pipeline` with `{ref, variables, inputs}` - returns the pipeline. With a trigger token: `POST /projects/:id/trigger/pipeline` with `{token, ref, variables: {KEY: value}, inputs}` and no `PRIVATE-TOKEN`; the pipeline runs as the token owner, cancel and retry still use the access token |
 | Runs | `GET /projects/:id/pipelines?ref=` |
 | Status | `GET /projects/:id/pipelines/:pid`, `GET .../pipelines/:pid/jobs` |
 | Logs | `GET /projects/:id/jobs/:jid/trace` - live, incremental |

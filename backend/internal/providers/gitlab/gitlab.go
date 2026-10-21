@@ -19,6 +19,10 @@ const ID = "gitlab"
 // KeyToken is the credential key for the access token.
 const KeyToken = "token"
 
+// KeyTriggerToken is the optional pipeline trigger token. When set,
+// pipelines are started with it; the access token is then only used to read.
+const KeyTriggerToken = "triggerToken"
+
 const (
 	providerName      = "GitLab"
 	perPage           = 100
@@ -53,9 +57,18 @@ func (p *Provider) Info() providers.Info {
 			{
 				ID:    "token",
 				Label: "Access token",
-				Help:  "Project access token with the Developer role and the api scope.",
+				Help: "Project access token. Browsing and following pipelines need the read_api scope (Reporter role); " +
+					"starting, cancelling and retrying need the api scope and the Developer role, " +
+					"unless pipelines are started with a trigger token.",
 				Fields: []providers.CredentialField{
 					{Key: KeyToken, Label: "Token", Secret: true},
+					{
+						Key:      KeyTriggerToken,
+						Label:    "Pipeline trigger token",
+						Help:     "Optional (Settings > CI/CD > Pipeline trigger tokens). When set, pipelines are started with it, as the token owner; the access token then only needs read_api. Cancel and retry still use the access token.",
+						Secret:   true,
+						Optional: true,
+					},
 				},
 			},
 		},

@@ -54,7 +54,7 @@ prints a ready-to-merge values snippet for the argo-cd chart.
   `argocd-server` to `github.com` to download the UI extension at startup.
 
 In the commands below the Argo CD namespace is `argocd`, the Helm release and
-the anchor Application are both called `zea`, and the release is `v0.5.0`.
+the anchor Application are both called `zea`, and the release is `v0.5.1`.
 
 ### Step 1. Install the backend
 
@@ -107,7 +107,7 @@ set `image.tag`.
 #### Option B: with the Helm CLI
 
 ```bash
-helm install zea oci://ghcr.io/harchschoolboy/charts/zea --version 0.5.0 \
+helm install zea oci://ghcr.io/harchschoolboy/charts/zea --version 0.5.1 \
   -n argocd \
   --set anchorApplication=argocd:<existing-app> \
   --set 'admins.users={admin}'
@@ -158,11 +158,11 @@ server:
           - name: EXTENSION_NAME
             value: zea
           - name: EXTENSION_VERSION
-            value: v0.5.0
+            value: v0.5.1
           - name: EXTENSION_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.5.0/extension-zea.tar.gz
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.5.1/extension-zea.tar.gz
           - name: EXTENSION_CHECKSUM_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.5.0/extension-zea_checksums.txt
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.5.1/extension-zea_checksums.txt
 
 configs:
   params:
@@ -250,11 +250,11 @@ one Zea installation.
                - name: EXTENSION_NAME
                  value: zea
                - name: EXTENSION_VERSION
-                 value: v0.5.0
+                 value: v0.5.1
                - name: EXTENSION_URL
-                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.5.0/extension-zea.tar.gz
+                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.5.1/extension-zea.tar.gz
                - name: EXTENSION_CHECKSUM_URL
-                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.5.0/extension-zea_checksums.txt
+                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.5.1/extension-zea_checksums.txt
              securityContext:
                runAsNonRoot: true
                runAsUser: 1000
@@ -387,6 +387,15 @@ repository, with Actions read and write and Contents read.
 scope `api` and role Developer. Use Maintainer if pipelines have to run on
 protected branches that Developers cannot push to. For self-managed GitLab
 served under a sub-path, set the API URL (`https://host/gitlab/api/v4`).
+
+Optionally add a **pipeline trigger token** (Project -> Settings -> CI/CD ->
+Pipeline trigger tokens). Zea then starts pipelines with it, and the access
+token only needs scope `read_api` and role Reporter (branches, pipeline files,
+runs and logs). Pipelines started this way run as the owner of the trigger
+token, so that user needs access to the branch. Cancel and retry still use
+the access token and need `api`. Passing `spec:inputs` through the trigger
+API needs GitLab 17.10 or later. Leave the trigger token empty when the access
+token may start pipelines itself or when the Connection is only used to read.
 
 ### Running pipelines
 
@@ -705,7 +714,7 @@ security contexts, scheduling).
 | `GitHub API returned 401` / `GitLab API returned 401` | Credentials of the Connection; use **Test** in the Connection view |
 | `GitHub API returned 403` on Run, Cancel or Rerun | The GitHub App or token needs **Actions** read and write (an App owner must also accept the new permissions on the installation) |
 | `Unexpected inputs provided` (GitHub) | The workflow file on the branch changed after the form was opened; close and reopen the form |
-| `GitLab API returned 403` on Run | Token role (Developer or higher; Maintainer for protected branches) and the "Minimum role to use pipeline variables" project setting |
+| `GitLab API returned 403` on Run | Token role (Developer or higher; Maintainer for protected branches) and the "Minimum role to use pipeline variables" project setting. A `read_api` token cannot start pipelines: add a pipeline trigger token to the Connection |
 | `DigitalOcean API returned 401` / `403` | The registry token is invalid or lacks `registry:read`; **Test** on the Registries page |
 | `registry does not support the catalog API` | The OCI registry has no `/v2/_catalog` (GHCR, Docker Hub); not supported yet |
 | `no Google credentials found for the Zea pod` | Workload identity is not set up for `argocd/zea` (see [Cloud registries](#cloud-registries)); retried after a minute |

@@ -61,8 +61,9 @@ const pipelineFixture = `{"id":900,"iid":12,"name":"Deploy","ref":"main","sha":"
 "web_url":"https://x/-/pipelines/900","created_at":"2026-01-01T10:00:00Z","updated_at":"2026-01-01T10:01:00Z","user":{"username":"bot"}}`
 
 type fakeRuns struct {
-	created map[string]any
-	posted  []string
+	created   map[string]any
+	triggered map[string]any
+	posted    []string
 	// gqlNulls is how many GraphQL calls answer with a cache miss.
 	gqlNulls int
 	gqlError bool
@@ -107,11 +108,21 @@ func TestFileVariables(t *testing.T) {
 
 func (f *fakeRuns) server(t *testing.T) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path, query, _ := strings.Cut(r.RequestURI, "?")
+		if r.Method == http.MethodPost && path == projectPath+"/trigger/pipeline" {
+			// The trigger API authenticates only with the token in the body.
+			if r.Header.Get("PRIVATE-TOKEN") != "" {
+				t.Error("trigger API got PRIVATE-TOKEN")
+			}
+			_ = json.NewDecoder(r.Body).Decode(&f.triggered)
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, pipelineFixture)
+			return
+		}
 		if r.Header.Get("PRIVATE-TOKEN") != "glpat" {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		path, query, _ := strings.Cut(r.RequestURI, "?")
 		switch {
 		case r.Method == http.MethodPost && path == "/api/graphql":
 			var req struct {
@@ -218,6 +229,25 @@ func TestGitLabRuns(t *testing.T) {
 	}
 	if f.gqlCalls != calls {
 		t.Fatal("trigger queried prefilled variables")
+	}
+
+	// With a trigger token the pipeline is started through the trigger API.
+	f.created = nil
+	tc := *c
+	tc.Credentials = map[string]string{KeyToken: "glpat", KeyTriggerToken: "glptt-x"}
+	run, err = p.Trigger(ctx, &tc, providers.TriggerRequest{
+		PipelineID: projectPipelineID,
+		Ref:        "main",
+		Variables:  map[string]string{"APP_BRANCH": "dev"},
+		Inputs:     map[string]string{"debug": "true"},
+	})
+	if err != nil || run.ID != "900" || f.created != nil {
+		t.Fatalf("trigger token: %+v %v created=%v", run, err, f.created)
+	}
+	body, _ = json.Marshal(f.triggered)
+	want = `{"inputs":{"debug":true},"ref":"main","token":"glptt-x","variables":{"APP_BRANCH":"dev"}}`
+	if string(body) != want {
+		t.Fatalf("trigger body =\n%s\nwant\n%s", body, want)
 	}
 	for _, bad := range []providers.TriggerRequest{
 		{PipelineID: projectPipelineID, Ref: "main", Inputs: map[string]string{"unknown": "1"}},

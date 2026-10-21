@@ -385,7 +385,8 @@ type variableJSON struct {
 	VariableType string `json:"variable_type"`
 }
 
-// Trigger creates a pipeline at ref with free variables and typed inputs.
+// Trigger creates a pipeline at ref with free variables and typed inputs,
+// with the pipeline trigger token when the Connection has one.
 func (p *Provider) Trigger(ctx context.Context, c *connections.Connection, req providers.TriggerRequest) (*providers.Run, error) {
 	if err := checkPipelineID(req.PipelineID); err != nil {
 		return nil, err
@@ -427,11 +428,41 @@ func (p *Provider) Trigger(ctx context.Context, c *connections.Connection, req p
 		return nil, err
 	}
 	var pl pipelineJSON
-	if _, err := p.do(ctx, c, providers.Request{Method: http.MethodPost, URL: t.projectURL("/pipeline"), Body: body, Out: &pl}); err != nil {
+	if tok := c.Credentials[KeyTriggerToken]; tok != "" {
+		if err := p.triggerWithToken(ctx, t, tok, body, &pl); err != nil {
+			return nil, err
+		}
+	} else if _, err := p.do(ctx, c, providers.Request{Method: http.MethodPost, URL: t.projectURL("/pipeline"), Body: body, Out: &pl}); err != nil {
 		return nil, err
 	}
 	run := pl.toRun()
 	return &run, nil
+}
+
+// triggerWithToken starts a pipeline through the trigger API. It takes
+// variables as a map and authenticates only with the trigger token.
+func (p *Provider) triggerWithToken(ctx context.Context, t *target, token string, body map[string]any, out *pipelineJSON) error {
+	tb := map[string]any{"token": token, "ref": body["ref"]}
+	if vars, ok := body["variables"].([]variableJSON); ok {
+		m := make(map[string]string, len(vars))
+		for _, v := range vars {
+			m[v.Key] = v.Value
+		}
+		tb["variables"] = m
+	}
+	if in, ok := body["inputs"]; ok {
+		tb["inputs"] = in
+	}
+	h := http.Header{}
+	h.Set("Accept", "application/json")
+	_, err := providers.Do(ctx, p.client, providerName, providers.Request{
+		Method: http.MethodPost,
+		URL:    t.projectURL("/trigger/pipeline"),
+		Header: h,
+		Body:   tb,
+		Out:    out,
+	})
+	return err
 }
 
 // typedInputs converts form values to the JSON types GitLab expects.
