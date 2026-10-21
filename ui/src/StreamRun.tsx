@@ -13,9 +13,9 @@ import {
   StreamStatusLabel,
   ValueField,
 } from './StreamFields';
-import { ConnData, DEFAULT_APPROVAL_TIMEOUT, isApproval, isArgoCD } from './streamModel';
+import { boolOn, boolValues, ConnData, DEFAULT_APPROVAL_TIMEOUT, isApproval, isArgoCD, optionLabel, paramLabel } from './streamModel';
 import { BranchPicker } from './BranchPicker';
-import { Branch, can, ImagesResult, Me, Stream, StreamAttempt, StreamRun, StreamRunStatus, StreamRunStep, StreamSpec, StreamStep } from './types';
+import { Branch, can, ImagesResult, Me, Stream, StreamAttempt, StreamParam, StreamRun, StreamRunStatus, StreamRunStep, StreamSpec, StreamStep } from './types';
 import { COLORS, ErrorText, Muted, useLoad } from './ui';
 
 const RUN_POLL_MS = 4_000;
@@ -637,12 +637,118 @@ const ImageParam = ({ client, stream, connection, value, onChange }: BranchParam
   );
 };
 
+// Switch is an on/off toggle.
+export const Switch = ({ on, onChange, disabled }: { on: boolean; onChange: (on: boolean) => void; disabled?: boolean }) => (
+  <span
+    role='switch'
+    aria-checked={on}
+    tabIndex={disabled ? -1 : 0}
+    onClick={() => !disabled && onChange(!on)}
+    onKeyDown={e => {
+      if (!disabled && (e.key === ' ' || e.key === 'Enter')) {
+        e.preventDefault();
+        onChange(!on);
+      }
+    }}
+    style={{
+      display: 'inline-block',
+      position: 'relative',
+      width: 34,
+      height: 18,
+      borderRadius: 9,
+      verticalAlign: 'middle',
+      background: on ? COLORS.ok : COLORS.border,
+      cursor: disabled ? 'default' : 'pointer',
+      opacity: disabled ? 0.6 : 1,
+      transition: 'background 0.15s',
+    }}>
+    <span
+      style={{
+        position: 'absolute',
+        top: 2,
+        left: on ? 18 : 2,
+        width: 14,
+        height: 14,
+        borderRadius: '50%',
+        background: '#fff',
+        boxShadow: '0 1px 2px rgba(0, 0, 0, 0.3)',
+        transition: 'left 0.15s',
+      }}
+    />
+  </span>
+);
+
+const radioRow: React.CSSProperties = { display: 'flex', flexWrap: 'wrap', gap: '0.4em 1.2em' };
+
+const Radios = ({ name, value, options, onChange }: { name: string; value: string; options: [string, string][]; onChange: (v: string) => void }) => (
+  <div style={radioRow}>
+    {options.map(([v, label]) => (
+      <label key={v} style={{ cursor: 'pointer', fontWeight: 400 }}>
+        <input type='radio' name={name} value={v} checked={value === v} onChange={() => onChange(v)} /> {label}
+      </label>
+    ))}
+  </div>
+);
+
+// ParamInput is the run form control of a boolean or choice param. A
+// boolean value is "true" or "false" here; the backend passes on the
+// param's own values.
+export const ParamInput = ({ param: p, value, onChange }: { param: StreamParam; value: string; onChange: (v: string) => void }) => {
+  const field = `zea-param-${p.name}`;
+  if (p.type === 'boolean') {
+    const on = value === 'true';
+    const [onValue, offValue] = boolValues(p);
+    switch (p.widget) {
+      case 'switch':
+        return (
+          <label style={{ cursor: 'pointer', fontWeight: 400 }}>
+            <Switch on={on} onChange={v => onChange(v ? 'true' : 'false')} /> {on ? onValue : offValue}
+          </label>
+        );
+      case 'radio':
+        return <Radios name={field} value={on ? 'true' : 'false'} options={[['true', onValue], ['false', offValue]]} onChange={onChange} />;
+      case 'select':
+        return (
+          <select className='argo-field' style={{ width: '100%' }} value={on ? 'true' : 'false'} onChange={e => onChange(e.target.value)}>
+            <option value='true'>{onValue}</option>
+            <option value='false'>{offValue}</option>
+          </select>
+        );
+    }
+    return (
+      <label style={{ cursor: 'pointer', fontWeight: 400 }}>
+        <input type='checkbox' checked={on} onChange={e => onChange(e.target.checked ? 'true' : 'false')} /> {on ? onValue : offValue}
+      </label>
+    );
+  }
+  const options = p.options ?? [];
+  if (p.widget === 'radio') {
+    const items: [string, string][] = options.map(o => [o, optionLabel(p, o)]);
+    return <Radios name={field} value={value} options={p.required ? items : [['', '(empty)'], ...items]} onChange={onChange} />;
+  }
+  return (
+    <select className='argo-field' style={{ width: '100%' }} value={value} onChange={e => onChange(e.target.value)}>
+      {!p.required && <option value=''>(empty)</option>}
+      {options.map(o => (
+        <option key={o} value={o}>
+          {optionLabel(p, o)}
+        </option>
+      ))}
+    </select>
+  );
+};
+
+// initialValue is the form value of a param: the earlier run's value or
+// the default; booleans become "true" / "false".
+function initialValue(p: StreamParam, earlier: string | undefined): string {
+  const v = earlier ?? p.default ?? '';
+  return p.type === 'boolean' ? (boolOn(p, v) ? 'true' : 'false') : v;
+}
+
 // StreamRunForm asks for the params of a Stream and starts it.
 export const StreamRunForm = ({ client, stream, initial, title, onStarted, onClose }: RunFormProps) => {
   const [values, setValues] = React.useState<Record<string, string>>(() =>
-    Object.fromEntries(
-      stream.params.map(p => [p.name, initial?.[p.name] ?? p.default ?? (p.type === 'boolean' ? 'false' : '')]),
-    ),
+    Object.fromEntries(stream.params.map(p => [p.name, initialValue(p, initial?.[p.name])])),
   );
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState('');
@@ -652,7 +758,7 @@ export const StreamRunForm = ({ client, stream, initial, title, onStarted, onClo
     e.preventDefault();
     const missing = stream.params.find(p => p.required && (values[p.name] ?? '').trim() === '');
     if (missing) {
-      setError(`"${missing.name}" is required.`);
+      setError(`"${paramLabel(missing)}" is required.`);
       return;
     }
     setBusy(true);
@@ -672,21 +778,14 @@ export const StreamRunForm = ({ client, stream, initial, title, onStarted, onClo
       </div>
       {stream.params.length === 0 && <Muted>This stream has no params.</Muted>}
       {stream.params.map(p => (
-        <Field key={p.name} label={<code>{p.name}</code>} hint={p.type} required={p.required} help={p.description}>
-          {p.type === 'boolean' ? (
-            <label style={{ cursor: 'pointer' }}>
-              <input type='checkbox' checked={values[p.name] === 'true'} onChange={e => set(p.name, e.target.checked ? 'true' : 'false')} />{' '}
-              {values[p.name] === 'true' ? 'true' : 'false'}
-            </label>
-          ) : p.type === 'choice' ? (
-            <select className='argo-field' style={{ width: '100%' }} value={values[p.name] ?? ''} onChange={e => set(p.name, e.target.value)}>
-              {!p.required && <option value=''>(empty)</option>}
-              {(p.options ?? []).map(o => (
-                <option key={o} value={o}>
-                  {o}
-                </option>
-              ))}
-            </select>
+        <Field
+          key={p.name}
+          label={p.label?.trim() ? p.label : <code>{p.name}</code>}
+          hint={p.label?.trim() ? undefined : p.type}
+          required={p.required}
+          help={p.description}>
+          {p.type === 'boolean' || p.type === 'choice' ? (
+            <ParamInput param={p} value={values[p.name] ?? ''} onChange={v => set(p.name, v)} />
           ) : p.type === 'branch' ? (
             <BranchParam client={client} stream={stream.name} connection={p.connection} value={values[p.name] ?? ''} onChange={v => set(p.name, v)} />
           ) : p.type === 'image' ? (

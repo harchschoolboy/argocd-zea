@@ -240,9 +240,12 @@ func ResolveParams(defs []Param, given map[string]string) (map[string]string, er
 			if v == "" {
 				v = "false"
 			}
-			if v != "true" && v != "false" {
-				return nil, fmt.Errorf("%w: param %q must be true or false", ErrInvalidParams, p.Name)
+			b, ok := p.boolValue(v)
+			if !ok {
+				on, off := p.BoolValues()
+				return nil, fmt.Errorf("%w: param %q must be %s or %s", ErrInvalidParams, p.Name, on, off)
 			}
+			v = b
 		case ParamChoice:
 			if v != "" && !contains(p.Options, v) {
 				return nil, fmt.Errorf("%w: param %q must be one of %s", ErrInvalidParams, p.Name, strings.Join(p.Options, ", "))

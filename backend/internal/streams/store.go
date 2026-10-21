@@ -348,10 +348,10 @@ func (m *MemoryStore) Delete(_ context.Context, name string) error {
 // clone deep-copies a Stream.
 func clone(st *Stream) *Stream {
 	cp := *st
-	cp.Spec = Spec{Description: st.Description}
 	cp.Params = append([]Param(nil), st.Params...)
 	for i := range cp.Params {
 		cp.Params[i].Options = append([]string(nil), st.Params[i].Options...)
+		cp.Params[i].OptionLabels = copyMap(st.Params[i].OptionLabels)
 	}
 	cp.Stages = make([]Stage, len(st.Stages))
 	for i, stage := range st.Stages {

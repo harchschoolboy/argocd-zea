@@ -296,13 +296,24 @@ export type StreamParamType = 'string' | 'choice' | 'boolean' | 'branch' | 'imag
 
 // StreamParam is asked when a Stream starts and referenced in steps as
 // ${{ params.<name> }}.
+export type ParamWidget = '' | 'checkbox' | 'switch' | 'radio' | 'select';
+
 export interface StreamParam {
   name: string;
+  // Shown in the run form instead of the name.
+  label?: string;
   type: StreamParamType | string;
   description?: string;
   default?: string;
   required?: boolean;
   options?: string[];
+  // Choice option (key) -> text shown in the run form.
+  optionLabels?: Record<string, string>;
+  // How the run form shows a boolean or choice param.
+  widget?: ParamWidget | string;
+  // Values a boolean passes on; empty means true / false.
+  trueValue?: string;
+  falseValue?: string;
   // Lists the branches of a branch param.
   connection?: string;
 }
@@ -347,6 +358,8 @@ export interface StreamStage {
 
 export interface StreamSpec {
   description?: string;
+  // Groups Streams into tabs on the Streams page.
+  category?: string;
   // Runs with the same rendered lock (of any stream) run one at a time.
   lock?: string;
   params: StreamParam[];

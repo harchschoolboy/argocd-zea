@@ -64,20 +64,6 @@ const LastStreamRun = ({ stream, runs }: { stream: string; runs: { data?: Stream
   );
 };
 
-// paramDefaults are the values a run started without input gets, or
-// undefined when a required param has no default.
-function paramDefaults(stream: Stream): Record<string, string> | undefined {
-  const out: Record<string, string> = {};
-  for (const p of stream.params) {
-    const v = p.default ?? (p.type === 'boolean' ? 'false' : '');
-    if (p.required && v.trim() === '') {
-      return undefined;
-    }
-    out[p.name] = v;
-  }
-  return out;
-}
-
 const StreamCard = ({ client, stream }: { client: ZeaClient; stream: Stream }) => {
   const steps = stream.stages.reduce((n, s) => n + s.steps.length, 0);
   const runs = usePoll(
@@ -90,22 +76,21 @@ const StreamCard = ({ client, stream }: { client: ZeaClient; stream: Stream }) =
   const [error, setError] = React.useState('');
   const blocked = stream.problems.length > 0;
 
+  const parameterized = stream.params.length > 0;
+
   const run = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    const defaults = paramDefaults(stream);
-    if (!defaults) {
-      // Required params without defaults need the run form.
+    if (parameterized) {
       navigate({ view: 'streams', stream: stream.name, mode: 'run' });
       return;
     }
-    const lines = Object.entries(defaults).map(([k, v]) => `  ${k} = ${v === '' ? '(empty)' : v}`);
-    if (!window.confirm(`Run stream ${stream.name}?${lines.length > 0 ? `\n\nParams:\n${lines.join('\n')}` : ''}`)) {
+    if (!window.confirm(`Run stream ${stream.name}?`)) {
       return;
     }
     setBusy(true);
     setError('');
     try {
-      await client.startStream(stream.name, defaults);
+      await client.startStream(stream.name, {});
       runs.reload();
     } catch (err) {
       setError(describeError(err));
@@ -127,9 +112,9 @@ const StreamCard = ({ client, stream }: { client: ZeaClient; stream: Stream }) =
             className='argo-button argo-button--base'
             style={{ flex: '0 0 auto' }}
             disabled={busy || blocked}
-            title={blocked ? 'Fix the problems first' : paramDefaults(stream) ? 'Run with the default params' : 'Some params need a value'}
+            title={blocked ? 'Fix the problems first' : parameterized ? 'Run with parameters' : 'Run'}
             onClick={run}>
-            <i className={busy ? 'fa fa-circle-notch fa-spin' : 'fa fa-play'} /> Run
+            <i className={busy ? 'fa fa-circle-notch fa-spin' : parameterized ? 'fa fa-sliders-h' : 'fa fa-play'} /> {parameterized ? 'Run...' : 'Run'}
           </button>
         )}
       </div>
@@ -248,10 +233,36 @@ const ExportPanel = ({ client, stream, onClose }: { client: ZeaClient; stream: s
   );
 };
 
-const StreamList = ({ client, me }: { client: ZeaClient; me: Me }) => {
+// OTHER is the tab of Streams without a category.
+const OTHER = '~other';
+
+const CategoryTab = ({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) => (
+  <a
+    onClick={onClick}
+    style={{
+      cursor: 'pointer',
+      padding: '0.4em 0.2em',
+      marginBottom: -1,
+      whiteSpace: 'nowrap',
+      fontWeight: active ? 600 : undefined,
+      color: active ? undefined : COLORS.muted,
+      borderBottom: `2px solid ${active ? 'currentColor' : 'transparent'}`,
+    }}>
+    {children}
+  </a>
+);
+
+const StreamList = ({ client, me, tab }: { client: ZeaClient; me: Me; tab?: string }) => {
   const [list, reload] = useLoad(() => client.streams(), [client]);
   const canCreate = can(me.permissions.streams, 'edit');
   const [importing, setImporting] = React.useState(false);
+  const all = list.state === 'ok' ? list.data : [];
+  const categories = [...new Set(all.map(s => s.category?.trim() ?? '').filter(c => c !== ''))].sort((a, b) => a.localeCompare(b));
+  const uncategorized = all.filter(s => !s.category?.trim()).length;
+  const known = tab === OTHER ? uncategorized > 0 : !!tab && categories.includes(tab);
+  const current = known ? tab : undefined;
+  const shown = all.filter(s => !current || (current === OTHER ? !s.category?.trim() : s.category?.trim() === current));
+  const count = (n: number) => <span style={{ fontWeight: 400, fontSize: '0.85em', color: COLORS.muted }}> {n}</span>;
   return (
     <>
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', marginBottom: '1em' }}>
@@ -283,9 +294,27 @@ const StreamList = ({ client, me }: { client: ZeaClient; me: Me }) => {
           </div>
         </div>
       )}
+      {categories.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0 1.5em', borderBottom: `1px solid ${COLORS.border}`, marginBottom: '1em' }}>
+          <CategoryTab active={!current} onClick={() => navigate({ view: 'streams' })}>
+            All{count(all.length)}
+          </CategoryTab>
+          {categories.map(c => (
+            <CategoryTab key={c} active={current === c} onClick={() => navigate({ view: 'streams', tab: c })}>
+              {c}
+              {count(all.filter(s => s.category?.trim() === c).length)}
+            </CategoryTab>
+          ))}
+          {uncategorized > 0 && (
+            <CategoryTab active={current === OTHER} onClick={() => navigate({ view: 'streams', tab: OTHER })}>
+              Without category{count(uncategorized)}
+            </CategoryTab>
+          )}
+        </div>
+      )}
       {list.state === 'ok' && list.data.length > 0 && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: '1em' }}>
-          {list.data.map(s => (
+          {shown.map(s => (
             <StreamCard key={s.name} client={client} stream={s} />
           ))}
         </div>
@@ -420,10 +449,16 @@ const StreamDetail = ({ client, data, me, name, openRun }: { client: ZeaClient; 
 
 const EditorPage = ({ client, data, name }: { client: ZeaClient; data: ConnData; name?: string }) => {
   const [loaded] = useLoad(
-    async (): Promise<{ stream?: Stream; connections: Connection[] }> => {
-      const [stream, connections] = await Promise.all([name ? client.stream(name) : Promise.resolve(undefined), client.connections()]);
+    async (): Promise<{ stream?: Stream; connections: Connection[]; categories: string[] }> => {
+      const [stream, connections, streams] = await Promise.all([
+        name ? client.stream(name) : Promise.resolve(undefined),
+        client.connections(),
+        // Only offers existing categories; the editor works without them.
+        client.streams().catch(() => [] as Stream[]),
+      ]);
+      const categories = [...new Set(streams.map(s => s.category?.trim() ?? '').filter(c => c !== ''))].sort((a, b) => a.localeCompare(b));
       // A stream can only use connections the user may run.
-      return { stream, connections: connections.filter(c => can(c.actions, 'run')) };
+      return { stream, connections: connections.filter(c => can(c.actions, 'run')), categories };
     },
     [client, name],
   );
@@ -433,7 +468,7 @@ const EditorPage = ({ client, data, name }: { client: ZeaClient; data: ConnData;
   if (loaded.state === 'error') {
     return <ErrorText text={loaded.error} />;
   }
-  const { stream, connections } = loaded.data;
+  const { stream, connections, categories } = loaded.data;
   if (stream && !can(stream.actions, 'edit')) {
     return (
       <>
@@ -460,6 +495,7 @@ const EditorPage = ({ client, data, name }: { client: ZeaClient; data: ConnData;
       data={data}
       connections={connections}
       existing={stream}
+      categories={categories}
       onSaved={(s, created) => created && navigate({ view: 'streams', stream: s.name, mode: 'edit' })}
       onClose={() => navigate(stream ? { view: 'streams', stream: stream.name } : { view: 'streams' })}
     />
@@ -482,5 +518,5 @@ export const StreamsView = ({ client, me }: { client: ZeaClient; me: Me }) => {
     }
     return <StreamDetail key={route.stream} client={client} data={data} me={me} name={route.stream} openRun={route.mode === 'run'} />;
   }
-  return <StreamList client={client} me={me} />;
+  return <StreamList client={client} me={me} tab={route.tab} />;
 };

@@ -17,6 +17,7 @@ import {
   allSteps,
   APPROVAL,
   ARGOCD,
+  boolValues,
   ConnData,
   DEFAULT_APPROVAL_TIMEOUT,
   DEFAULT_ARGO_TIMEOUT,
@@ -29,6 +30,8 @@ import {
   moveStage,
   moveStep,
   PARAM_NAME_RE,
+  paramFromInput,
+  paramRef,
   positionOf,
   previousStageSteps,
   referencesFor,
@@ -44,7 +47,7 @@ import {
   STREAM_NAME_RE,
   uniqueStepId,
 } from './streamModel';
-import { Connection, Stream, StreamParam, StreamProblem, StreamSpec, StreamStep } from './types';
+import { Connection, RunInput, Stream, StreamParam, StreamProblem, StreamSpec, StreamStep } from './types';
 import { COLORS, ErrorText, Muted, ProviderBadge, useLoad } from './ui';
 
 const ACCENT = '#0dadea';
@@ -183,10 +186,24 @@ interface StepPanelProps {
   problems: StreamProblem[];
   readOnly?: boolean;
   onChange: (next: StreamStep) => void;
+  // Adds a param (when given) and changes the step in one edit.
+  onMakeParam: (param: StreamParam | undefined, next: StreamStep) => void;
   onRename: (id: string) => void;
   onDelete: () => void;
   onClose: () => void;
 }
+
+// MakeParam turns a pipeline input into a Stream param asked at start.
+const MakeParam = ({ value, onClick }: { value: string; onClick: () => void }) =>
+  /^\s*\$\{\{\s*params\.[A-Za-z0-9_]+\s*\}\}\s*$/.test(value) ? null : (
+    <button
+      className='argo-button argo-button--base-o'
+      style={{ flex: '0 0 auto' }}
+      title='Ask for this value when the stream starts: adds a param and uses it here'
+      onClick={onClick}>
+      <i className='fa fa-sliders-h' />
+    </button>
+  );
 
 const WHEN_HELP: Record<string, string> = {
   success: 'Runs when the steps it waits for succeeded.',
@@ -194,8 +211,12 @@ const WHEN_HELP: Record<string, string> = {
   always: 'Runs after the steps it waits for, whatever their result.',
 };
 
-const StepPanel = ({ data, spec, step, pos, connections, problems, onChange, onRename, onDelete, onClose }: StepPanelProps) => {
+const StepPanel = ({ data, spec, step, pos, connections, problems, onChange, onMakeParam, onRename, onDelete, onClose }: StepPanelProps) => {
   const set = (patch: Partial<StreamStep>) => onChange({ ...step, ...patch });
+  const makeParam = (i: RunInput, kind: 'inputs' | 'variables') => {
+    const [param, name] = paramFromInput(spec, i, step.connection, isBranchInput(i));
+    onMakeParam(param, { ...step, [kind]: setKey(step[kind], i.name, paramRef(name)) });
+  };
   const approval = isApproval(step);
   const argocd = isArgoCD(step);
   const pipelineStep = !approval && !argocd;
@@ -433,14 +454,19 @@ const StepPanel = ({ data, spec, step, pos, connections, problems, onChange, onR
               {fd && fd.inputs.length === 0 && prefilled.length === 0 && !fd.variables && <Muted>This pipeline has no inputs.</Muted>}
               {fd?.inputs.map(i => (
                 <Field key={i.name} label={<code>{i.name}</code>} hint={i.type} required={i.required && !i.default} help={i.description}>
-                  <ValueField
-                    value={step.inputs?.[i.name] ?? ''}
-                    refs={refs}
-                    options={i.type === 'choice' ? i.options : i.type === 'boolean' ? ['true', 'false'] : undefined}
-                    branches={isBranchInput(i) ? bl : undefined}
-                    placeholder={i.default ? `default: ${i.default}` : ''}
-                    onChange={v => set({ inputs: setKey(step.inputs, i.name, v) })}
-                  />
+                  <div style={{ display: 'flex', gap: '0.3em', alignItems: 'flex-start' }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <ValueField
+                        value={step.inputs?.[i.name] ?? ''}
+                        refs={refs}
+                        options={i.type === 'choice' ? i.options : i.type === 'boolean' ? ['true', 'false'] : undefined}
+                        branches={isBranchInput(i) ? bl : undefined}
+                        placeholder={i.default ? `default: ${i.default}` : ''}
+                        onChange={v => set({ inputs: setKey(step.inputs, i.name, v) })}
+                      />
+                    </div>
+                    <MakeParam value={step.inputs?.[i.name] ?? ''} onClick={() => makeParam(i, 'inputs')} />
+                  </div>
                 </Field>
               ))}
               {(form.state === 'error' || extraInputs.length > 0) && (
@@ -459,14 +485,19 @@ const StepPanel = ({ data, spec, step, pos, connections, problems, onChange, onR
               )}
               {prefilled.map(p => (
                 <Field key={p.name} label={<code>{p.name}</code>} hint='variable' help={p.description}>
-                  <ValueField
-                    value={step.variables?.[p.name] ?? ''}
-                    refs={refs}
-                    options={p.options?.length ? p.options : undefined}
-                    placeholder={p.default ? `default: ${p.default}` : ''}
-                    mono
-                    onChange={v => set({ variables: setKey(step.variables, p.name, v) })}
-                  />
+                  <div style={{ display: 'flex', gap: '0.3em', alignItems: 'flex-start' }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <ValueField
+                        value={step.variables?.[p.name] ?? ''}
+                        refs={refs}
+                        options={p.options?.length ? p.options : undefined}
+                        placeholder={p.default ? `default: ${p.default}` : ''}
+                        mono
+                        onChange={v => set({ variables: setKey(step.variables, p.name, v) })}
+                      />
+                    </div>
+                    <MakeParam value={step.variables?.[p.name] ?? ''} onClick={() => makeParam(p, 'variables')} />
+                  </div>
                 </Field>
               ))}
               {(fd?.variables || freeVars.length > 0) && (
@@ -606,6 +637,17 @@ interface ParamRowProps {
   onDelete: () => void;
 }
 
+const BOOL_WIDGETS: [string, string][] = [
+  ['', 'checkbox'],
+  ['switch', 'switch'],
+  ['radio', 'on / off'],
+  ['select', 'dropdown'],
+];
+const CHOICE_WIDGETS: [string, string][] = [
+  ['', 'dropdown'],
+  ['radio', 'radio buttons'],
+];
+
 const parseOptions = (s: string) =>
   s
     .split(',')
@@ -634,8 +676,23 @@ const ParamRow = ({ data, param, connections, problems, onChange, onRename, onDe
       type,
       default: type === 'boolean' ? 'false' : type === param.type ? param.default : undefined,
       options: type === 'choice' ? param.options : undefined,
+      optionLabels: type === 'choice' ? param.optionLabels : undefined,
       connection: type === 'branch' || type === 'image' ? param.connection : undefined,
+      widget: type === param.type ? param.widget : undefined,
+      trueValue: type === 'boolean' ? param.trueValue : undefined,
+      falseValue: type === 'boolean' ? param.falseValue : undefined,
     });
+  const widgets = param.type === 'boolean' ? BOOL_WIDGETS : param.type === 'choice' ? CHOICE_WIDGETS : [];
+  const [onValue, offValue] = boolValues(param);
+  const setOptionLabel = (o: string, label: string) => {
+    const next = { ...(param.optionLabels ?? {}) };
+    if (label) {
+      next[o] = label;
+    } else {
+      delete next[o];
+    }
+    set({ optionLabels: Object.keys(next).length > 0 ? next : undefined });
+  };
 
   return (
     <div style={{ borderTop: `1px solid ${COLORS.border}`, padding: '0.5em 0' }}>
@@ -706,11 +763,21 @@ const ParamRow = ({ data, param, connections, problems, onChange, onRename, onDe
               value={param.default ?? ''}
               onChange={e => set({ default: e.target.value || undefined })}>
               {param.type === 'choice' && <option value=''>(none)</option>}
-              {(param.type === 'boolean' ? ['false', 'true'] : param.options ?? []).map(o => (
-                <option key={o} value={o}>
-                  {o}
-                </option>
-              ))}
+              {param.type === 'boolean' ? (
+                <>
+                  <option value='false'>off ({offValue})</option>
+                  <option value='true'>on ({onValue})</option>
+                  {param.default && param.default !== 'true' && param.default !== 'false' && (
+                    <option value={param.default}>{param.default}</option>
+                  )}
+                </>
+              ) : (
+                (param.options ?? []).map(o => (
+                  <option key={o} value={o}>
+                    {o}
+                  </option>
+                ))
+              )}
             </select>
           ) : (
             <ValueField
@@ -728,6 +795,79 @@ const ParamRow = ({ data, param, connections, problems, onChange, onRename, onDe
           <i className='fa fa-times' />
         </button>
       </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5em', alignItems: 'flex-end', marginTop: '0.4em' }}>
+        <div style={{ flex: '1 1 160px' }}>
+          <Help>Label in the start form</Help>
+          <input
+            className='argo-field'
+            style={{ width: '100%' }}
+            value={param.label ?? ''}
+            placeholder={param.name}
+            onChange={e => set({ label: e.target.value || undefined })}
+          />
+        </div>
+        {widgets.length > 0 && (
+          <div style={{ flex: '0 0 110px' }}>
+            <Help>Shown as</Help>
+            <select
+              className='argo-field'
+              style={{ width: '100%' }}
+              value={param.widget ?? ''}
+              onChange={e => set({ widget: (e.target.value || undefined) as StreamParam['widget'] })}>
+              {widgets.map(([v, l]) => (
+                <option key={v} value={v}>
+                  {l}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+        {param.type === 'boolean' && (
+          <>
+            <div style={{ flex: '0 1 110px' }}>
+              <Help>On value</Help>
+              <input
+                className='argo-field'
+                style={{ width: '100%', fontFamily: 'monospace' }}
+                value={param.trueValue ?? ''}
+                placeholder='true'
+                spellCheck={false}
+                onChange={e => set({ trueValue: e.target.value || undefined })}
+              />
+            </div>
+            <div style={{ flex: '0 1 110px' }}>
+              <Help>Off value</Help>
+              <input
+                className='argo-field'
+                style={{ width: '100%', fontFamily: 'monospace' }}
+                value={param.falseValue ?? ''}
+                placeholder='false'
+                spellCheck={false}
+                onChange={e => set({ falseValue: e.target.value || undefined })}
+              />
+            </div>
+          </>
+        )}
+      </div>
+      {param.type === 'choice' && (param.options ?? []).length > 0 && (
+        <div style={{ marginTop: '0.4em' }}>
+          <Help>Option labels (optional; the value sent to the pipeline stays the option)</Help>
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(80px, max-content) 1fr', gap: '0.3em 0.5em', alignItems: 'center' }}>
+            {(param.options ?? []).map(o => (
+              <React.Fragment key={o}>
+                <code style={ellipsis}>{o}</code>
+                <input
+                  className='argo-field'
+                  style={{ width: '100%' }}
+                  value={param.optionLabels?.[o] ?? ''}
+                  placeholder={o}
+                  onChange={e => setOptionLabel(o, e.target.value)}
+                />
+              </React.Fragment>
+            ))}
+          </div>
+        </div>
+      )}
       <input
         className='argo-field'
         style={{ width: '100%', marginTop: '0.4em' }}
@@ -806,11 +946,13 @@ interface EditorProps {
   data: ConnData;
   connections: Connection[];
   existing?: Stream;
+  // Categories of the other streams, offered in the category field.
+  categories?: string[];
   onSaved: (stream: Stream, created: boolean) => void;
   onClose: () => void;
 }
 
-export const StreamEditor = ({ client, data, connections, existing, onSaved, onClose }: EditorProps) => {
+export const StreamEditor = ({ client, data, connections, existing, categories, onSaved, onClose }: EditorProps) => {
   const [name, setName] = React.useState(existing?.name ?? '');
   const [spec, setSpec] = React.useState<StreamSpec>(() => (existing ? specOf(existing) : emptySpec()));
   const [version, setVersion] = React.useState(existing?.version ?? '');
@@ -1056,6 +1198,23 @@ export const StreamEditor = ({ client, data, connections, existing, onSaved, onC
               />
             </Field>
           </div>
+          <div style={{ flex: '0 1 200px' }}>
+            <Field label='Category' help='Streams are grouped by category in tabs on the Streams page.'>
+              <input
+                className='argo-field'
+                style={{ width: '100%' }}
+                value={spec.category ?? ''}
+                list='zea-stream-categories'
+                placeholder='none'
+                onChange={e => change({ ...spec, category: e.target.value || undefined })}
+              />
+              <datalist id='zea-stream-categories'>
+                {(categories ?? []).map(c => (
+                  <option key={c} value={c} />
+                ))}
+              </datalist>
+            </Field>
+          </div>
           <div style={{ flex: '1 1 220px' }}>
             <Field
               label='Lock'
@@ -1279,6 +1438,11 @@ export const StreamEditor = ({ client, data, connections, existing, onSaved, onC
             onChange={next => {
               change(replaceStep(spec, selected, next));
               setSelected(next);
+            }}
+            onMakeParam={(param, next) => {
+              change(replaceStep(param ? { ...spec, params: [...spec.params, param] } : spec, selected, next));
+              setSelected(next);
+              setShowParams(true);
             }}
             onRename={id => {
               const [next, renamed] = renameStep(spec, selected, id);

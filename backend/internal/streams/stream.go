@@ -29,6 +29,8 @@ const (
 	maxStageNameLen    = 60
 	maxStepNameLen     = 80
 	maxParamDefaultLen = 1024
+	maxLabelLen        = 100
+	maxCategoryLen     = 60
 	minTimeout         = time.Minute
 	maxTimeout         = 72 * time.Hour
 	maxRetryDelay      = time.Hour
@@ -64,6 +66,15 @@ const (
 	ParamImage = "image"
 )
 
+// Param widgets: how the run form shows a boolean or choice param. Empty
+// is a checkbox for a boolean and a select for a choice.
+const (
+	WidgetCheckbox = "checkbox"
+	WidgetSwitch   = "switch"
+	WidgetRadio    = "radio"
+	WidgetSelect   = "select"
+)
+
 // Step conditions relative to the step's dependencies.
 const (
 	// WhenSuccess runs the step when all dependencies succeeded (default).
@@ -95,6 +106,8 @@ var (
 // Spec is the editable content of a Stream, stored as YAML.
 type Spec struct {
 	Description string `json:"description,omitempty" yaml:"description,omitempty"`
+	// Category groups Streams into tabs on the Streams page.
+	Category string `json:"category,omitempty" yaml:"category,omitempty"`
 	// Lock names a lock held while a run is active; runs with the same
 	// rendered lock, of any Stream, wait in a queue and start one at a time.
 	// It may reference params and zea.user / stream.name.
@@ -106,12 +119,22 @@ type Spec struct {
 // Param is a value asked when the Stream starts, referenced in steps as
 // ${{ params.<name> }}.
 type Param struct {
-	Name        string   `json:"name" yaml:"name"`
+	Name string `json:"name" yaml:"name"`
+	// Label is shown in the run form instead of the name.
+	Label       string   `json:"label,omitempty" yaml:"label,omitempty"`
 	Type        string   `json:"type" yaml:"type"`
 	Description string   `json:"description,omitempty" yaml:"description,omitempty"`
 	Default     string   `json:"default,omitempty" yaml:"default,omitempty"`
 	Required    bool     `json:"required,omitempty" yaml:"required,omitempty"`
 	Options     []string `json:"options,omitempty" yaml:"options,omitempty"`
+	// OptionLabels shows choice options (keys) under other names.
+	OptionLabels map[string]string `json:"optionLabels,omitempty" yaml:"optionLabels,omitempty"`
+	// Widget is how the run form shows a boolean or choice param.
+	Widget string `json:"widget,omitempty" yaml:"widget,omitempty"`
+	// TrueValue and FalseValue are the values a boolean param passes on;
+	// empty means "true" and "false".
+	TrueValue  string `json:"trueValue,omitempty" yaml:"trueValue,omitempty"`
+	FalseValue string `json:"falseValue,omitempty" yaml:"falseValue,omitempty"`
 	// Connection lists the branches of a branch param or the image tags of
 	// an image param.
 	Connection string `json:"connection,omitempty" yaml:"connection,omitempty"`
@@ -120,6 +143,31 @@ type Param struct {
 // HasConnection reports whether the param lists its values from a Connection.
 func (p Param) HasConnection() bool {
 	return p.Type == ParamBranch || p.Type == ParamImage
+}
+
+// BoolValues returns the values a boolean param passes on when on and off.
+func (p Param) BoolValues() (on, off string) {
+	on, off = p.TrueValue, p.FalseValue
+	if on == "" {
+		on = "true"
+	}
+	if off == "" {
+		off = "false"
+	}
+	return on, off
+}
+
+// boolValue maps "true", "false" or the param's own values to the value it
+// passes on.
+func (p Param) boolValue(v string) (string, bool) {
+	on, off := p.BoolValues()
+	switch v {
+	case "true", on:
+		return on, true
+	case "false", off:
+		return off, true
+	}
+	return "", false
 }
 
 // Stage groups steps that run in parallel.
@@ -235,6 +283,9 @@ func (s *Stream) Validate() error {
 	if len(s.Lock) > MaxLockLen {
 		return fmt.Errorf("lock is longer than %d characters", MaxLockLen)
 	}
+	if len(s.Category) > maxCategoryLen {
+		return fmt.Errorf("category is longer than %d characters", maxCategoryLen)
+	}
 	if len(s.Params) > MaxParams {
 		return fmt.Errorf("at most %d params are allowed", MaxParams)
 	}
@@ -248,9 +299,21 @@ func (s *Stream) Validate() error {
 		if len(p.Default) > maxParamDefaultLen || len(p.Description) > maxDescriptionLen {
 			return fmt.Errorf("param %q: default or description is too long", p.Name)
 		}
+		if len(p.Label) > maxLabelLen || len(p.Widget) > maxKeyLen ||
+			len(p.TrueValue) > maxParamDefaultLen || len(p.FalseValue) > maxParamDefaultLen {
+			return fmt.Errorf("param %q: label, widget or boolean value is too long", p.Name)
+		}
 		for _, o := range p.Options {
 			if len(o) > maxParamDefaultLen {
 				return fmt.Errorf("param %q: option is too long", p.Name)
+			}
+		}
+		if len(p.OptionLabels) > MaxOptions {
+			return fmt.Errorf("param %q: at most %d option labels are allowed", p.Name, MaxOptions)
+		}
+		for o, l := range p.OptionLabels {
+			if len(o) > maxParamDefaultLen || len(l) > maxLabelLen {
+				return fmt.Errorf("param %q: option label is too long", p.Name)
 			}
 		}
 	}
@@ -386,8 +449,14 @@ func paramProblems(p Param) []string {
 			out = append(out, "default is not one of the options")
 		}
 	case ParamBoolean:
-		if p.Default != "" && p.Default != "true" && p.Default != "false" {
-			out = append(out, `boolean default must be "true" or "false"`)
+		on, off := p.BoolValues()
+		if on == off {
+			out = append(out, "the on and off values must differ")
+		} else if on == "false" || off == "true" {
+			out = append(out, `the on value cannot be "false" and the off value cannot be "true"`)
+		}
+		if _, ok := p.boolValue(p.Default); p.Default != "" && !ok {
+			out = append(out, fmt.Sprintf("boolean default must be %q or %q", on, off))
 		}
 	case ParamBranch:
 		if p.Connection == "" {
@@ -404,6 +473,30 @@ func paramProblems(p Param) []string {
 	}
 	if p.Type != ParamChoice && len(p.Options) > 0 {
 		out = append(out, "only choice params have options")
+	}
+	if p.Type != ParamChoice && len(p.OptionLabels) > 0 {
+		out = append(out, "only choice params have option labels")
+	}
+	for _, o := range sortedKeys(p.OptionLabels) {
+		if p.Type == ParamChoice && !contains(p.Options, o) {
+			out = append(out, fmt.Sprintf("option label for %q, which is not an option", o))
+		}
+	}
+	if p.Type != ParamBoolean && (p.TrueValue != "" || p.FalseValue != "") {
+		out = append(out, "only boolean params have on and off values")
+	}
+	switch {
+	case p.Widget == "":
+	case p.Type == ParamBoolean:
+		if p.Widget != WidgetCheckbox && p.Widget != WidgetSwitch && p.Widget != WidgetRadio && p.Widget != WidgetSelect {
+			out = append(out, fmt.Sprintf("unknown widget %q: use checkbox, switch, radio or select", p.Widget))
+		}
+	case p.Type == ParamChoice:
+		if p.Widget != WidgetSelect && p.Widget != WidgetRadio {
+			out = append(out, fmt.Sprintf("unknown widget %q: use select or radio", p.Widget))
+		}
+	default:
+		out = append(out, "only boolean and choice params have a widget")
 	}
 	if !p.HasConnection() && p.Connection != "" {
 		out = append(out, "only branch and image params have a connection")

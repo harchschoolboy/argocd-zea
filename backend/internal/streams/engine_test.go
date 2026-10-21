@@ -472,18 +472,27 @@ func TestResolveParams(t *testing.T) {
 		{Name: "env", Type: ParamChoice, Options: []string{"dev", "prod"}, Required: true},
 		{Name: "dry", Type: ParamBoolean},
 		{Name: "note", Type: ParamString},
+		{Name: "flag", Type: ParamBoolean, TrueValue: "on", FalseValue: "off", Default: "true"},
+		{Name: "opt", Type: ParamBoolean, TrueValue: "yes", FalseValue: "no"},
 	}
-	got, err := ResolveParams(defs, map[string]string{"env": "prod", "branch": " dev "})
+	got, err := ResolveParams(defs, map[string]string{"env": "prod", "branch": " dev ", "opt": "yes"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got["branch"] != "dev" || got["env"] != "prod" || got["dry"] != "false" || got["note"] != "" {
+	if got["branch"] != "dev" || got["env"] != "prod" || got["dry"] != "false" || got["note"] != "" ||
+		got["flag"] != "on" || got["opt"] != "yes" {
 		t.Fatalf("resolved = %v", got)
+	}
+	// The form sends true/false; custom values pass on.
+	got, err = ResolveParams(defs, map[string]string{"env": "dev", "flag": "false", "opt": "true"})
+	if err != nil || got["flag"] != "off" || got["opt"] != "yes" {
+		t.Fatalf("resolved = %v, %v", got, err)
 	}
 	for name, given := range map[string]map[string]string{
 		"missing required": {},
 		"bad choice":       {"env": "qa"},
 		"bad boolean":      {"env": "dev", "dry": "yes"},
+		"bad custom":       {"env": "dev", "opt": "on"},
 		"unknown":          {"env": "dev", "x": "1"},
 	} {
 		if _, err := ResolveParams(defs, given); !errors.Is(err, ErrInvalidParams) {

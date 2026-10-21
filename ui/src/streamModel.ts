@@ -1,5 +1,5 @@
 import { ZeaClient } from './api';
-import { BranchList, Pipeline, RunForm, StreamParam, StreamProblem, StreamSpec, StreamStage, StreamStep } from './types';
+import { BranchList, Pipeline, RunForm, RunInput, StreamParam, StreamProblem, StreamSpec, StreamStage, StreamStep } from './types';
 
 // Keep in sync with backend/internal/streams/stream.go.
 export const STREAM_NAME_RE = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
@@ -24,16 +24,74 @@ export function emptySpec(): StreamSpec {
 }
 
 // specOf copies the editable part of a Stream (or a run snapshot).
-export function specOf(s: { description?: string; lock?: string; params?: StreamParam[] | null; stages?: StreamStage[] | null }): StreamSpec {
+export function specOf(s: {
+  description?: string;
+  category?: string;
+  lock?: string;
+  params?: StreamParam[] | null;
+  stages?: StreamStage[] | null;
+}): StreamSpec {
   return {
     description: s.description ?? '',
+    category: s.category || undefined,
     lock: s.lock || undefined,
-    params: (s.params ?? []).map(p => ({ ...p, options: p.options ? [...p.options] : undefined })),
+    params: (s.params ?? []).map(p => ({
+      ...p,
+      options: p.options ? [...p.options] : undefined,
+      optionLabels: p.optionLabels ? { ...p.optionLabels } : undefined,
+    })),
     stages: (s.stages ?? []).map(st => ({ ...st, steps: (st.steps ?? []).map(x => ({ ...x })) })),
   };
 }
 
 export const allSteps = (spec: StreamSpec): StreamStep[] => spec.stages.flatMap(s => s.steps);
+
+// paramLabel is the text the run form shows for a param.
+export const paramLabel = (p: StreamParam) => p.label?.trim() || p.name;
+
+// boolValues are the values a boolean param passes on when on and off.
+export const boolValues = (p: StreamParam): [string, string] => [p.trueValue || 'true', p.falseValue || 'false'];
+
+// boolOn reads a boolean value: "true", "false" or the param's own values.
+export const boolOn = (p: StreamParam, v: string | undefined) => v === 'true' || (v !== undefined && v !== '' && v === boolValues(p)[0]);
+
+export const optionLabel = (p: StreamParam, option: string) => p.optionLabels?.[option]?.trim() || option;
+
+// paramFromInput makes a Stream param that asks for a pipeline input when
+// the stream starts. It returns the param to add (none when a param of that
+// name exists and is reused) and the param's name.
+export function paramFromInput(spec: StreamSpec, input: RunInput, connection: string, branch: boolean): [StreamParam | undefined, string] {
+  let base = input.name.replace(/[^A-Za-z0-9_]/g, '_');
+  if (!/^[A-Za-z_]/.test(base)) {
+    base = `p_${base}`;
+  }
+  base = base.slice(0, 45);
+  if (spec.params.some(p => p.name === base)) {
+    return [undefined, base];
+  }
+  const param: StreamParam = { name: base, type: 'string', description: input.description || undefined };
+  const def = input.default ?? '';
+  if (input.type === 'boolean') {
+    param.type = 'boolean';
+    param.default = def === 'true' ? 'true' : 'false';
+  } else if (input.type === 'choice' && (input.options ?? []).length > 0) {
+    param.type = 'choice';
+    param.options = [...(input.options ?? [])];
+    param.default = param.options.includes(def) ? def : undefined;
+    param.required = input.required || undefined;
+  } else if (branch && connection) {
+    param.type = 'branch';
+    param.connection = connection;
+    param.default = def || undefined;
+    param.required = (input.required && !def) || undefined;
+  } else {
+    param.default = def || undefined;
+    param.required = (input.required && !def) || undefined;
+  }
+  return [param, base];
+}
+
+export const paramRef = (name: string) => `\${{ params.${name} }}`;
 
 export interface StepPos {
   stage: number;

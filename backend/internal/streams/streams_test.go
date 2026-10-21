@@ -16,9 +16,12 @@ import (
 func sample() *Stream {
 	return &Stream{Name: "release", Spec: Spec{
 		Description: "Build and deploy",
+		Category:    "Release",
 		Params: []Param{
 			{Name: "branch", Type: ParamBranch, Connection: "api", Default: "main", Required: true},
-			{Name: "env", Type: ParamChoice, Options: []string{"dev", "prod"}, Default: "dev"},
+			{Name: "env", Label: "Environment", Type: ParamChoice, Options: []string{"dev", "prod"}, Default: "dev",
+				OptionLabels: map[string]string{"prod": "Production"}, Widget: WidgetRadio},
+			{Name: "migrate", Type: ParamBoolean, Widget: WidgetSwitch, TrueValue: "on", FalseValue: "off", Default: "true"},
 		},
 		Stages: []Stage{
 			{Name: "Build", Steps: []Step{
@@ -91,6 +94,10 @@ func TestProblems(t *testing.T) {
 			{Name: "img", Type: ParamImage},
 			{Name: "s", Type: ParamString, Options: []string{"a"}, Connection: "api"},
 			{Name: "t", Type: "number"},
+			{Name: "sw", Type: ParamBoolean, TrueValue: "on", FalseValue: "on", Widget: "slider"},
+			{Name: "inv", Type: ParamBoolean, TrueValue: "false", FalseValue: "no"},
+			{Name: "ch", Type: ParamChoice, Options: []string{"a"}, OptionLabels: map[string]string{"b": "B"}, Widget: WidgetSwitch},
+			{Name: "str", Type: ParamString, Widget: WidgetRadio, TrueValue: "y", OptionLabels: map[string]string{"x": "X"}},
 		},
 		Stages: []Stage{
 			{Steps: []Step{
@@ -120,6 +127,14 @@ func TestProblems(t *testing.T) {
 		`param "s": only choice params have options`,
 		`param "s": only branch and image params have a connection`,
 		`param "t": unknown type "number"`,
+		`param "sw": the on and off values must differ`,
+		`param "sw": unknown widget "slider"`,
+		`param "inv": the on value cannot be "false"`,
+		`param "ch": option label for "b", which is not an option`,
+		`param "ch": unknown widget "switch": use select or radio`,
+		`param "str": only choice params have option labels`,
+		`param "str": only boolean params have on and off values`,
+		`param "str": only boolean and choice params have a widget`,
 		`step "a": ref: unknown param "nope"`,
 		`step "a": needs "b", which is not a step of an earlier stage`,
 		`step "b": connection is required`,

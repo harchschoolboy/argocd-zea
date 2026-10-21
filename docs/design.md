@@ -448,10 +448,24 @@ editor can be added later without changing the format.
 
 ```yaml
 description: Build and deploy
+category: Backend                  # optional, groups Streams in tabs
 lock: "deploy-${{ params.env }}"   # optional, see Runs
 params:
   - {name: branch, type: branch, connection: api, default: main, required: true}
-  - {name: env, type: choice, options: [dev, prod], default: dev}
+  - name: env
+    type: choice
+    label: Environment              # shown in the start form instead of the name
+    options: [dev, prod]
+    optionLabels: {prod: Production}
+    widget: radio                   # choice: select (default) | radio
+    default: dev
+  - name: migrate
+    type: boolean
+    label: Run migrations
+    widget: switch                  # boolean: checkbox (default) | switch | radio | select
+    trueValue: "on"                 # sent instead of true / false
+    falseValue: "off"
+    default: "false"
   - {name: tag, type: image, connection: api}
 stages:
   - name: Build
@@ -491,6 +505,20 @@ stages:
   (`options`), `boolean`, `branch` (branches of `connection`, picked from a
   list), `image` (tags of the images of `connection`, which must have image
   sources; the value is the tag, any text is accepted).
+  A Stream with params always opens a start form; one without starts after
+  a confirmation. Only params are asked: all other step values are fixed in
+  the Stream, so a Stream works like a Jenkins "Build with parameters" job
+  with chosen fields open. A param may also take a value of one Connection
+  (e.g. a branch of `web`) and pass it to a step of another.
+- **Param presentation:** `label` (up to 100 characters) and `optionLabels`
+  (labels of existing `choice` options) only change the form; the pipeline
+  gets the name and the option value. `widget` picks the control:
+  `select` or `radio` for `choice`; `checkbox`, `switch`, `radio` or
+  `select` for `boolean`. `trueValue` / `falseValue` (boolean only, must
+  differ) replace `true` / `false` in the resolved value; the start form and
+  the API accept both the canonical and the custom values.
+- **Category** (up to 60 characters) only groups Streams in tabs on the
+  Streams page; access rules still match Stream names.
 - **References** `${{ ... }}` are allowed in `ref`, `inputs`,
   `variables`, `message`, `app` and `image`: `params.<name>`,
   `steps.<id>.status|runId|url|sha|ref|user|revision|health|images` (only

@@ -8,7 +8,8 @@ export interface Route {
   connection?: string;
   ref?: string;
   run?: string;
-  // Connection view tab: "images"; runs by default.
+  // Connection view tab: "images"; runs by default. Streams list: the
+  // category tab.
   tab?: string;
   // Selected Stream; with mode "edit" its editor, with srun one of its runs.
   stream?: string;
