@@ -54,7 +54,7 @@ prints a ready-to-merge values snippet for the argo-cd chart.
   `argocd-server` to `github.com` to download the UI extension at startup.
 
 In the commands below the Argo CD namespace is `argocd`, the Helm release and
-the anchor Application are both called `zea`, and the release is `v0.4.0`.
+the anchor Application are both called `zea`, and the release is `v0.5.0`.
 
 ### Step 1. Install the backend
 
@@ -107,7 +107,7 @@ set `image.tag`.
 #### Option B: with the Helm CLI
 
 ```bash
-helm install zea oci://ghcr.io/harchschoolboy/charts/zea --version 0.4.0 \
+helm install zea oci://ghcr.io/harchschoolboy/charts/zea --version 0.5.0 \
   -n argocd \
   --set anchorApplication=argocd:<existing-app> \
   --set 'admins.users={admin}'
@@ -158,11 +158,11 @@ server:
           - name: EXTENSION_NAME
             value: zea
           - name: EXTENSION_VERSION
-            value: v0.4.0
+            value: v0.5.0
           - name: EXTENSION_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.4.0/extension-zea.tar.gz
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.5.0/extension-zea.tar.gz
           - name: EXTENSION_CHECKSUM_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.4.0/extension-zea_checksums.txt
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.5.0/extension-zea_checksums.txt
 
 configs:
   params:
@@ -250,11 +250,11 @@ one Zea installation.
                - name: EXTENSION_NAME
                  value: zea
                - name: EXTENSION_VERSION
-                 value: v0.4.0
+                 value: v0.5.0
                - name: EXTENSION_URL
-                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.4.0/extension-zea.tar.gz
+                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.5.0/extension-zea.tar.gz
                - name: EXTENSION_CHECKSUM_URL
-                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.4.0/extension-zea_checksums.txt
+                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.5.0/extension-zea_checksums.txt
              securityContext:
                runAsNonRoot: true
                runAsUser: 1000
@@ -568,7 +568,7 @@ reachable from a pod. For Artifact Registry, in order of preference:
 
 A Stream chains pipelines of several Connections: stages run one after
 another, the steps of a stage run in parallel. The **Streams** tab opens
-first:
+first, with tabs per **category** (set in the editor):
 
 - **New stream** (edit access to streams): drag Connections into stage columns, pick the
   branch and pipeline of each step, fill its inputs. Values may use
@@ -579,6 +579,14 @@ first:
   wait for specific steps (`needs`), run only on success, failure or always,
   continue on error, and retry a failed pipeline automatically (`retries`,
   up to 5, with `retryDelay`; manual retry by default).
+- **Build with parameters**: everything in a Stream is fixed except its
+  params, so a Stream with params works like a parameterized Jenkins job.
+  The button next to a pipeline input or variable turns it into a param.
+  A param has a label, a control (checkbox, switch, on/off radio or
+  dropdown for booleans; dropdown or radio buttons for choices), labels for
+  choice options and custom on/off values for booleans (e.g. `yes` / `no`).
+  A param can take a value of one Connection (e.g. a branch of `web`) and
+  pass it to a step of another.
 - **Approval** steps (dragged from the palette like Connections) pause the
   run until a user with approve access approves or rejects it, with an
   optional comment. The message may use references; rejecting or not
@@ -600,8 +608,8 @@ first:
 - **Lock**: runs with the same rendered lock (e.g. `deploy-${{ params.env }}`),
   of this or any other Stream, run one at a time. Later runs are **queued**
   and start in order; the run view links the run that holds the lock.
-- **Run** on a stream card starts it with the default params after a
-  confirmation.
+- **Run** on a stream card starts a Stream without params after a
+  confirmation; **Run...** opens the start form of a Stream with params.
 - **Run**: fill the params and follow the steps live; click a step to see
   its jobs. **Cancel** stops the active provider runs. **Retry failed**
   reruns the steps that did not succeed in the same run (succeeded steps are
