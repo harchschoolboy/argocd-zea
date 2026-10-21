@@ -41,23 +41,31 @@ func References(v string) ([]string, error) {
 	}
 }
 
+// scope is what a template may reference: the params, the Vars defined so
+// far and the steps that finish before it. inVar marks a Var's value, which
+// is resolved when the run starts.
+type scope struct {
+	params, vars, upstream map[string]bool
+	inVar                  bool
+}
+
 // checkTemplate reports references that are malformed or point to unknown
-// params or to steps that do not run before this one.
-func checkTemplate(v string, params, upstream map[string]bool) []string {
+// params or Vars or to steps that do not run before this one.
+func checkTemplate(v string, sc scope) []string {
 	refs, err := References(v)
 	var out []string
 	if err != nil {
 		out = append(out, err.Error())
 	}
 	for _, ref := range refs {
-		if msg := checkReference(ref, params, upstream); msg != "" {
+		if msg := checkReference(ref, sc); msg != "" {
 			out = append(out, msg)
 		}
 	}
 	return out
 }
 
-func checkReference(ref string, params, upstream map[string]bool) string {
+func checkReference(ref string, sc scope) string {
 	if ref == "" {
 		return "empty ${{ }}"
 	}
@@ -67,12 +75,22 @@ func checkReference(ref string, params, upstream map[string]bool) string {
 	parts := strings.Split(ref, ".")
 	switch {
 	case parts[0] == "params" && len(parts) == 2:
-		if !params[parts[1]] {
+		if !sc.params[parts[1]] {
 			return fmt.Sprintf("unknown param %q", parts[1])
 		}
 		return ""
+	case parts[0] == "vars" && len(parts) == 2:
+		if !sc.vars[parts[1]] {
+			if sc.inVar {
+				return fmt.Sprintf("unknown variable %q (a variable can use only the variables above it)", parts[1])
+			}
+			return fmt.Sprintf("unknown variable %q", parts[1])
+		}
+		return ""
+	case parts[0] == "steps" && len(parts) == 3 && sc.inVar:
+		return "variables are resolved when the run starts, so they cannot use steps"
 	case parts[0] == "steps" && len(parts) == 3:
-		if !upstream[parts[1]] {
+		if !sc.upstream[parts[1]] {
 			return fmt.Sprintf("step %q does not finish before this step (add it to needs or move it to an earlier stage)", parts[1])
 		}
 		if !stepFields[parts[2]] {
@@ -80,7 +98,19 @@ func checkReference(ref string, params, upstream map[string]bool) string {
 		}
 		return ""
 	}
-	return fmt.Sprintf("unknown reference %q: use params.<name>, steps.<id>.<field>, zea.user, stream.name or stream.run", ref)
+	return fmt.Sprintf("unknown reference %q: use params.<name>, vars.<name>, steps.<id>.<field>, zea.user, stream.name or stream.run", ref)
+}
+
+// usesPerRun reports whether v references stream.run directly or through
+// one of the perRun Vars.
+func usesPerRun(v string, perRun map[string]bool) bool {
+	refs, _ := References(v)
+	for _, ref := range refs {
+		if ref == "stream.run" || (strings.HasPrefix(ref, "vars.") && perRun[strings.TrimPrefix(ref, "vars.")]) {
+			return true
+		}
+	}
+	return false
 }
 
 // Render replaces every ${{ ref }} in v with values[ref].

@@ -949,6 +949,58 @@ func TestLockProblems(t *testing.T) {
 	}
 }
 
+func TestVarProblems(t *testing.T) {
+	st := flow(Stage{Steps: []Step{step("a", "app", "a.yml")}})
+	st.Params = []Param{{Name: "env", Type: ParamString}}
+	cases := []struct {
+		vars []Var
+		lock string
+		want string
+	}{
+		{vars: []Var{{Name: "bad-name", Value: "x"}}, want: "invalid name"},
+		{vars: []Var{{Name: "A", Value: "x"}, {Name: "A", Value: "y"}}, want: "duplicate variable"},
+		{vars: []Var{{Name: "A", Value: "${{ vars.B }}"}, {Name: "B", Value: "x"}}, want: "variables above it"},
+		{vars: []Var{{Name: "A", Value: "${{ params.nope }}"}}, want: "unknown param"},
+		{vars: []Var{{Name: "A", Value: "${{ steps.a.sha }}"}}, want: "cannot use steps"},
+		{vars: []Var{{Name: "A", Value: "${{ stream.run }}"}, {Name: "B", Value: "x-${{ vars.A }}"}}, lock: "${{ vars.B }}", want: "stream.run"},
+	}
+	for _, c := range cases {
+		st.Vars, st.Lock = c.vars, c.lock
+		if !hasProblem(st.Problems(), c.want) {
+			t.Errorf("vars %v: problems = %v, want %q", c.vars, st.Problems(), c.want)
+		}
+	}
+	st.Lock = ""
+	st.Vars = []Var{{Name: "A", Value: "${{ params.env }}"}}
+	st.Stages[0].Steps[0].Inputs = map[string]string{"x": "${{ vars.missing }}"}
+	if !hasProblem(st.Problems(), "unknown variable") {
+		t.Fatalf("problems = %v", st.Problems())
+	}
+}
+
+func TestNewRunResolvesVars(t *testing.T) {
+	st := flow(Stage{Steps: []Step{step("a", "app", "a.yml")}})
+	st.Params = []Param{{Name: "env", Type: ParamString, Default: "dev"}}
+	st.Vars = []Var{
+		{Name: "LABEL", Value: "${{ params.env }}-${{ zea.user }}"},
+		{Name: "FULL", Value: "${{ stream.name }}/${{ vars.LABEL }}"},
+	}
+	st.Lock = "deploy-${{ vars.LABEL }}"
+	if ps := st.Problems(); len(ps) != 0 {
+		t.Fatalf("problems = %v", ps)
+	}
+	r, err := NewRun(st, map[string]string{"env": "prod"}, "bob", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Vars["LABEL"] != "prod-bob" || r.Vars["FULL"] != st.Name+"/prod-bob" || r.Lock != "deploy-prod-bob" {
+		t.Fatalf("vars = %v, lock = %q", r.Vars, r.Lock)
+	}
+	if got := r.values()["vars.FULL"]; got != st.Name+"/prod-bob" {
+		t.Fatalf("values vars.FULL = %q", got)
+	}
+}
+
 func hasProblem(ps []Problem, part string) bool {
 	for _, p := range ps {
 		if strings.Contains(p.String(), part) {

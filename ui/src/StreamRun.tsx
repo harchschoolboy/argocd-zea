@@ -6,8 +6,8 @@ import { ago, duration, RunJobs, usePoll } from './Runs';
 import {
   Badge,
   ellipsis,
-  Field,
   Help,
+  InlineField,
   PipelineName,
   StreamStatusIcon,
   StreamStatusLabel,
@@ -701,9 +701,9 @@ export const ParamInput = ({ param: p, value, onChange }: { param: StreamParam; 
     switch (p.widget) {
       case 'switch':
         return (
-          <label style={{ cursor: 'pointer', fontWeight: 400 }}>
-            <Switch on={on} onChange={v => onChange(v ? 'true' : 'false')} /> {on ? onValue : offValue}
-          </label>
+          <span title={on ? onValue : offValue}>
+            <Switch on={on} onChange={v => onChange(v ? 'true' : 'false')} />
+          </span>
         );
       case 'radio':
         return <Radios name={field} value={on ? 'true' : 'false'} options={[['true', onValue], ['false', offValue]]} onChange={onChange} />;
@@ -716,9 +716,7 @@ export const ParamInput = ({ param: p, value, onChange }: { param: StreamParam; 
         );
     }
     return (
-      <label style={{ cursor: 'pointer', fontWeight: 400 }}>
-        <input type='checkbox' checked={on} onChange={e => onChange(e.target.checked ? 'true' : 'false')} /> {on ? onValue : offValue}
-      </label>
+      <input type='checkbox' title={on ? onValue : offValue} checked={on} onChange={e => onChange(e.target.checked ? 'true' : 'false')} />
     );
   }
   const options = p.options ?? [];
@@ -778,12 +776,7 @@ export const StreamRunForm = ({ client, stream, initial, title, onStarted, onClo
       </div>
       {stream.params.length === 0 && <Muted>This stream has no params.</Muted>}
       {stream.params.map(p => (
-        <Field
-          key={p.name}
-          label={p.label?.trim() ? p.label : <code>{p.name}</code>}
-          hint={p.label?.trim() ? undefined : p.type}
-          required={p.required}
-          help={p.description}>
+        <InlineField key={p.name} label={paramLabel(p)} required={p.required} help={p.description}>
           {p.type === 'boolean' || p.type === 'choice' ? (
             <ParamInput param={p} value={values[p.name] ?? ''} onChange={v => set(p.name, v)} />
           ) : p.type === 'branch' ? (
@@ -793,7 +786,7 @@ export const StreamRunForm = ({ client, stream, initial, title, onStarted, onClo
           ) : (
             <input className='argo-field' style={{ width: '100%' }} value={values[p.name] ?? ''} onChange={e => set(p.name, e.target.value)} />
           )}
-        </Field>
+        </InlineField>
       ))}
       {error && <ErrorText text={error} />}
       <div style={{ display: 'flex', gap: '0.5em', marginTop: '0.6em' }}>
@@ -1029,6 +1022,7 @@ export const StreamRunView = ({ client, data, me, stream, runID }: { client: Zea
   const retryable = r && (r.status === 'failed' || r.status === 'cancelled') && r.steps.some(s => s.status !== 'succeeded');
   const waiting = r ? waitingSteps(r) : [];
   const params = Object.entries(r?.params ?? {});
+  const vars = (r?.spec?.vars ?? []).filter(v => r?.vars && v.name in r.vars).map(v => [v.name, r?.vars?.[v.name] ?? ''] as const);
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.6em', marginBottom: '0.8em', flexWrap: 'wrap' }}>
@@ -1091,11 +1085,16 @@ export const StreamRunView = ({ client, data, me, stream, runID }: { client: Zea
               {r.status === 'queued' && r.blockedBy && <HolderLink blockedBy={r.blockedBy} />}
             </div>
           )}
-          {params.length > 0 && (
+          {params.length + vars.length > 0 && (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4em', marginBottom: '0.8em' }}>
               {params.map(([k, v]) => (
                 <Badge key={k}>
                   {k} = <b>{v || '""'}</b>
+                </Badge>
+              ))}
+              {vars.map(([k, v]) => (
+                <Badge key={'vars.' + k} title='Variable'>
+                  vars.{k} = <b>{v || '""'}</b>
                 </Badge>
               ))}
             </div>

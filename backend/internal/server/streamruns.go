@@ -32,6 +32,7 @@ type runView struct {
 	Stream          string            `json:"stream"`
 	User            string            `json:"user"`
 	Params          map[string]string `json:"params"`
+	Vars            map[string]string `json:"vars,omitempty"`
 	Status          string            `json:"status"`
 	Message         string            `json:"message,omitempty"`
 	CancelRequested bool              `json:"cancelRequested,omitempty"`
@@ -62,6 +63,7 @@ func runViewOf(r *streams.Run, withSpec bool) runView {
 		Stream:          r.Stream,
 		User:            r.User,
 		Params:          r.Params,
+		Vars:            r.Vars,
 		Status:          r.Status,
 		Message:         r.Message,
 		CancelRequested: r.CancelRequested,

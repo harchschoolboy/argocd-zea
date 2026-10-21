@@ -58,6 +58,31 @@ export const Field = ({
   </div>
 );
 
+// InlineField puts the label and the control on one line, with the help
+// text under the control.
+export const InlineField = ({
+  label,
+  required,
+  help,
+  children,
+}: {
+  label: React.ReactNode;
+  required?: boolean;
+  help?: React.ReactNode;
+  children: React.ReactNode;
+}) => (
+  <div style={{ display: 'grid', gridTemplateColumns: 'minmax(110px, 200px) minmax(0, 1fr)', columnGap: '1em', alignItems: 'baseline', marginBottom: '0.7em' }}>
+    <label style={{ fontWeight: 600, wordBreak: 'break-word' }}>
+      {label}
+      {required && <span style={{ color: COLORS.error }}> *</span>}
+    </label>
+    <div style={{ minWidth: 0 }}>
+      {children}
+      {help && <Help>{help}</Help>}
+    </div>
+  </div>
+);
+
 export const Badge = ({ children, color, title }: { children: React.ReactNode; color?: string; title?: string }) => (
   <span
     title={title}
@@ -89,7 +114,12 @@ export const ProblemList = ({ problems, onStep }: { problems: StreamProblem[]; o
             param <code>{p.param}</code>
           </>
         )}
-        {(p.step || p.param) && ': '}
+        {p.var && (
+          <>
+            variable <code>{p.var}</code>
+          </>
+        )}
+        {(p.step || p.param || p.var) && ': '}
         {p.message}
       </li>
     ))}

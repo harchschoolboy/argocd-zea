@@ -467,6 +467,9 @@ params:
     falseValue: "off"
     default: "false"
   - {name: tag, type: image, connection: api}
+vars:                               # optional, computed in order when a run starts
+  - {name: PIPE_LABEL, value: "${{ params.branch }}-${{ params.env }}"}
+  - {name: TITLE, value: "${{ stream.name }} ${{ vars.PIPE_LABEL }} by ${{ zea.user }}"}
 stages:
   - name: Build
     steps:
@@ -517,15 +520,20 @@ stages:
   `select` for `boolean`. `trueValue` / `falseValue` (boolean only, must
   differ) replace `true` / `false` in the resolved value; the start form and
   the API accept both the canonical and the custom values.
+- **Vars** (up to 30) are named values computed once when a run starts, in
+  order, from params, `zea.user`, `stream.name`, `stream.run` and the vars
+  above them (not from steps). Steps and the lock use them as
+  `${{ vars.<name> }}`; the run keeps the resolved values and shows them
+  next to its params. Names follow the param name rules.
 - **Category** (up to 60 characters) only groups Streams in tabs on the
   Streams page; access rules still match Stream names.
 - **References** `${{ ... }}` are allowed in `ref`, `inputs`,
   `variables`, `message`, `app` and `image`: `params.<name>`,
-  `steps.<id>.status|runId|url|sha|ref|user|revision|health|images` (only
+  `vars.<name>`, `steps.<id>.status|runId|url|sha|ref|user|revision|health|images` (only
   steps that finish before this one; `user` is who decided an approval step;
   `revision`, `health` and comma separated `images` come from Argo CD steps),
-  `zea.user`, `stream.name`, `stream.run`. `lock` may use params,
-  `zea.user` and `stream.name`.
+  `zea.user`, `stream.name`, `stream.run`. `lock` may use params, vars,
+  `zea.user` and `stream.name` (not `stream.run`, also not through a var).
 - **Approval steps** (`type: approval`) have no connection, pipeline, ref,
   inputs, variables or retries; `message` (up to 1000 characters) is
   rendered when the step starts. `needs`, `when`, `continueOnError` and
@@ -533,8 +541,8 @@ stages:
 - **Argo CD steps** (`type: argocd`) have `app`, optional `image` and
   `noRefresh`, and no connection, pipeline, ref, inputs, variables, message
   or retries. See [Runs](#runs).
-- Limits: 20 stages, 20 steps per stage, 50 steps, 30 params, 50 inputs and
-  variables per step, 256 KiB of YAML.
+- Limits: 20 stages, 20 steps per stage, 50 steps, 30 params, 30 vars, 50
+  inputs and variables per step, 256 KiB of YAML.
 
 ### Storage and GitOps
 

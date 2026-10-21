@@ -38,6 +38,7 @@ import {
   removeStep,
   renameParam,
   renameStep,
+  renameVar,
   replaceStep,
   setKey,
   specOf,
@@ -47,7 +48,7 @@ import {
   STREAM_NAME_RE,
   uniqueStepId,
 } from './streamModel';
-import { Connection, RunInput, Stream, StreamParam, StreamProblem, StreamSpec, StreamStep } from './types';
+import { Connection, RunInput, Stream, StreamParam, StreamProblem, StreamSpec, StreamStep, StreamVar } from './types';
 import { COLORS, ErrorText, Muted, ProviderBadge, useLoad } from './ui';
 
 const ACCENT = '#0dadea';
@@ -941,6 +942,118 @@ const ParamsEditor = ({
   );
 };
 
+const VarRow = ({
+  spec,
+  index,
+  problems,
+  onChange,
+  onRename,
+  onMove,
+  onDelete,
+}: {
+  spec: StreamSpec;
+  index: number;
+  problems: StreamProblem[];
+  onChange: (v: StreamVar) => void;
+  onRename: (name: string) => void;
+  onMove: (delta: number) => void;
+  onDelete: () => void;
+}) => {
+  const vars = spec.vars ?? [];
+  const v = vars[index];
+  const [nameText, setNameText] = React.useState(v.name);
+  React.useEffect(() => setNameText(v.name), [v.name]);
+  const commitName = () => nameText.trim() !== v.name && onRename(nameText.trim());
+  return (
+    <div style={{ borderTop: `1px solid ${COLORS.border}`, padding: '0.5em 0' }}>
+      <div style={{ display: 'flex', gap: '0.5em', alignItems: 'center' }}>
+        <input
+          className='argo-field'
+          style={{ flex: '0 0 200px', fontFamily: 'monospace' }}
+          value={nameText}
+          placeholder='NAME'
+          spellCheck={false}
+          onChange={e => setNameText(e.target.value)}
+          onBlur={commitName}
+          onKeyDown={e => e.key === 'Enter' && commitName()}
+        />
+        <span>=</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <ValueField
+            value={v.value}
+            refs={referencesFor(spec, undefined, index)}
+            placeholder='e.g. ${{ params.branch }}-${{ params.env }}'
+            mono
+            onChange={value => onChange({ ...v, value })}
+          />
+        </div>
+        <button className='argo-button argo-button--base-o' title='Move up' disabled={index === 0} onClick={() => onMove(-1)}>
+          <i className='fa fa-arrow-up' />
+        </button>
+        <button className='argo-button argo-button--base-o' title='Move down' disabled={index === vars.length - 1} onClick={() => onMove(1)}>
+          <i className='fa fa-arrow-down' />
+        </button>
+        <button className='argo-button argo-button--base-o' title='Remove variable' onClick={onDelete}>
+          <i className='fa fa-times' />
+        </button>
+      </div>
+      {problems.length > 0 && (
+        <div style={{ color: COLORS.error, marginTop: '0.3em' }}>
+          <ProblemList problems={problems.map(p => ({ message: p.message }))} />
+        </div>
+      )}
+    </div>
+  );
+};
+
+// VarsEditor edits the stream variables: values computed when a run starts
+// from params, built-ins and the variables above them.
+const VarsEditor = ({ spec, problems, onChange }: { spec: StreamSpec; problems: StreamProblem[]; onChange: (spec: StreamSpec) => void }) => {
+  const vars = spec.vars ?? [];
+  const setVars = (next: StreamVar[], base: StreamSpec = spec) => onChange({ ...base, vars: next.length > 0 ? next : undefined });
+  const rename = (i: number, name: string) => {
+    const old = vars[i].name;
+    const base = PARAM_NAME_RE.test(old) && PARAM_NAME_RE.test(name) ? renameVar(spec, old, name) : spec;
+    setVars((base.vars ?? []).map((x, j) => (j === i ? { ...x, name } : x)), base);
+  };
+  const move = (i: number, delta: number) => {
+    const next = [...vars];
+    const [v] = next.splice(i, 1);
+    next.splice(i + delta, 0, v);
+    setVars(next);
+  };
+  const add = () => {
+    const names = new Set(vars.map(v => v.name));
+    let name = 'VAR';
+    for (let n = 2; names.has(name); n++) {
+      name = `VAR${n}`;
+    }
+    setVars([...vars, { name, value: '' }]);
+  };
+  return (
+    <div>
+      <Help>
+        Computed when the run starts from params, built-ins and the variables above; used in steps and the lock as <code>{'${{ vars.<name> }}'}</code>.
+      </Help>
+      {vars.map((v, i) => (
+        <VarRow
+          key={i}
+          spec={spec}
+          index={i}
+          problems={problems.filter(x => x.var === v.name && !x.step)}
+          onChange={next => setVars(vars.map((x, j) => (j === i ? next : x)))}
+          onRename={name => rename(i, name)}
+          onMove={d => move(i, d)}
+          onDelete={() => setVars(vars.filter((_, j) => j !== i))}
+        />
+      ))}
+      <button className='argo-button argo-button--base-o' style={{ marginTop: '0.5em' }} onClick={add}>
+        <i className='fa fa-plus' /> Add variable
+      </button>
+    </div>
+  );
+};
+
 interface EditorProps {
   client: ZeaClient;
   data: ConnData;
@@ -964,6 +1077,7 @@ export const StreamEditor = ({ client, data, connections, existing, categories, 
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState('');
   const [showParams, setShowParams] = React.useState(true);
+  const [showVars, setShowVars] = React.useState(() => (existing?.vars?.length ?? 0) > 0);
   const drag = React.useRef<Drag | null>(null);
   const [drop, setDrop] = React.useState<Drop | null>(null);
 
@@ -1140,7 +1254,7 @@ export const StreamEditor = ({ client, data, connections, existing, categories, 
     }
   }, [spec, selected]);
 
-  const general = problems.filter(p => !p.step && !p.param);
+  const general = problems.filter(p => !p.step && !p.param && !p.var);
   const stepCount = spec.stages.reduce((n, s) => n + s.steps.length, 0);
 
   return (
@@ -1218,7 +1332,7 @@ export const StreamEditor = ({ client, data, connections, existing, categories, 
           <div style={{ flex: '1 1 220px' }}>
             <Field
               label='Lock'
-              help='Runs with the same lock, of any stream, run one at a time; later ones wait in a queue. May use ${{ params.<name> }}, e.g. deploy-${{ params.env }}. Empty: runs never wait.'>
+              help='Runs with the same lock, of any stream, run one at a time; later ones wait in a queue. May use ${{ params.<name> }} and ${{ vars.<name> }}, e.g. deploy-${{ params.env }}. Empty: runs never wait.'>
               <input
                 className='argo-field'
                 style={{ width: '100%' }}
@@ -1235,6 +1349,12 @@ export const StreamEditor = ({ client, data, connections, existing, categories, 
           <i className={showParams ? 'fa fa-angle-down' : 'fa fa-angle-right'} /> Params ({spec.params.length})
         </div>
         {showParams && <ParamsEditor data={data} spec={spec} connections={connections} problems={problems} onChange={change} />}
+        <div
+          style={{ fontWeight: 600, cursor: 'pointer', userSelect: 'none', marginTop: '0.6em' }}
+          onClick={() => setShowVars(v => !v)}>
+          <i className={showVars ? 'fa fa-angle-down' : 'fa fa-angle-right'} /> Variables ({spec.vars?.length ?? 0})
+        </div>
+        {showVars && <VarsEditor spec={spec} problems={problems} onChange={change} />}
         {general.length > 0 && (
           <div style={{ color: COLORS.warn, marginTop: '0.8em' }}>
             <ProblemList problems={general} />

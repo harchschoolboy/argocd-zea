@@ -363,12 +363,21 @@ export interface StreamSpec {
   // Runs with the same rendered lock (of any stream) run one at a time.
   lock?: string;
   params: StreamParam[];
+  // Computed when a run starts, in order; referenced as ${{ vars.<name> }}.
+  vars?: StreamVar[];
   stages: StreamStage[];
+}
+
+// StreamVar is a value built from params, built-ins and the vars above it.
+export interface StreamVar {
+  name: string;
+  value: string;
 }
 
 export interface StreamProblem {
   step?: string;
   param?: string;
+  var?: string;
   message: string;
 }
 
@@ -458,6 +467,8 @@ export interface StreamRun {
   stream: string;
   user: string;
   params: Record<string, string>;
+  // The stream's vars resolved when the run was created.
+  vars?: Record<string, string>;
   status: StreamRunStatus;
   message?: string;
   cancelRequested?: boolean;

@@ -167,11 +167,25 @@ export const ConnectionCard = ({
               <i className='fa fa-lock' /> declarative
             </span>
           )}
-          {!detail && (
-            <>
-              <span style={{ flex: 1 }} />
-              <i className='fa fa-chevron-right' style={{ color: COLORS.muted }} title='Open connection' />
-            </>
+          <span style={{ flex: 1 }} />
+          {detail ? (
+            <div data-zea-nonav style={{ display: 'flex', gap: '0.5em', flexShrink: 0 }}>
+              <button className='argo-button argo-button--base-o' onClick={runTest} disabled={busy}>
+                Test
+              </button>
+              {canEdit && c.editable && (
+                <>
+                  <button className='argo-button argo-button--base-o' onClick={onEdit} disabled={busy}>
+                    Edit
+                  </button>
+                  <button className='argo-button argo-button--base-o' onClick={remove} disabled={busy}>
+                    Delete
+                  </button>
+                </>
+              )}
+            </div>
+          ) : (
+            <i className='fa fa-chevron-right' style={{ color: COLORS.muted }} title='Open connection' />
           )}
         </div>
         <div style={{ marginBottom: '0.8em', wordBreak: 'break-all' }}>
@@ -179,6 +193,12 @@ export const ConnectionCard = ({
             {c.url}
           </a>
         </div>
+        {detail && (actionError || test) && (
+          <div data-zea-nonav style={{ marginBottom: '0.8em' }}>
+            {actionError && <ErrorText text={actionError} />}
+            {test && <TestResultView result={test} />}
+          </div>
+        )}
         {affected && affected.length > 0 && !detail && (
           <div style={{ marginBottom: '0.8em' }}>
             <AffectedSummary items={affected} />
@@ -319,28 +339,6 @@ export const ConnectionCard = ({
           </div>
         )}
 
-        {detail && (
-          <>
-            {actionError && <ErrorText text={actionError} />}
-            {test && <TestResultView result={test} />}
-
-            <div style={{ display: 'flex', gap: '0.5em', marginTop: '1em' }}>
-              <button className='argo-button argo-button--base-o' onClick={runTest} disabled={busy}>
-                Test
-              </button>
-              {canEdit && c.editable && (
-                <>
-                  <button className='argo-button argo-button--base-o' onClick={onEdit} disabled={busy}>
-                    Edit
-                  </button>
-                  <button className='argo-button argo-button--base-o' onClick={remove} disabled={busy}>
-                    Delete
-                  </button>
-                </>
-              )}
-            </div>
-          </>
-        )}
       </div>
     </div>
   );

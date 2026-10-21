@@ -18,6 +18,7 @@ const (
 	MaxStepsPerStage = 20
 	MaxSteps         = 50
 	MaxParams        = 30
+	MaxVars          = 30
 	MaxStepValues    = 50
 	MaxOptions       = 50
 	// MaxSpecBytes caps the stored YAML; a ConfigMap holds at most 1 MiB.
@@ -113,7 +114,16 @@ type Spec struct {
 	// It may reference params and zea.user / stream.name.
 	Lock   string  `json:"lock,omitempty" yaml:"lock,omitempty"`
 	Params []Param `json:"params" yaml:"params,omitempty"`
+	// Vars are computed when a run starts, in order, and referenced in
+	// steps and the lock as ${{ vars.<name> }}.
+	Vars   []Var   `json:"vars,omitempty" yaml:"vars,omitempty"`
 	Stages []Stage `json:"stages" yaml:"stages"`
+}
+
+// Var is a value built from params, built-ins and the Vars above it.
+type Var struct {
+	Name  string `json:"name" yaml:"name"`
+	Value string `json:"value" yaml:"value"`
 }
 
 // Param is a value asked when the Stream starts, referenced in steps as
@@ -244,6 +254,7 @@ type Stream struct {
 type Problem struct {
 	Step    string `json:"step,omitempty"`
 	Param   string `json:"param,omitempty"`
+	Var     string `json:"var,omitempty"`
 	Message string `json:"message"`
 }
 
@@ -253,6 +264,8 @@ func (p Problem) String() string {
 		return fmt.Sprintf("step %q: %s", p.Step, p.Message)
 	case p.Param != "":
 		return fmt.Sprintf("param %q: %s", p.Param, p.Message)
+	case p.Var != "":
+		return fmt.Sprintf("variable %q: %s", p.Var, p.Message)
 	}
 	return p.Message
 }
@@ -315,6 +328,14 @@ func (s *Stream) Validate() error {
 			if len(o) > maxParamDefaultLen || len(l) > maxLabelLen {
 				return fmt.Errorf("param %q: option label is too long", p.Name)
 			}
+		}
+	}
+	if len(s.Vars) > MaxVars {
+		return fmt.Errorf("at most %d variables are allowed", MaxVars)
+	}
+	for _, v := range s.Vars {
+		if len(v.Name) > maxKeyLen || len(v.Value) > maxValueLen {
+			return fmt.Errorf("variable %q: name or value is too long", v.Name)
 		}
 	}
 	if len(s.Stages) > MaxStages {
@@ -403,10 +424,31 @@ func (s *Stream) Problems() []Problem {
 		}
 	}
 
-	for _, msg := range checkTemplate(s.Lock, params, nil) {
+	vars := map[string]bool{}
+	// perRun are the Vars that differ for every run (they use stream.run).
+	perRun := map[string]bool{}
+	for i, v := range s.Vars {
+		if !paramRe.MatchString(v.Name) {
+			add(Problem{Var: v.Name, Message: fmt.Sprintf("variable %d: invalid name, use letters, digits and '_'", i+1)})
+			continue
+		}
+		if vars[v.Name] {
+			add(Problem{Var: v.Name, Message: "duplicate variable name"})
+			continue
+		}
+		for _, msg := range checkTemplate(v.Value, scope{params: params, vars: vars, inVar: true}) {
+			add(Problem{Var: v.Name, Message: msg})
+		}
+		if usesPerRun(v.Value, perRun) {
+			perRun[v.Name] = true
+		}
+		vars[v.Name] = true
+	}
+
+	for _, msg := range checkTemplate(s.Lock, scope{params: params, vars: vars}) {
 		add(Problem{Message: "lock: " + msg})
 	}
-	if strings.Contains(s.Lock, "stream.run") {
+	if usesPerRun(s.Lock, perRun) {
 		add(Problem{Message: "lock: stream.run is different for every run, so it would never make runs wait"})
 	}
 	if len(s.Stages) == 0 {
@@ -426,7 +468,7 @@ func (s *Stream) Problems() []Problem {
 				add(Problem{Step: step.ID, Message: "duplicate step id"})
 			}
 			ids[step.ID] = true
-			for _, msg := range stepProblems(step, earlier, g.Upstream(step.ID), params) {
+			for _, msg := range stepProblems(step, earlier, scope{params: params, vars: vars, upstream: g.Upstream(step.ID)}) {
 				add(Problem{Step: step.ID, Message: msg})
 			}
 		}
@@ -506,7 +548,7 @@ func paramProblems(p Param) []string {
 
 // stepProblems checks one step. earlier holds the ids of earlier stages,
 // upstream the steps it waits for, directly or not.
-func stepProblems(step Step, earlier, upstream, params map[string]bool) []string {
+func stepProblems(step Step, earlier map[string]bool, sc scope) []string {
 	var out []string
 	switch step.Type {
 	case StepTypePipeline:
@@ -576,7 +618,7 @@ func stepProblems(step Step, earlier, upstream, params map[string]bool) []string
 		}
 	}
 	check := func(field, v string) {
-		for _, msg := range checkTemplate(v, params, upstream) {
+		for _, msg := range checkTemplate(v, sc) {
 			out = append(out, field+": "+msg)
 		}
 	}
