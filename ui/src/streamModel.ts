@@ -1,5 +1,5 @@
 import { ZeaClient } from './api';
-import { BranchList, Pipeline, RunForm, RunInput, StreamParam, StreamProblem, StreamSpec, StreamStage, StreamStep, StreamVar } from './types';
+import { BranchList, Pipeline, RunForm, RunInput, StreamParam, StreamProblem, StreamSpec, StreamStage, StreamStep } from './types';
 
 // Keep in sync with backend/internal/streams/stream.go.
 export const STREAM_NAME_RE = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
@@ -29,7 +29,6 @@ export function specOf(s: {
   category?: string;
   lock?: string;
   params?: StreamParam[] | null;
-  vars?: StreamVar[] | null;
   stages?: StreamStage[] | null;
 }): StreamSpec {
   return {
@@ -41,7 +40,6 @@ export function specOf(s: {
       options: p.options ? [...p.options] : undefined,
       optionLabels: p.optionLabels ? { ...p.optionLabels } : undefined,
     })),
-    vars: s.vars?.length ? s.vars.map(v => ({ ...v })) : undefined,
     stages: (s.stages ?? []).map(st => ({ ...st, steps: (st.steps ?? []).map(x => ({ ...x })) })),
   };
 }
@@ -269,30 +267,12 @@ export function renameStep(spec: StreamSpec, step: StreamStep, id: string): [Str
   return [next, renamed];
 }
 
-// rewriteSpec replaces re in the templated values of every step, every
-// var and the lock.
-function rewriteSpec(spec: StreamSpec, re: RegExp, to: string): StreamSpec {
-  const fix = (v: string) => (isTemplate(v) ? v.replace(re, to) : v);
-  const next = mapSteps(spec, s => rewriteValues(s, re, to));
-  return {
-    ...next,
-    lock: next.lock === undefined ? undefined : fix(next.lock),
-    vars: next.vars?.map(v => ({ ...v, value: fix(v.value) })),
-  };
-}
-
-// renameParam updates ${{ params.<name> }} references in every step, var
-// and the lock.
+// renameParam updates ${{ params.<name> }} references in every step and
+// the lock.
 export function renameParam(spec: StreamSpec, from: string, to: string): StreamSpec {
   const re = new RegExp(`\\bparams\\.${escapeRe(from)}\\b`, 'g');
-  return rewriteSpec(spec, re, `params.${to}`);
-}
-
-// renameVar updates ${{ vars.<name> }} references in every step, var and
-// the lock.
-export function renameVar(spec: StreamSpec, from: string, to: string): StreamSpec {
-  const re = new RegExp(`\\bvars\\.${escapeRe(from)}\\b`, 'g');
-  return rewriteSpec(spec, re, `vars.${to}`);
+  const next = mapSteps(spec, s => rewriteValues(s, re, `params.${to}`));
+  return next.lock && isTemplate(next.lock) ? { ...next, lock: next.lock.replace(re, `params.${to}`) } : next;
 }
 
 // setKey sets or (for an empty value) removes a key of an optional map.
@@ -312,17 +292,11 @@ export interface Reference {
   label: string;
 }
 
-// referencesFor lists the ${{ ... }} values a step may use. varsBefore
-// limits the vars to those above a var that is being edited.
-export function referencesFor(spec: StreamSpec, stepID?: string, varsBefore?: number): Reference[] {
+// referencesFor lists the ${{ ... }} values a step may use.
+export function referencesFor(spec: StreamSpec, stepID?: string): Reference[] {
   const out: Reference[] = spec.params
     .filter(p => PARAM_NAME_RE.test(p.name))
     .map(p => ({ group: 'Params', value: `\${{ params.${p.name} }}`, label: `params.${p.name}` }));
-  for (const v of (spec.vars ?? []).slice(0, varsBefore)) {
-    if (PARAM_NAME_RE.test(v.name)) {
-      out.push({ group: 'Vars', value: `\${{ vars.${v.name} }}`, label: `vars.${v.name}` });
-    }
-  }
   if (stepID !== undefined) {
     const types = new Map(allSteps(spec).map(s => [s.id, s.type ?? '']));
     for (const id of upstreamOf(spec, stepID)) {
@@ -337,6 +311,25 @@ export function referencesFor(spec: StreamSpec, stepID?: string, varsBefore?: nu
     out.push({ group: 'Built-in', value: `\${{ ${b} }}`, label: b });
   }
   return out;
+}
+
+// stepValueRefs lists the var.name / var.value references the inputs and
+// variables of a pipeline step may use: its own values that do not use var.*.
+export function stepValueRefs(step: StreamStep): Reference[] {
+  const keys = new Set<string>();
+  for (const m of [step.inputs, step.variables]) {
+    for (const [k, v] of Object.entries(m ?? {})) {
+      if (!v.includes('var.')) {
+        keys.add(k);
+      }
+    }
+  }
+  return [...keys]
+    .sort()
+    .flatMap(k => [
+      { group: 'This step', value: `\${{ var.name.${k} }}`, label: `var.name.${k}` },
+      { group: 'This step', value: `\${{ var.value.${k} }}`, label: `var.value.${k}` }
+    ]);
 }
 
 export const stepProblems = (problems: StreamProblem[], id: string) => problems.filter(p => p.step === id);

@@ -353,7 +353,6 @@ func clone(st *Stream) *Stream {
 		cp.Params[i].Options = append([]string(nil), st.Params[i].Options...)
 		cp.Params[i].OptionLabels = copyMap(st.Params[i].OptionLabels)
 	}
-	cp.Vars = append([]Var(nil), st.Vars...)
 	cp.Stages = make([]Stage, len(st.Stages))
 	for i, stage := range st.Stages {
 		cp.Stages[i] = Stage{Name: stage.Name, Steps: make([]Step, len(stage.Steps))}

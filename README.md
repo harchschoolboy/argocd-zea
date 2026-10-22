@@ -54,7 +54,7 @@ prints a ready-to-merge values snippet for the argo-cd chart.
   `argocd-server` to `github.com` to download the UI extension at startup.
 
 In the commands below the Argo CD namespace is `argocd`, the Helm release and
-the anchor Application are both called `zea`, and the release is `v0.5.3`.
+the anchor Application are both called `zea`, and the release is `v0.5.4`.
 
 ### Step 1. Install the backend
 
@@ -107,7 +107,7 @@ set `image.tag`.
 #### Option B: with the Helm CLI
 
 ```bash
-helm install zea oci://ghcr.io/harchschoolboy/charts/zea --version 0.5.3 \
+helm install zea oci://ghcr.io/harchschoolboy/charts/zea --version 0.5.4 \
   -n argocd \
   --set anchorApplication=argocd:<existing-app> \
   --set 'admins.users={admin}'
@@ -158,11 +158,11 @@ server:
           - name: EXTENSION_NAME
             value: zea
           - name: EXTENSION_VERSION
-            value: v0.5.3
+            value: v0.5.4
           - name: EXTENSION_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.5.3/extension-zea.tar.gz
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.5.4/extension-zea.tar.gz
           - name: EXTENSION_CHECKSUM_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.5.3/extension-zea_checksums.txt
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.5.4/extension-zea_checksums.txt
 
 configs:
   params:
@@ -250,11 +250,11 @@ one Zea installation.
                - name: EXTENSION_NAME
                  value: zea
                - name: EXTENSION_VERSION
-                 value: v0.5.3
+                 value: v0.5.4
                - name: EXTENSION_URL
-                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.5.3/extension-zea.tar.gz
+                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.5.4/extension-zea.tar.gz
                - name: EXTENSION_CHECKSUM_URL
-                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.5.3/extension-zea_checksums.txt
+                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.5.4/extension-zea_checksums.txt
              securityContext:
                runAsNonRoot: true
                runAsUser: 1000
@@ -581,10 +581,12 @@ first, with tabs per **category** (set in the editor):
 
 - **New stream** (edit access to streams): drag Connections into stage columns, pick the
   branch and pipeline of each step, fill its inputs. Values may use
-  `${{ params.<name> }}` (params asked when the Stream starts),
-  `${{ vars.<name> }}` (variables built from params and other variables,
-  e.g. `PIPE_LABEL = ${{ params.branch }}-${{ params.env }}`) and
-  `${{ steps.<id>.ref|sha|runId|url|status }}` of upstream steps. Params
+  `${{ params.<name> }}` (params asked when the Stream starts) and
+  `${{ steps.<id>.ref|sha|runId|url|status }}` of upstream steps. Inputs
+  and variables can also combine the step's own values:
+  `${{ var.value.<key> }}` is the value and `${{ var.name.<key> }}` is the
+  key when the value is on (for example `DEPLOY` when `DEPLOY=true`, empty
+  for `false`/`off`/`no`/`0`). Params
   are text, a choice, a boolean, a branch of a Connection or an **image**
   tag (picked from the images of a Connection, newest first). A step can
   wait for specific steps (`needs`), run only on success, failure or always,

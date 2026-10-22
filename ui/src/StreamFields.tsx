@@ -114,12 +114,7 @@ export const ProblemList = ({ problems, onStep }: { problems: StreamProblem[]; o
             param <code>{p.param}</code>
           </>
         )}
-        {p.var && (
-          <>
-            variable <code>{p.var}</code>
-          </>
-        )}
-        {(p.step || p.param || p.var) && ': '}
+        {(p.step || p.param) && ': '}
         {p.message}
       </li>
     ))}

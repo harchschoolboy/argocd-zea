@@ -1022,7 +1022,6 @@ export const StreamRunView = ({ client, data, me, stream, runID }: { client: Zea
   const retryable = r && (r.status === 'failed' || r.status === 'cancelled') && r.steps.some(s => s.status !== 'succeeded');
   const waiting = r ? waitingSteps(r) : [];
   const params = Object.entries(r?.params ?? {});
-  const vars = (r?.spec?.vars ?? []).filter(v => r?.vars && v.name in r.vars).map(v => [v.name, r?.vars?.[v.name] ?? ''] as const);
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.6em', marginBottom: '0.8em', flexWrap: 'wrap' }}>
@@ -1085,16 +1084,11 @@ export const StreamRunView = ({ client, data, me, stream, runID }: { client: Zea
               {r.status === 'queued' && r.blockedBy && <HolderLink blockedBy={r.blockedBy} />}
             </div>
           )}
-          {params.length + vars.length > 0 && (
+          {params.length > 0 && (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4em', marginBottom: '0.8em' }}>
               {params.map(([k, v]) => (
                 <Badge key={k}>
                   {k} = <b>{v || '""'}</b>
-                </Badge>
-              ))}
-              {vars.map(([k, v]) => (
-                <Badge key={'vars.' + k} title='Variable'>
-                  vars.{k} = <b>{v || '""'}</b>
                 </Badge>
               ))}
             </div>

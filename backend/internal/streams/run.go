@@ -70,12 +70,10 @@ var runIDRe = regexp.MustCompile(`^[0-9a-z]{1,13}-[0-9a-z]{1,10}$`)
 // Run is one execution of a Stream. It keeps a snapshot of the Spec, so
 // editing the Stream does not change runs in progress.
 type Run struct {
-	ID     string            `json:"id"`
-	Stream string            `json:"stream"`
-	User   string            `json:"user"`
-	Params map[string]string `json:"params"`
-	// Vars are the Spec's Vars resolved when the run was created.
-	Vars            map[string]string `json:"vars,omitempty"`
+	ID              string            `json:"id"`
+	Stream          string            `json:"stream"`
+	User            string            `json:"user"`
+	Params          map[string]string `json:"params"`
 	Spec            Spec              `json:"spec"`
 	Status          string            `json:"status"`
 	Message         string            `json:"message,omitempty"`
@@ -203,22 +201,7 @@ func NewRun(st *Stream, given map[string]string, user string, now time.Time) (*R
 			r.Steps = append(r.Steps, StepState{ID: step.ID, Status: StepPending})
 		}
 	}
-	vals := r.values()
-	for _, v := range st.Vars {
-		out, err := Render(v.Value, vals)
-		if err != nil {
-			return nil, fmt.Errorf("%w: variable %q: %s", ErrInvalidParams, v.Name, err)
-		}
-		if len(out) > maxValueLen {
-			return nil, fmt.Errorf("%w: variable %q is longer than %d characters", ErrInvalidParams, v.Name, maxValueLen)
-		}
-		if r.Vars == nil {
-			r.Vars = map[string]string{}
-		}
-		r.Vars[v.Name] = out
-		vals["vars."+v.Name] = out
-	}
-	lock, err := Render(st.Lock, vals)
+	lock, err := Render(st.Lock, r.values())
 	if err != nil {
 		return nil, fmt.Errorf("%w: lock: %s", ErrInvalidParams, err)
 	}
@@ -314,9 +297,6 @@ func (r *Run) values() map[string]string {
 	v := map[string]string{"zea.user": r.User, "stream.name": r.Stream, "stream.run": r.ID}
 	for k, p := range r.Params {
 		v["params."+k] = p
-	}
-	for k, x := range r.Vars {
-		v["vars."+k] = x
 	}
 	for _, s := range r.Steps {
 		p := "steps." + s.ID + "."

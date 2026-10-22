@@ -41,31 +41,32 @@ func References(v string) ([]string, error) {
 	}
 }
 
-// scope is what a template may reference: the params, the Vars defined so
-// far and the steps that finish before it. inVar marks a Var's value, which
-// is resolved when the run starts.
-type scope struct {
-	params, vars, upstream map[string]bool
-	inVar                  bool
+// stepValues are the inputs and variables of the step a value belongs to,
+// for ${{ var.name.<key> }} and ${{ var.value.<key> }}. usable holds the
+// keys that may be referenced (set, and not using var.* themselves); all
+// holds every key. A nil stepValues means var.* is not allowed.
+type stepValues struct {
+	usable, all map[string]bool
 }
 
 // checkTemplate reports references that are malformed or point to unknown
-// params or Vars or to steps that do not run before this one.
-func checkTemplate(v string, sc scope) []string {
+// params, to steps that do not run before this one or to values the step
+// does not set.
+func checkTemplate(v string, params, upstream map[string]bool, own *stepValues) []string {
 	refs, err := References(v)
 	var out []string
 	if err != nil {
 		out = append(out, err.Error())
 	}
 	for _, ref := range refs {
-		if msg := checkReference(ref, sc); msg != "" {
+		if msg := checkReference(ref, params, upstream, own); msg != "" {
 			out = append(out, msg)
 		}
 	}
 	return out
 }
 
-func checkReference(ref string, sc scope) string {
+func checkReference(ref string, params, upstream map[string]bool, own *stepValues) string {
 	if ref == "" {
 		return "empty ${{ }}"
 	}
@@ -75,22 +76,22 @@ func checkReference(ref string, sc scope) string {
 	parts := strings.Split(ref, ".")
 	switch {
 	case parts[0] == "params" && len(parts) == 2:
-		if !sc.params[parts[1]] {
+		if !params[parts[1]] {
 			return fmt.Sprintf("unknown param %q", parts[1])
 		}
 		return ""
-	case parts[0] == "vars" && len(parts) == 2:
-		if !sc.vars[parts[1]] {
-			if sc.inVar {
-				return fmt.Sprintf("unknown variable %q (a variable can use only the variables above it)", parts[1])
-			}
-			return fmt.Sprintf("unknown variable %q", parts[1])
+	case parts[0] == "var" && len(parts) == 3 && (parts[1] == "name" || parts[1] == "value"):
+		switch {
+		case own == nil:
+			return "var.* can only be used in the inputs and variables of a pipeline step"
+		case own.usable[parts[2]]:
+			return ""
+		case own.all[parts[2]]:
+			return fmt.Sprintf("%q uses var.* itself, so it cannot be referenced with var.*", parts[2])
 		}
-		return ""
-	case parts[0] == "steps" && len(parts) == 3 && sc.inVar:
-		return "variables are resolved when the run starts, so they cannot use steps"
+		return fmt.Sprintf("%q is not an input or variable set in this step", parts[2])
 	case parts[0] == "steps" && len(parts) == 3:
-		if !sc.upstream[parts[1]] {
+		if !upstream[parts[1]] {
 			return fmt.Sprintf("step %q does not finish before this step (add it to needs or move it to an earlier stage)", parts[1])
 		}
 		if !stepFields[parts[2]] {
@@ -98,19 +99,94 @@ func checkReference(ref string, sc scope) string {
 		}
 		return ""
 	}
-	return fmt.Sprintf("unknown reference %q: use params.<name>, vars.<name>, steps.<id>.<field>, zea.user, stream.name or stream.run", ref)
+	return fmt.Sprintf("unknown reference %q: use params.<name>, steps.<id>.<field>, var.name.<key>, var.value.<key>, zea.user, stream.name or stream.run", ref)
 }
 
-// usesPerRun reports whether v references stream.run directly or through
-// one of the perRun Vars.
-func usesPerRun(v string, perRun map[string]bool) bool {
+// usesStepValues reports whether v references var.name.* or var.value.*.
+func usesStepValues(v string) bool {
 	refs, _ := References(v)
 	for _, ref := range refs {
-		if ref == "stream.run" || (strings.HasPrefix(ref, "vars.") && perRun[strings.TrimPrefix(ref, "vars.")]) {
+		if strings.HasPrefix(ref, "var.") {
 			return true
 		}
 	}
 	return false
+}
+
+// isOn reports whether a value counts as switched on for var.name: not
+// empty and not false, off, no or 0 (any case).
+func isOn(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "false", "off", "no", "0":
+		return false
+	}
+	return true
+}
+
+// renderStepValues renders the inputs and variables of a step. Values that
+// use var.* are rendered last, from the rendered values that do not:
+// var.value.<key> is the value of key (a variable wins over an input of the
+// same name) and var.name.<key> is key when that value is on, else empty.
+func renderStepValues(inputs, variables, vals map[string]string) (map[string]string, map[string]string, error) {
+	in, err := renderPlain(inputs, vals)
+	if err != nil {
+		return nil, nil, fmt.Errorf("inputs: %w", err)
+	}
+	vars, err := renderPlain(variables, vals)
+	if err != nil {
+		return nil, nil, fmt.Errorf("variables: %w", err)
+	}
+	ext := make(map[string]string, len(vals)+2*(len(in)+len(vars)))
+	for k, v := range vals {
+		ext[k] = v
+	}
+	for _, m := range []map[string]string{in, vars} {
+		for k, v := range m {
+			ext["var.value."+k] = v
+			ext["var.name."+k] = ""
+			if isOn(v) {
+				ext["var.name."+k] = k
+			}
+		}
+	}
+	for _, x := range []struct {
+		field    string
+		src, dst map[string]string
+	}{{"inputs", inputs, in}, {"variables", variables, vars}} {
+		for _, k := range sortedKeys(x.src) {
+			if !usesStepValues(x.src[k]) {
+				continue
+			}
+			v, err := Render(x.src[k], ext)
+			if err != nil {
+				return nil, nil, fmt.Errorf("%s: %s: %w", x.field, k, err)
+			}
+			x.dst[k] = v
+		}
+	}
+	if len(in) == 0 {
+		in = nil
+	}
+	if len(vars) == 0 {
+		vars = nil
+	}
+	return in, vars, nil
+}
+
+// renderPlain renders the values of m that do not use var.*.
+func renderPlain(m, vals map[string]string) (map[string]string, error) {
+	out := make(map[string]string, len(m))
+	for _, k := range sortedKeys(m) {
+		if usesStepValues(m[k]) {
+			continue
+		}
+		v, err := Render(m[k], vals)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", k, err)
+		}
+		out[k] = v
+	}
+	return out, nil
 }
 
 // Render replaces every ${{ ref }} in v with values[ref].

@@ -35,10 +35,10 @@ import {
   positionOf,
   previousStageSteps,
   referencesFor,
+  stepValueRefs,
   removeStep,
   renameParam,
   renameStep,
-  renameVar,
   replaceStep,
   setKey,
   specOf,
@@ -48,7 +48,7 @@ import {
   STREAM_NAME_RE,
   uniqueStepId,
 } from './streamModel';
-import { Connection, RunInput, Stream, StreamParam, StreamProblem, StreamSpec, StreamStep, StreamVar } from './types';
+import { Connection, RunInput, Stream, StreamParam, StreamProblem, StreamSpec, StreamStep } from './types';
 import { COLORS, ErrorText, Muted, ProviderBadge, useLoad } from './ui';
 
 const ACCENT = '#0dadea';
@@ -244,6 +244,7 @@ const StepPanel = ({ data, spec, step, pos, connections, problems, onChange, onM
   );
 
   const refs = referencesFor(spec, step.id);
+  const valueRefs = [...refs, ...stepValueRefs(step)];
   const list = pipelines.state === 'ok' ? pipelines.data ?? [] : [];
   const fd = form.state === 'ok' ? form.data : undefined;
   const declared = fd?.inputs.map(i => i.name) ?? [];
@@ -265,11 +266,13 @@ const StepPanel = ({ data, spec, step, pos, connections, problems, onChange, onM
       onRename(v);
     }
   };
+  const panelRef = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    panelRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [step.id]);
 
   return (
-    <div
-      className='white-box'
-      style={{ flex: '0 0 440px', maxWidth: 440, padding: '0.8em 1em', alignSelf: 'flex-start', position: 'sticky', top: 0 }}>
+    <div ref={panelRef} className='white-box' style={{ padding: '0.8em 1em', marginTop: '1em' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', marginBottom: '0.8em' }}>
         <b style={{ ...ellipsis, flex: 1 }}>
           {approval ? 'Approval' : argocd ? 'Argo CD sync' : 'Step'} <code>{step.id}</code> <Muted>· stage {pos.stage + 1}</Muted>
@@ -459,7 +462,7 @@ const StepPanel = ({ data, spec, step, pos, connections, problems, onChange, onM
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <ValueField
                         value={step.inputs?.[i.name] ?? ''}
-                        refs={refs}
+                        refs={valueRefs}
                         options={i.type === 'choice' ? i.options : i.type === 'boolean' ? ['true', 'false'] : undefined}
                         branches={isBranchInput(i) ? bl : undefined}
                         placeholder={i.default ? `default: ${i.default}` : ''}
@@ -477,7 +480,7 @@ const StepPanel = ({ data, spec, step, pos, connections, problems, onChange, onM
                   <KeyValueEditor
                     entries={step.inputs}
                     exclude={declared}
-                    refs={refs}
+                    refs={valueRefs}
                     keyPlaceholder='input'
                     addLabel='Add input'
                     onChange={inputs => set({ inputs })}
@@ -485,12 +488,12 @@ const StepPanel = ({ data, spec, step, pos, connections, problems, onChange, onM
                 </Field>
               )}
               {prefilled.map(p => (
-                <Field key={p.name} label={<code>{p.name}</code>} hint='variable' help={p.description}>
+                <Field key={p.name} label={<code>{p.name}</code>} help={p.description}>
                   <div style={{ display: 'flex', gap: '0.3em', alignItems: 'flex-start' }}>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <ValueField
                         value={step.variables?.[p.name] ?? ''}
-                        refs={refs}
+                        refs={valueRefs}
                         options={p.options?.length ? p.options : undefined}
                         placeholder={p.default ? `default: ${p.default}` : ''}
                         mono
@@ -506,7 +509,7 @@ const StepPanel = ({ data, spec, step, pos, connections, problems, onChange, onM
                   <KeyValueEditor
                     entries={step.variables}
                     exclude={prefilled.map(p => p.name)}
-                    refs={refs}
+                    refs={valueRefs}
                     keyPlaceholder='NAME'
                     addLabel='Add variable'
                     onChange={variables => set({ variables })}
@@ -942,118 +945,6 @@ const ParamsEditor = ({
   );
 };
 
-const VarRow = ({
-  spec,
-  index,
-  problems,
-  onChange,
-  onRename,
-  onMove,
-  onDelete,
-}: {
-  spec: StreamSpec;
-  index: number;
-  problems: StreamProblem[];
-  onChange: (v: StreamVar) => void;
-  onRename: (name: string) => void;
-  onMove: (delta: number) => void;
-  onDelete: () => void;
-}) => {
-  const vars = spec.vars ?? [];
-  const v = vars[index];
-  const [nameText, setNameText] = React.useState(v.name);
-  React.useEffect(() => setNameText(v.name), [v.name]);
-  const commitName = () => nameText.trim() !== v.name && onRename(nameText.trim());
-  return (
-    <div style={{ borderTop: `1px solid ${COLORS.border}`, padding: '0.5em 0' }}>
-      <div style={{ display: 'flex', gap: '0.5em', alignItems: 'center' }}>
-        <input
-          className='argo-field'
-          style={{ flex: '0 0 200px', fontFamily: 'monospace' }}
-          value={nameText}
-          placeholder='NAME'
-          spellCheck={false}
-          onChange={e => setNameText(e.target.value)}
-          onBlur={commitName}
-          onKeyDown={e => e.key === 'Enter' && commitName()}
-        />
-        <span>=</span>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <ValueField
-            value={v.value}
-            refs={referencesFor(spec, undefined, index)}
-            placeholder='e.g. ${{ params.branch }}-${{ params.env }}'
-            mono
-            onChange={value => onChange({ ...v, value })}
-          />
-        </div>
-        <button className='argo-button argo-button--base-o' title='Move up' disabled={index === 0} onClick={() => onMove(-1)}>
-          <i className='fa fa-arrow-up' />
-        </button>
-        <button className='argo-button argo-button--base-o' title='Move down' disabled={index === vars.length - 1} onClick={() => onMove(1)}>
-          <i className='fa fa-arrow-down' />
-        </button>
-        <button className='argo-button argo-button--base-o' title='Remove variable' onClick={onDelete}>
-          <i className='fa fa-times' />
-        </button>
-      </div>
-      {problems.length > 0 && (
-        <div style={{ color: COLORS.error, marginTop: '0.3em' }}>
-          <ProblemList problems={problems.map(p => ({ message: p.message }))} />
-        </div>
-      )}
-    </div>
-  );
-};
-
-// VarsEditor edits the stream variables: values computed when a run starts
-// from params, built-ins and the variables above them.
-const VarsEditor = ({ spec, problems, onChange }: { spec: StreamSpec; problems: StreamProblem[]; onChange: (spec: StreamSpec) => void }) => {
-  const vars = spec.vars ?? [];
-  const setVars = (next: StreamVar[], base: StreamSpec = spec) => onChange({ ...base, vars: next.length > 0 ? next : undefined });
-  const rename = (i: number, name: string) => {
-    const old = vars[i].name;
-    const base = PARAM_NAME_RE.test(old) && PARAM_NAME_RE.test(name) ? renameVar(spec, old, name) : spec;
-    setVars((base.vars ?? []).map((x, j) => (j === i ? { ...x, name } : x)), base);
-  };
-  const move = (i: number, delta: number) => {
-    const next = [...vars];
-    const [v] = next.splice(i, 1);
-    next.splice(i + delta, 0, v);
-    setVars(next);
-  };
-  const add = () => {
-    const names = new Set(vars.map(v => v.name));
-    let name = 'VAR';
-    for (let n = 2; names.has(name); n++) {
-      name = `VAR${n}`;
-    }
-    setVars([...vars, { name, value: '' }]);
-  };
-  return (
-    <div>
-      <Help>
-        Computed when the run starts from params, built-ins and the variables above; used in steps and the lock as <code>{'${{ vars.<name> }}'}</code>.
-      </Help>
-      {vars.map((v, i) => (
-        <VarRow
-          key={i}
-          spec={spec}
-          index={i}
-          problems={problems.filter(x => x.var === v.name && !x.step)}
-          onChange={next => setVars(vars.map((x, j) => (j === i ? next : x)))}
-          onRename={name => rename(i, name)}
-          onMove={d => move(i, d)}
-          onDelete={() => setVars(vars.filter((_, j) => j !== i))}
-        />
-      ))}
-      <button className='argo-button argo-button--base-o' style={{ marginTop: '0.5em' }} onClick={add}>
-        <i className='fa fa-plus' /> Add variable
-      </button>
-    </div>
-  );
-};
-
 interface EditorProps {
   client: ZeaClient;
   data: ConnData;
@@ -1077,7 +968,6 @@ export const StreamEditor = ({ client, data, connections, existing, categories, 
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState('');
   const [showParams, setShowParams] = React.useState(true);
-  const [showVars, setShowVars] = React.useState(true);
   const drag = React.useRef<Drag | null>(null);
   const [drop, setDrop] = React.useState<Drop | null>(null);
 
@@ -1254,7 +1144,7 @@ export const StreamEditor = ({ client, data, connections, existing, categories, 
     }
   }, [spec, selected]);
 
-  const general = problems.filter(p => !p.step && !p.param && !p.var);
+  const general = problems.filter(p => !p.step && !p.param);
   const stepCount = spec.stages.reduce((n, s) => n + s.steps.length, 0);
 
   return (
@@ -1332,7 +1222,7 @@ export const StreamEditor = ({ client, data, connections, existing, categories, 
           <div style={{ flex: '1 1 220px' }}>
             <Field
               label='Lock'
-              help='Runs with the same lock, of any stream, run one at a time; later ones wait in a queue. May use ${{ params.<name> }} and ${{ vars.<name> }}, e.g. deploy-${{ params.env }}. Empty: runs never wait.'>
+              help='Runs with the same lock, of any stream, run one at a time; later ones wait in a queue. May use ${{ params.<name> }}, e.g. deploy-${{ params.env }}. Empty: runs never wait.'>
               <input
                 className='argo-field'
                 style={{ width: '100%' }}
@@ -1348,6 +1238,13 @@ export const StreamEditor = ({ client, data, connections, existing, categories, 
             <ProblemList problems={general} />
           </div>
         )}
+      </div>
+
+      <div className='white-box' style={{ padding: '0.8em 1em', marginBottom: '1em' }}>
+        <div style={{ fontWeight: 600, cursor: 'pointer', userSelect: 'none' }} onClick={() => setShowParams(v => !v)}>
+          <i className={showParams ? 'fa fa-angle-down' : 'fa fa-angle-right'} /> Params ({spec.params.length})
+        </div>
+        {showParams && <ParamsEditor data={data} spec={spec} connections={connections} problems={problems} onChange={change} />}
       </div>
 
       <div style={{ display: 'flex', gap: '1em', alignItems: 'flex-start' }}>
@@ -1534,57 +1431,43 @@ export const StreamEditor = ({ client, data, connections, existing, categories, 
           </Help>
         </div>
 
-        {selected && pos && (
-          <StepPanel
-            key={panelKey}
-            data={data}
-            spec={spec}
-            step={selected}
-            pos={pos}
-            connections={connections}
-            problems={stepProblems(problems, selected.id)}
-            onChange={next => {
-              change(replaceStep(spec, selected, next));
-              setSelected(next);
-            }}
-            onMakeParam={(param, next) => {
-              change(replaceStep(param ? { ...spec, params: [...spec.params, param] } : spec, selected, next));
-              setSelected(next);
-              setShowParams(true);
-            }}
-            onRename={id => {
-              const [next, renamed] = renameStep(spec, selected, id);
-              change(next);
-              setSelected(renamed);
-            }}
-            onDelete={() => {
-              change(removeStep(spec, selected));
-              select(null);
-            }}
-            onClose={() => select(null)}
-          />
-        )}
       </div>
+      {selected && pos && (
+        <StepPanel
+          key={panelKey}
+          data={data}
+          spec={spec}
+          step={selected}
+          pos={pos}
+          connections={connections}
+          problems={stepProblems(problems, selected.id)}
+          onChange={next => {
+            change(replaceStep(spec, selected, next));
+            setSelected(next);
+          }}
+          onMakeParam={(param, next) => {
+            change(replaceStep(param ? { ...spec, params: [...spec.params, param] } : spec, selected, next));
+            setSelected(next);
+            setShowParams(true);
+          }}
+          onRename={id => {
+            const [next, renamed] = renameStep(spec, selected, id);
+            change(next);
+            setSelected(renamed);
+          }}
+          onDelete={() => {
+            change(removeStep(spec, selected));
+            select(null);
+          }}
+          onClose={() => select(null)}
+        />
+      )}
       {problems.some(p => p.step) && (
         <div className='white-box' style={{ padding: '0.8em 1em', marginTop: '1em', color: COLORS.warn }}>
           <b>Step problems</b>
           <ProblemList problems={problems.filter(p => p.step)} onStep={selectByID} />
         </div>
       )}
-
-      <div className='white-box' style={{ padding: '0.8em 1em', marginTop: '1em' }}>
-        <div style={{ fontWeight: 600, cursor: 'pointer', userSelect: 'none' }} onClick={() => setShowParams(v => !v)}>
-          <i className={showParams ? 'fa fa-angle-down' : 'fa fa-angle-right'} /> Params ({spec.params.length})
-        </div>
-        {showParams && <ParamsEditor data={data} spec={spec} connections={connections} problems={problems} onChange={change} />}
-      </div>
-
-      <div className='white-box' style={{ padding: '0.8em 1em', marginTop: '1em' }}>
-        <div style={{ fontWeight: 600, cursor: 'pointer', userSelect: 'none' }} onClick={() => setShowVars(v => !v)}>
-          <i className={showVars ? 'fa fa-angle-down' : 'fa fa-angle-right'} /> Variables ({spec.vars?.length ?? 0})
-        </div>
-        {showVars && <VarsEditor spec={spec} problems={problems} onChange={change} />}
-      </div>
     </div>
   );
 };

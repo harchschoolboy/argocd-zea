@@ -409,14 +409,9 @@ func (e *Engine) start(ctx context.Context, run *Run, i int, def Step) {
 		fail("ref is empty")
 		return
 	}
-	inputs, err := renderMap(def.Inputs, vals)
+	inputs, variables, err := renderStepValues(def.Inputs, def.Variables, vals)
 	if err != nil {
-		fail("inputs: " + err.Error())
-		return
-	}
-	variables, err := renderMap(def.Variables, vals)
-	if err != nil {
-		fail("variables: " + err.Error())
+		fail(err.Error())
 		return
 	}
 	conn, prov, err := e.provider(ctx, def.Connection)
@@ -453,21 +448,6 @@ func (e *Engine) start(ctx context.Context, run *Run, i int, def Step) {
 		s.Status = StepRunning
 		applyProviderRun(s, pr)
 	})
-}
-
-func renderMap(m map[string]string, vals map[string]string) (map[string]string, error) {
-	if len(m) == 0 {
-		return nil, nil
-	}
-	out := make(map[string]string, len(m))
-	for _, k := range sortedKeys(m) {
-		v, err := Render(m[k], vals)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", k, err)
-		}
-		out[k] = v
-	}
-	return out, nil
 }
 
 func applyProviderRun(s *StepState, pr *providers.Run) {
