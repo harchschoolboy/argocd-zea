@@ -36,6 +36,10 @@ const (
 	maxRetryDelay      = time.Hour
 	// MaxLockLen caps the lock template and its rendered key.
 	MaxLockLen = 200
+	// MaxCategories caps the stored order of categories.
+	MaxCategories = 200
+	// MaxOrderedStreams caps the stored order of Streams.
+	MaxOrderedStreams = 2000
 )
 
 // Step retry limits.
@@ -105,6 +109,8 @@ var (
 
 // Spec is the editable content of a Stream, stored as YAML.
 type Spec struct {
+	// Label is the human-readable name shown instead of the name.
+	Label       string `json:"label,omitempty" yaml:"label,omitempty"`
 	Description string `json:"description,omitempty" yaml:"description,omitempty"`
 	// Category groups Streams into tabs on the Streams page.
 	Category string `json:"category,omitempty" yaml:"category,omitempty"`
@@ -257,6 +263,74 @@ func (p Problem) String() string {
 	return p.Message
 }
 
+// NormalizeCategoryOrder trims the categories of a manual order, drops
+// empty and repeated ones and checks the limits.
+func NormalizeCategoryOrder(order []string) ([]string, error) {
+	if len(order) > MaxCategories {
+		return nil, fmt.Errorf("at most %d categories can be ordered", MaxCategories)
+	}
+	out := make([]string, 0, len(order))
+	seen := map[string]bool{}
+	for _, c := range order {
+		c = strings.TrimSpace(c)
+		if c == "" || seen[c] {
+			continue
+		}
+		if len(c) > maxCategoryLen {
+			return nil, fmt.Errorf("category is longer than %d characters", maxCategoryLen)
+		}
+		seen[c] = true
+		out = append(out, c)
+	}
+	return out, nil
+}
+
+// NormalizeStreamOrder drops empty and repeated names of a manual order of
+// Streams and checks the names and the limit.
+func NormalizeStreamOrder(order []string) ([]string, error) {
+	if len(order) > MaxOrderedStreams {
+		return nil, fmt.Errorf("at most %d streams can be ordered", MaxOrderedStreams)
+	}
+	out := make([]string, 0, len(order))
+	seen := map[string]bool{}
+	for _, n := range order {
+		n = strings.TrimSpace(n)
+		if n == "" || seen[n] {
+			continue
+		}
+		if err := ValidateName(n); err != nil {
+			return nil, err
+		}
+		seen[n] = true
+		out = append(out, n)
+	}
+	return out, nil
+}
+
+// MergeStreamOrder puts the visible Streams of stored in the order of
+// wanted and keeps the hidden ones where they are. Names that do not
+// exist are dropped; visible ones missing from stored follow at the end.
+func MergeStreamOrder(stored, wanted []string, exists, visible func(string) bool) []string {
+	queue := []string{}
+	for _, n := range wanted {
+		if exists(n) && visible(n) {
+			queue = append(queue, n)
+		}
+	}
+	out := make([]string, 0, len(stored)+len(queue))
+	for _, n := range stored {
+		switch {
+		case !exists(n):
+		case !visible(n):
+			out = append(out, n)
+		case len(queue) > 0:
+			out = append(out, queue[0])
+			queue = queue[1:]
+		}
+	}
+	return append(out, queue...)
+}
+
 // ValidateName checks a Stream name.
 func ValidateName(name string) error {
 	if len(name) > maxNameLen || !nameRe.MatchString(name) {
@@ -276,6 +350,9 @@ func (s *Stream) Validate() error {
 		if err := ValidateName(s.DraftOf); err != nil {
 			return fmt.Errorf("draftOf: %w", err)
 		}
+	}
+	if len(s.Label) > maxLabelLen {
+		return fmt.Errorf("label is longer than %d characters", maxLabelLen)
 	}
 	if len(s.Description) > maxDescriptionLen {
 		return fmt.Errorf("description is longer than %d characters", maxDescriptionLen)

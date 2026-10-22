@@ -174,14 +174,113 @@ func (a *api) handleListStreams(w http.ResponseWriter, r *http.Request) {
 		a.writeErr(w, err)
 		return
 	}
+	order, err := a.deps.Streams.CategoryOrder(r.Context())
+	if err != nil {
+		a.writeErr(w, err)
+		return
+	}
+	stored, err := a.deps.Streams.StreamOrder(r.Context())
+	if err != nil {
+		a.writeErr(w, err)
+		return
+	}
 	acc := AccessFrom(r.Context())
 	out := []streamView{}
+	visible := map[string]bool{}
 	for _, st := range all {
 		if acc.Can(authz.ResourceStreams, authz.ActionView, st.Name) {
 			out = append(out, streamViewOf(acc, st, conns))
+			visible[st.Name] = true
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"streams": out})
+	streamOrder := []string{}
+	for _, n := range stored {
+		if visible[n] {
+			streamOrder = append(streamOrder, n)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"streams": out, "categoryOrder": order, "streamOrder": streamOrder})
+}
+
+// streamOrderInput is the body of PUT /stream-order.
+type streamOrderInput struct {
+	Order []string `json:"order"`
+}
+
+// handleSetStreamOrder stores the order of the Streams the user can see,
+// shared by all users. Streams hidden from the user keep their places.
+func (a *api) handleSetStreamOrder(w http.ResponseWriter, r *http.Request) {
+	if !a.streamsReady(w) {
+		return
+	}
+	var in streamOrderInput
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	wanted, err := streams.NormalizeStreamOrder(in.Order)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	all, err := a.deps.Streams.List(r.Context())
+	if err != nil {
+		a.writeErr(w, err)
+		return
+	}
+	stored, err := a.deps.Streams.StreamOrder(r.Context())
+	if err != nil {
+		a.writeErr(w, err)
+		return
+	}
+	acc := AccessFrom(r.Context())
+	exists := map[string]bool{}
+	for _, st := range all {
+		exists[st.Name] = true
+	}
+	visible := func(n string) bool { return acc.Can(authz.ResourceStreams, authz.ActionView, n) }
+	merged := streams.MergeStreamOrder(stored, wanted, func(n string) bool { return exists[n] }, visible)
+	shown := []string{}
+	for _, n := range merged {
+		if visible(n) {
+			shown = append(shown, n)
+		}
+	}
+	noteAudit(r.Context(), "order", fmt.Sprintf("%d streams", len(shown)))
+	if err := a.deps.Streams.SetStreamOrder(r.Context(), merged); err != nil {
+		a.writeErr(w, err)
+		return
+	}
+	a.log.Info("streams ordered", "user", IdentityFrom(r.Context()).Username)
+	writeJSON(w, http.StatusOK, map[string]any{"streamOrder": shown})
+}
+
+// categoryOrderInput is the body of PUT /stream-categories.
+type categoryOrderInput struct {
+	Order []string `json:"order"`
+}
+
+// handleSetCategoryOrder stores the order of the category tabs, shared by
+// all users.
+func (a *api) handleSetCategoryOrder(w http.ResponseWriter, r *http.Request) {
+	if !a.streamsReady(w) {
+		return
+	}
+	var in categoryOrderInput
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	order, err := streams.NormalizeCategoryOrder(in.Order)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	noteAudit(r.Context(), "categories", strings.Join(order, ", "))
+	if err := a.deps.Streams.SetCategoryOrder(r.Context(), order); err != nil {
+		a.writeErr(w, err)
+		return
+	}
+	a.log.Info("stream categories ordered", "user", IdentityFrom(r.Context()).Username)
+	writeJSON(w, http.StatusOK, map[string]any{"categoryOrder": order})
 }
 
 func (a *api) handleGetStream(w http.ResponseWriter, r *http.Request) {

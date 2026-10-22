@@ -13,7 +13,7 @@ import {
   StreamStatusLabel,
   ValueField,
 } from './StreamFields';
-import { boolOn, boolValues, ConnData, DEFAULT_APPROVAL_TIMEOUT, isApproval, isArgoCD, optionLabel, paramLabel } from './streamModel';
+import { boolOn, boolValues, ConnData, DEFAULT_APPROVAL_TIMEOUT, isApproval, isArgoCD, optionLabel, paramLabel, streamLabel } from './streamModel';
 import { BranchPicker } from './BranchPicker';
 import { Branch, can, ImagesResult, Me, Stream, StreamAttempt, StreamParam, StreamRun, StreamRunStatus, StreamRunStep, StreamSpec, StreamStep } from './types';
 import { COLORS, ErrorText, Muted, useLoad } from './ui';
@@ -772,7 +772,7 @@ export const StreamRunForm = ({ client, stream, initial, title, onStarted, onClo
   return (
     <form onSubmit={submit} className='white-box' style={{ padding: '0.8em 1em', marginBottom: '1em', maxWidth: 640 }}>
       <div style={{ fontWeight: 600, marginBottom: '0.6em' }}>
-        {title ?? 'Run'} <b>{stream.name}</b>
+        {title ?? 'Run'} <b>{streamLabel(stream)}</b>
       </div>
       {stream.params.length === 0 && <Muted>This stream has no params.</Muted>}
       {stream.params.map(p => (
@@ -1026,7 +1026,7 @@ export const StreamRunView = ({ client, data, me, stream, runID }: { client: Zea
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.6em', marginBottom: '0.8em', flexWrap: 'wrap' }}>
         <button className='argo-button argo-button--base-o' onClick={() => navigate({ view: 'streams', stream })}>
-          <i className='fa fa-arrow-left' /> {stream}
+          <i className='fa fa-arrow-left' /> {st.state === 'ok' ? streamLabel(st.data) : stream}
         </button>
         {r && (
           <>

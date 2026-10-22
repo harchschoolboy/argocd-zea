@@ -31,6 +31,17 @@ const (
 	KeyDraftOf = "draftOf"
 	KeySpec    = "stream.yaml"
 
+	// SettingsConfigMapName holds the settings of the Streams page. Its name
+	// cannot clash with ConfigMapNamePrefix.
+	SettingsConfigMapName = "zea-streams-settings"
+	// TypeStreamSettings is the value of LabelType for the settings.
+	TypeStreamSettings = "stream-settings"
+	// KeyCategoryOrder holds the manual order of categories as a YAML list.
+	KeyCategoryOrder = "categoryOrder.yaml"
+	// KeyStreamOrder holds the manual order of Streams as a YAML list of
+	// names; it orders the Streams inside each category.
+	KeyStreamOrder = "streamOrder.yaml"
+
 	// Argo CD marks the resources it manages with one of these.
 	annotationArgoTracking = "argocd.argoproj.io/tracking-id"
 	labelArgoInstance      = "app.kubernetes.io/instance"
@@ -45,7 +56,21 @@ type Store interface {
 	// match the stored one.
 	Update(ctx context.Context, s *Stream) (*Stream, error)
 	Delete(ctx context.Context, name string) error
+	// CategoryOrder returns the manual order of categories on the Streams
+	// page; categories missing from it follow in alphabetical order.
+	CategoryOrder(ctx context.Context) ([]string, error)
+	// SetCategoryOrder replaces the manual order of categories.
+	SetCategoryOrder(ctx context.Context, order []string) error
+	// StreamOrder returns the manual order of Streams (names); Streams
+	// missing from it follow by label.
+	StreamOrder(ctx context.Context) ([]string, error)
+	// SetStreamOrder replaces the manual order of Streams.
+	SetStreamOrder(ctx context.Context, order []string) error
 }
+
+// ErrSettingsReadOnly is returned when the Streams page settings are
+// managed outside Zea.
+var ErrSettingsReadOnly = errors.New("the streams settings are managed outside Zea (for example by Argo CD) and cannot be edited here")
 
 // ParseSpec reads the YAML stored under KeySpec. Unknown fields are errors.
 func ParseSpec(raw string) (Spec, error) {
@@ -202,6 +227,86 @@ func (s *ConfigMapStore) Delete(ctx context.Context, name string) error {
 	return err
 }
 
+// CategoryOrder reads the order from the settings ConfigMap. A missing or
+// unreadable order is empty.
+func (s *ConfigMapStore) CategoryOrder(ctx context.Context) ([]string, error) {
+	return s.readOrder(ctx, KeyCategoryOrder, NormalizeCategoryOrder)
+}
+
+// SetCategoryOrder writes the order to the settings ConfigMap.
+func (s *ConfigMapStore) SetCategoryOrder(ctx context.Context, order []string) error {
+	return s.writeOrder(ctx, KeyCategoryOrder, order)
+}
+
+// StreamOrder reads the order of Streams from the settings ConfigMap. A
+// missing or unreadable order is empty.
+func (s *ConfigMapStore) StreamOrder(ctx context.Context) ([]string, error) {
+	return s.readOrder(ctx, KeyStreamOrder, NormalizeStreamOrder)
+}
+
+// SetStreamOrder writes the order of Streams to the settings ConfigMap.
+func (s *ConfigMapStore) SetStreamOrder(ctx context.Context, order []string) error {
+	return s.writeOrder(ctx, KeyStreamOrder, order)
+}
+
+// readOrder reads a YAML list from the settings ConfigMap.
+func (s *ConfigMapStore) readOrder(ctx context.Context, key string, normalize func([]string) ([]string, error)) ([]string, error) {
+	cm, err := s.client.CoreV1().ConfigMaps(s.namespace).Get(ctx, SettingsConfigMapName, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return []string{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get streams settings configmap: %w", err)
+	}
+	var order []string
+	if yaml.Unmarshal([]byte(cm.Data[key]), &order) != nil {
+		return []string{}, nil
+	}
+	if order, err = normalize(order); err != nil {
+		return []string{}, nil
+	}
+	return order, nil
+}
+
+// writeOrder writes a YAML list to the settings ConfigMap, creating it when
+// missing.
+func (s *ConfigMapStore) writeOrder(ctx context.Context, key string, order []string) error {
+	raw, err := yaml.Marshal(order)
+	if err != nil {
+		return fmt.Errorf("encode %s: %w", key, err)
+	}
+	cms := s.client.CoreV1().ConfigMaps(s.namespace)
+	cm, err := cms.Get(ctx, SettingsConfigMapName, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		cm = &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      SettingsConfigMapName,
+				Namespace: s.namespace,
+				Labels:    map[string]string{LabelType: TypeStreamSettings, connections.LabelManagedBy: connections.ManagedByZea},
+			},
+			Data: map[string]string{key: string(raw)},
+		}
+		if _, err := cms.Create(ctx, cm, metav1.CreateOptions{}); err != nil {
+			return fmt.Errorf("create streams settings configmap: %w", err)
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("get streams settings configmap: %w", err)
+	}
+	if cm.Labels[connections.LabelManagedBy] != connections.ManagedByZea || managedByArgoCD(cm) {
+		return ErrSettingsReadOnly
+	}
+	if cm.Data == nil {
+		cm.Data = map[string]string{}
+	}
+	cm.Data[key] = string(raw)
+	if _, err := cms.Update(ctx, cm, metav1.UpdateOptions{}); err != nil {
+		return fmt.Errorf("update streams settings configmap: %w", err)
+	}
+	return nil
+}
+
 // FromConfigMap maps a ConfigMap to a Stream. ConfigMaps created outside
 // the UI, or adopted by Argo CD, are read-only.
 func FromConfigMap(cm *corev1.ConfigMap) *Stream {
@@ -251,9 +356,11 @@ func ToConfigMap(st *Stream) (*corev1.ConfigMap, error) {
 
 // MemoryStore is an in-memory Store for tests and local development.
 type MemoryStore struct {
-	mu      sync.Mutex
-	items   map[string]*Stream
-	version int
+	mu            sync.Mutex
+	items         map[string]*Stream
+	version       int
+	categoryOrder []string
+	streamOrder   []string
 }
 
 // NewMemoryStore returns a MemoryStore seeded with streams.
@@ -342,6 +449,32 @@ func (m *MemoryStore) Delete(_ context.Context, name string) error {
 		return ErrReadOnly
 	}
 	delete(m.items, name)
+	return nil
+}
+
+func (m *MemoryStore) CategoryOrder(context.Context) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string{}, m.categoryOrder...), nil
+}
+
+func (m *MemoryStore) SetCategoryOrder(_ context.Context, order []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.categoryOrder = append([]string{}, order...)
+	return nil
+}
+
+func (m *MemoryStore) StreamOrder(context.Context) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string{}, m.streamOrder...), nil
+}
+
+func (m *MemoryStore) SetStreamOrder(_ context.Context, order []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.streamOrder = append([]string{}, order...)
 	return nil
 }
 

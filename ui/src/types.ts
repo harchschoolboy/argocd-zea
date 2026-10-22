@@ -357,6 +357,8 @@ export interface StreamStage {
 }
 
 export interface StreamSpec {
+  // Human-readable name shown instead of the name.
+  label?: string;
   description?: string;
   // Groups Streams into tabs on the Streams page.
   category?: string;
@@ -382,6 +384,14 @@ export interface Stream extends StreamSpec {
   problems: StreamProblem[];
   // Actions the user may perform on this stream.
   actions: string[];
+}
+
+// StreamList is the Streams page: the visible streams and the shared order
+// of their categories and of the streams inside them.
+export interface StreamList {
+  streams: Stream[];
+  categoryOrder: string[];
+  streamOrder: string[];
 }
 
 export interface StreamInput extends StreamSpec {

@@ -453,6 +453,7 @@ simple (columns) while the engine works on a graph, so a free-form graph
 editor can be added later without changing the format.
 
 ```yaml
+label: Build and deploy API         # optional display name
 description: Build and deploy
 category: Backend                  # optional, groups Streams in tabs
 lock: "deploy-${{ params.env }}"   # optional, see Runs
@@ -523,8 +524,11 @@ stages:
   `select` for `boolean`. `trueValue` / `falseValue` (boolean only, must
   differ) replace `true` / `false` in the resolved value; the start form and
   the API accept both the canonical and the custom values.
-- **Category** (up to 60 characters) only groups Streams in tabs on the
-  Streams page; access rules still match Stream names.
+- **Label** (up to 100 characters) is the display name of the Stream in
+  the UI; the name stays the identifier (URLs, access rules, ConfigMap).
+- **Category** (up to 60 characters) only groups Streams in tabs and
+  columns on the Streams page; access rules still match Stream names. The
+  order of the categories is shared by all users (see Storage and GitOps).
 - **References** `${{ ... }}` are allowed in `ref`, `inputs`,
   `variables`, `message`, `app` and `image`: `params.<name>`,
   `steps.<id>.status|runId|url|sha|ref|user|revision|health|images` (only
@@ -567,6 +571,17 @@ GitOps flow: "Edit as draft" copies any Stream into an editable draft
 read-only in Zea and the draft can be deleted. Import accepts an exported
 ConfigMap or a plain document (`name` plus the spec) and creates a
 UI-managed Stream.
+
+The order of the category tabs and columns and the order of the Streams
+inside them are stored in the ConfigMap `zea-streams-settings` (label
+`argocd-zea.io/type: stream-settings`), as YAML lists under
+`categoryOrder.yaml` (up to 200 categories) and `streamOrder.yaml` (up to
+2000 Stream names). Users with edit on some Stream change them by
+dragging; categories and Streams missing from the lists follow
+alphabetically (Streams by label). A user only sees and sends the Streams
+they may view; the hidden ones keep their places and deleted ones are
+dropped on the next save. If that ConfigMap is not Zea-managed or is
+tracked by Argo CD, the orders are read-only (409).
 
 Incomplete Streams can be saved; `problems` lists what keeps a Stream from
 running (unknown params or steps, missing Connections, invalid ids,
@@ -698,8 +713,15 @@ The page has the tabs **Streams** (default), **Connections**,
 `?view=connections`, `?connection=<name>`, `?view=registries`,
 `?view=access`). Buttons follow the user's actions on each item.
 
-- **List** - cards with badges (draft, managed in git, problems), stages and
-  steps count, Connections used and the last run (polled while it runs).
+- **List** - cards (or compact rows) with the display name, badges (draft,
+  managed in git, problems), stages and steps count, Connections used and
+  the last run (polled while it runs). Tabs per category; on **All** the
+  Streams can be grouped into category columns that wrap with the screen
+  width. Tabs and column headers can be dragged to reorder the categories
+  (edit on some Stream; All stays first, "Without category" last), cards to
+  reorder the Streams of a category. Dropping a card on another category
+  (column, tab or card) saves the Stream with that category (edit on it).
+  The flat All list follows the category order, then the Stream order.
   **Run** on a card asks for confirmation (listing the default params) and
   starts the Stream with its defaults; when a required param has no
   default it opens the run form instead. Users with edit on Streams get
@@ -740,7 +762,9 @@ Admins also get the **Audit** tab (`?view=audit`), see [Audit](#audit).
 
 | Method and path | Who | Purpose |
 |-----------------|-----|---------|
-| `GET /api/v1/streams` | any | Streams the user may view, with `actions`, `editable`, `version`, `connections`, `problems` |
+| `GET /api/v1/streams` | any | `{streams, categoryOrder, streamOrder}`: Streams the user may view, with `actions`, `editable`, `version`, `connections`, `problems`, the shared category order and the shared order of the visible Streams |
+| `PUT /api/v1/stream-categories` | edit on some Stream | Set the category order `{order}`; returns `{categoryOrder}`; 409 when the settings ConfigMap is not UI-managed |
+| `PUT /api/v1/stream-order` | edit on some Stream | Set the order of the visible Streams `{order}` (names); hidden Streams keep their places; returns `{streamOrder}`; 409 as above |
 | `GET /api/v1/streams/{name}` | view | One Stream |
 | `POST /api/v1/streams` | edit + run on its Connections | Create `{name, description, params, stages}` |
 | `PUT /api/v1/streams/{name}` | edit + run on its Connections | Replace (UI-managed only); `version` detects concurrent edits |

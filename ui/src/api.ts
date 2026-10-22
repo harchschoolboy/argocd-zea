@@ -26,6 +26,7 @@ import {
   Stream,
   StreamExport,
   StreamInput,
+  StreamList,
   StreamProblem,
   StreamRun,
   TestResult,
@@ -249,8 +250,17 @@ export class ZeaClient {
   testRegistryDraft(input: RegistryInput): Promise<RegistryTestResult> {
     return this.call<RegistryTestResult>('api/v1/test-registry', { method: 'POST', json: input });
   }
-  async streams(): Promise<Stream[]> {
-    return (await this.call<{ streams: Stream[] }>('api/v1/streams')).streams;
+  async streams(): Promise<StreamList> {
+    const out = await this.call<{ streams: Stream[]; categoryOrder?: string[]; streamOrder?: string[] }>('api/v1/streams');
+    return { streams: out.streams, categoryOrder: out.categoryOrder ?? [], streamOrder: out.streamOrder ?? [] };
+  }
+
+  async setStreamOrder(order: string[]): Promise<string[]> {
+    return (await this.call<{ streamOrder: string[] }>('api/v1/stream-order', { method: 'PUT', json: { order } })).streamOrder;
+  }
+
+  async setCategoryOrder(order: string[]): Promise<string[]> {
+    return (await this.call<{ categoryOrder: string[] }>('api/v1/stream-categories', { method: 'PUT', json: { order } })).categoryOrder;
   }
 
   stream(name: string): Promise<Stream> {

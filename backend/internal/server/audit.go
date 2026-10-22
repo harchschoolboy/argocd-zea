@@ -34,6 +34,8 @@ var auditActions = map[string]string{
 	"PUT /api/v1/streams/{name}":                                  "stream.update",
 	"DELETE /api/v1/streams/{name}":                               "stream.delete",
 	"POST /api/v1/streams/{name}/draft":                           "stream.draft",
+	"PUT /api/v1/stream-categories":                               "stream.categories",
+	"PUT /api/v1/stream-order":                                    "stream.order",
 	"POST /api/v1/streams/{name}/runs":                            "stream.run.start",
 	"POST /api/v1/streams/{name}/runs/{run}/cancel":               "stream.run.cancel",
 	"POST /api/v1/streams/{name}/runs/{run}/retry":                "stream.run.retry",

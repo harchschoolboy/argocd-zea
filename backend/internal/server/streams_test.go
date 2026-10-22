@@ -71,6 +71,8 @@ func TestOnlyAdminsManageStreams(t *testing.T) {
 		{"POST", "/api/v1/streams/pub/draft"},
 		{"POST", "/api/v1/streams/import"},
 		{"POST", "/api/v1/streams/validate"},
+		{"PUT", "/api/v1/stream-categories"},
+		{"PUT", "/api/v1/stream-order"},
 	} {
 		if code, _ := e.do(t, c.method, c.path, in); code != http.StatusForbidden {
 			t.Errorf("%s %s by non-admin: %d", c.method, c.path, code)
@@ -132,6 +134,54 @@ func TestStreamCRUD(t *testing.T) {
 	}
 	if code, _ := e.do(t, "GET", "/api/v1/streams/new", nil, admin); code != http.StatusNotFound {
 		t.Fatalf("get deleted: %d", code)
+	}
+}
+
+func TestStreamCategoryOrder(t *testing.T) {
+	e := newEnv(false)
+	admin := as("admin", "")
+	if _, body := e.do(t, "GET", "/api/v1/streams", nil); mustJSON(body["categoryOrder"]) != "[]" {
+		t.Fatalf("initial order = %v", body["categoryOrder"])
+	}
+	in := map[string]any{"order": []string{" Deploy ", "Build", "", "Deploy"}}
+	code, body := e.do(t, "PUT", "/api/v1/stream-categories", in, admin)
+	if code != http.StatusOK || mustJSON(body["categoryOrder"]) != `["Deploy","Build"]` {
+		t.Fatalf("set order: %d %v", code, body)
+	}
+	if _, body := e.do(t, "GET", "/api/v1/streams", nil); mustJSON(body["categoryOrder"]) != `["Deploy","Build"]` {
+		t.Fatalf("stored order = %v", body["categoryOrder"])
+	}
+	long := map[string]any{"order": []string{strings.Repeat("x", 61)}}
+	if code, _ := e.do(t, "PUT", "/api/v1/stream-categories", long, admin); code != http.StatusBadRequest {
+		t.Fatalf("long category: %d", code)
+	}
+}
+
+func TestStreamOrder(t *testing.T) {
+	e := newEnv(false)
+	admin := as("admin", "")
+	in := map[string]any{"order": []string{"ops-only", "pub", "nope", "empty", "git", "pub"}}
+	code, body := e.do(t, "PUT", "/api/v1/stream-order", in, admin)
+	if code != http.StatusOK || mustJSON(body["streamOrder"]) != `["ops-only","pub","empty","git"]` {
+		t.Fatalf("set order: %d %v", code, body)
+	}
+	e.setPolicy(t, map[string]any{
+		"roles":    []any{role("sorter", rule("streams", "pub", "view", "edit"), rule("streams", "git", "view"))},
+		"bindings": []any{map[string]any{"group": "team", "roles": []string{"sorter"}}},
+	})
+	u := as("tom", "team")
+	if _, body := e.do(t, "GET", "/api/v1/streams", nil, u); mustJSON(body["streamOrder"]) != `["pub","git"]` {
+		t.Fatalf("tom sees order %v", body["streamOrder"])
+	}
+	code, body = e.do(t, "PUT", "/api/v1/stream-order", map[string]any{"order": []string{"git", "ops-only", "pub"}}, u)
+	if code != http.StatusOK || mustJSON(body["streamOrder"]) != `["git","pub"]` {
+		t.Fatalf("tom sets order: %d %v", code, body)
+	}
+	if _, body := e.do(t, "GET", "/api/v1/streams", nil, admin); mustJSON(body["streamOrder"]) != `["ops-only","git","empty","pub"]` {
+		t.Fatalf("merged order = %v", body["streamOrder"])
+	}
+	if code, _ := e.do(t, "PUT", "/api/v1/stream-order", map[string]any{"order": []string{"Bad Name"}}, admin); code != http.StatusBadRequest {
+		t.Fatalf("bad name: %d", code)
 	}
 }
 

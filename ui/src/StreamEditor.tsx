@@ -49,6 +49,7 @@ import {
   StepPos,
   stepProblems,
   STREAM_NAME_RE,
+  streamLabel,
   uniqueStepId,
 } from './streamModel';
 import { Connection, RunInput, Stream, StreamParam, StreamProblem, StreamSpec, StreamStep } from './types';
@@ -1191,7 +1192,7 @@ export const StreamEditor = ({ client, data, connections, existing, categories, 
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', marginBottom: '0.8em', flexWrap: 'wrap' }}>
         <button className='argo-button argo-button--base-o' onClick={close}>
-          <i className='fa fa-arrow-left' /> {existing ? existing.name : 'Streams'}
+          <i className='fa fa-arrow-left' /> {existing ? streamLabel(existing) : 'Streams'}
         </button>
         <b style={{ fontSize: '1.1em' }}>{existing ? 'Edit stream' : 'New stream'}</b>
         {existing?.draftOf && <Badge>draft of {existing.draftOf}</Badge>}
@@ -1229,6 +1230,18 @@ export const StreamEditor = ({ client, data, connections, existing, categories, 
                 onChange={e => setName(e.target.value.trim())}
               />
               {name && !nameOK && <ErrorText text='Invalid name' />}
+            </Field>
+          </div>
+          <div style={{ flex: '0 1 280px' }}>
+            <Field label='Display name' help='Shown on the Streams page instead of the name. Empty: the name is shown.'>
+              <input
+                className='argo-field'
+                style={{ width: '100%' }}
+                value={spec.label ?? ''}
+                maxLength={100}
+                placeholder={name || 'Build and deploy'}
+                onChange={e => change({ ...spec, label: e.target.value || undefined })}
+              />
             </Field>
           </div>
           <div style={{ flex: '1 1 300px' }}>

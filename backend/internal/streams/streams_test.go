@@ -373,6 +373,79 @@ func TestConfigMapStore(t *testing.T) {
 	}
 }
 
+func TestConfigMapStoreCategoryOrder(t *testing.T) {
+	ctx := context.Background()
+	ns := "zea-connections"
+	s := NewConfigMapStore(fake.NewClientset(), ns)
+	if order, err := s.CategoryOrder(ctx); err != nil || len(order) != 0 {
+		t.Fatalf("empty order = %v, %v", order, err)
+	}
+	if err := s.SetCategoryOrder(ctx, []string{"Deploy", "Build"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetCategoryOrder(ctx, []string{"QA", "Deploy"}); err != nil {
+		t.Fatal(err)
+	}
+	if order, err := s.CategoryOrder(ctx); err != nil || strings.Join(order, ",") != "QA,Deploy" {
+		t.Fatalf("order = %v, %v", order, err)
+	}
+	if err := s.SetStreamOrder(ctx, []string{"b", "a"}); err != nil {
+		t.Fatal(err)
+	}
+	if order, err := s.StreamOrder(ctx); err != nil || strings.Join(order, ",") != "b,a" {
+		t.Fatalf("stream order = %v, %v", order, err)
+	}
+	if order, _ := s.CategoryOrder(ctx); strings.Join(order, ",") != "QA,Deploy" {
+		t.Fatalf("the stream order must keep the category order: %v", order)
+	}
+	cm, _ := s.client.CoreV1().ConfigMaps(ns).Get(ctx, SettingsConfigMapName, metav1.GetOptions{})
+	if cm.Labels[LabelType] != TypeStreamSettings || cm.Labels[connections.LabelManagedBy] != connections.ManagedByZea {
+		t.Fatalf("settings labels = %v", cm.Labels)
+	}
+	if all, err := s.List(ctx); err != nil || len(all) != 0 {
+		t.Fatalf("the settings must not be listed as a stream: %v, %v", all, err)
+	}
+	cm.Annotations = map[string]string{annotationArgoTracking: "zea:/ConfigMap:" + ns + "/" + SettingsConfigMapName}
+	if _, err := s.client.CoreV1().ConfigMaps(ns).Update(ctx, cm, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetCategoryOrder(ctx, []string{"A"}); !errors.Is(err, ErrSettingsReadOnly) {
+		t.Fatalf("declarative settings: %v", err)
+	}
+}
+
+func TestNormalizeCategoryOrder(t *testing.T) {
+	got, err := NormalizeCategoryOrder([]string{" B ", "", "A", "B"})
+	if err != nil || strings.Join(got, ",") != "B,A" {
+		t.Fatalf("normalize = %v, %v", got, err)
+	}
+	if _, err := NormalizeCategoryOrder(make([]string, MaxCategories+1)); err == nil {
+		t.Fatal("too many categories must be rejected")
+	}
+}
+
+func TestStreamOrderHelpers(t *testing.T) {
+	got, err := NormalizeStreamOrder([]string{" b ", "", "a", "b"})
+	if err != nil || strings.Join(got, ",") != "b,a" {
+		t.Fatalf("normalize = %v, %v", got, err)
+	}
+	if _, err := NormalizeStreamOrder([]string{"Bad Name"}); err == nil {
+		t.Fatal("an invalid name must be rejected")
+	}
+	in := func(names ...string) func(string) bool {
+		return func(n string) bool { return strings.Contains(","+strings.Join(names, ",")+",", ","+n+",") }
+	}
+	merged := MergeStreamOrder(
+		[]string{"h1", "a", "gone", "h2", "b", "c"},
+		[]string{"c", "h1", "x", "a", "new"},
+		in("h1", "h2", "a", "b", "c", "new"),
+		in("a", "b", "c", "new", "x"),
+	)
+	if strings.Join(merged, ",") != "h1,c,h2,a,new" {
+		t.Fatalf("merged = %v", merged)
+	}
+}
+
 func TestMemoryStoreCopies(t *testing.T) {
 	ctx := context.Background()
 	m := NewMemoryStore()

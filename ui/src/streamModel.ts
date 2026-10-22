@@ -25,6 +25,7 @@ export function emptySpec(): StreamSpec {
 
 // specOf copies the editable part of a Stream (or a run snapshot).
 export function specOf(s: {
+  label?: string;
   description?: string;
   category?: string;
   lock?: string;
@@ -32,6 +33,7 @@ export function specOf(s: {
   stages?: StreamStage[] | null;
 }): StreamSpec {
   return {
+    label: s.label || undefined,
     description: s.description ?? '',
     category: s.category || undefined,
     lock: s.lock || undefined,
@@ -43,6 +45,9 @@ export function specOf(s: {
     stages: (s.stages ?? []).map(st => ({ ...st, steps: (st.steps ?? []).map(x => ({ ...x })) })),
   };
 }
+
+// streamLabel is the text shown for a stream: its label or its name.
+export const streamLabel = (s: { name: string; label?: string }) => s.label?.trim() || s.name;
 
 export const allSteps = (spec: StreamSpec): StreamStep[] => spec.stages.flatMap(s => s.steps);
 

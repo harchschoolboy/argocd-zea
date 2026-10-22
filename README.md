@@ -56,7 +56,7 @@ prints a ready-to-merge values snippet for the argo-cd chart.
   `argocd-server` to `github.com` to download the UI extension at startup.
 
 In the commands below the Argo CD namespace is `argocd`, the Helm release and
-the anchor Application are both called `zea`, and the release is `v0.5.5`.
+the anchor Application are both called `zea`, and the release is `v0.5.6`.
 
 ### Step 1. Install the backend
 
@@ -109,7 +109,7 @@ set `image.tag`.
 #### Option B: with the Helm CLI
 
 ```bash
-helm install zea oci://ghcr.io/harchschoolboy/charts/zea --version 0.5.5 \
+helm install zea oci://ghcr.io/harchschoolboy/charts/zea --version 0.5.6 \
   -n argocd \
   --set anchorApplication=argocd:<existing-app> \
   --set 'admins.users={admin}'
@@ -159,7 +159,7 @@ server:
     extensionList: []
   initContainers:
     - name: extension-zea
-      image: ghcr.io/harchschoolboy/argocd-zea-backend:0.5.5
+      image: ghcr.io/harchschoolboy/argocd-zea-backend:0.5.6
       args: [install-ui, /tmp/extensions]
       securityContext:
         runAsNonRoot: true
@@ -223,9 +223,9 @@ server:
           - name: EXTENSION_NAME
             value: zea
           - name: EXTENSION_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.5.5/extension-zea.tar.gz
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.5.6/extension-zea.tar.gz
           - name: EXTENSION_CHECKSUM_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.5.5/extension-zea_checksums.txt
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.5.6/extension-zea_checksums.txt
 ```
 
 #### Argo CD that manages itself (GitOps)
@@ -290,7 +290,7 @@ one Zea installation.
        spec:
          initContainers:
            - name: extension-zea
-             image: ghcr.io/harchschoolboy/argocd-zea-backend:0.5.5
+             image: ghcr.io/harchschoolboy/argocd-zea-backend:0.5.6
              args: [install-ui, /tmp/extensions]
              securityContext:
                runAsNonRoot: true
@@ -611,7 +611,15 @@ reachable from a pod. For Artifact Registry, in order of preference:
 
 A Stream chains pipelines of several Connections: stages run one after
 another, the steps of a stage run in parallel. The **Streams** tab opens
-first, with tabs per **category** (set in the editor):
+first, with tabs per **category** (set in the editor). Streams show their
+**display name** (`label`); the technical name is in the tooltip. On the
+**All** tab the Streams can be grouped into category columns (toggle next
+to the layout buttons); users with edit access to streams drag tabs or
+column headers to reorder the categories for everyone (All stays first,
+"Without category" last), and drag cards to reorder the Streams inside a
+category. Dropping a card on another column, tab or a card of another
+category moves the Stream there (this saves the Stream, so it needs edit
+on it):
 
 - **New stream** (edit access to streams): drag Connections into stage columns, pick the
   branch and pipeline of each step, fill its inputs. Values may use
