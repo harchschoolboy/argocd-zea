@@ -20,7 +20,9 @@ See the [screenshots](docs/screenshots.md).
 
 ## How it fits into Argo CD
 
-- **UI**: a system-level UI extension, installed by `argocd-extension-installer`.
+- **UI**: a system-level UI extension. It ships inside the backend image and
+  an init container of `argocd-server` copies it in, so nothing is downloaded
+  at startup (works in air-gapped clusters).
 - **Backend**: a small Go service behind the Argo CD **proxy extension**;
   Argo CD authenticates the user and enforces RBAC before forwarding.
 - **Configuration**: Connections are labelled Secrets
@@ -54,7 +56,7 @@ prints a ready-to-merge values snippet for the argo-cd chart.
   `argocd-server` to `github.com` to download the UI extension at startup.
 
 In the commands below the Argo CD namespace is `argocd`, the Helm release and
-the anchor Application are both called `zea`, and the release is `v0.5.4`.
+the anchor Application are both called `zea`, and the release is `v0.5.5`.
 
 ### Step 1. Install the backend
 
@@ -107,7 +109,7 @@ set `image.tag`.
 #### Option B: with the Helm CLI
 
 ```bash
-helm install zea oci://ghcr.io/harchschoolboy/charts/zea --version 0.5.4 \
+helm install zea oci://ghcr.io/harchschoolboy/charts/zea --version 0.5.5 \
   -n argocd \
   --set anchorApplication=argocd:<existing-app> \
   --set 'admins.users={admin}'
@@ -137,8 +139,8 @@ was configured before the Secret existed, restart `argocd-server`.
 
 Four things have to be enabled on the Argo CD side:
 
-- the UI extension (installed into `argocd-server` by
-  [argocd-extension-installer](https://github.com/argoproj-labs/argocd-extension-installer));
+- the UI extension (copied into `argocd-server` by an init container that
+  runs the Zea backend image with `install-ui`);
 - the proxy extension feature flag;
 - the `zea` proxy route with the token header;
 - the RBAC permission to invoke the extension.
@@ -151,18 +153,23 @@ into your argo-cd values and upgrade Argo CD:
 ```yaml
 server:
   extensions:
+    # Creates the "extensions" volume of argocd-server. Nothing is downloaded:
+    # the Zea image copies its UI into the volume.
     enabled: true
-    extensionList:
-      - name: extension-zea
-        env:
-          - name: EXTENSION_NAME
-            value: zea
-          - name: EXTENSION_VERSION
-            value: v0.5.4
-          - name: EXTENSION_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.5.4/extension-zea.tar.gz
-          - name: EXTENSION_CHECKSUM_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.5.4/extension-zea_checksums.txt
+    extensionList: []
+  initContainers:
+    - name: extension-zea
+      image: ghcr.io/harchschoolboy/argocd-zea-backend:0.5.5
+      args: [install-ui, /tmp/extensions]
+      securityContext:
+        runAsNonRoot: true
+        readOnlyRootFilesystem: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+      volumeMounts:
+        - name: extensions
+          mountPath: /tmp/extensions
 
 configs:
   params:
@@ -180,6 +187,46 @@ configs:
 ```
 
 If you already have `policy.csv`, append the line instead of replacing it.
+If you already have `server.initContainers`, add `extension-zea` to the list.
+The image tag must match the Zea chart version, so the UI and the backend
+are the same release.
+
+#### Air-gapped clusters
+
+Nothing is fetched from the internet at runtime. Mirror two artifacts into
+your registry and point both places at the mirror:
+
+- the image `ghcr.io/harchschoolboy/argocd-zea-backend:<version>`: set
+  `image.repository` in the Zea chart values and `image` of the
+  `extension-zea` init container;
+- the chart `oci://ghcr.io/harchschoolboy/charts/zea` (or vendor
+  `deploy/helm/zea`).
+
+If the mirror needs credentials, add its pull secret to
+`server.imagePullSecrets` of the argo-cd chart as well. Connections still
+need network access to their CI and registry APIs.
+
+#### Alternative: download the UI from GitHub releases
+
+Each release also publishes `extension-zea.tar.gz` for
+[argocd-extension-installer](https://github.com/argoproj-labs/argocd-extension-installer).
+This needs GitHub (or a mirror of the file) every time `argocd-server`
+starts, and the server does not start if the download fails:
+
+```yaml
+server:
+  extensions:
+    enabled: true
+    extensionList:
+      - name: extension-zea
+        env:
+          - name: EXTENSION_NAME
+            value: zea
+          - name: EXTENSION_URL
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.5.5/extension-zea.tar.gz
+          - name: EXTENSION_CHECKSUM_URL
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.5.5/extension-zea_checksums.txt
+```
 
 #### Argo CD that manages itself (GitOps)
 
@@ -230,7 +277,7 @@ one Zea installation.
 2. Add `p, role:readonly, extensions, invoke, zea, allow` to `policy.csv` in
    `argocd-rbac-cm`.
 
-3. Add the extension installer to `argocd-server`, for example as a
+3. Add the UI init container to `argocd-server`, for example as a
    Kustomize strategic merge patch:
 
    ```yaml
@@ -243,21 +290,10 @@ one Zea installation.
        spec:
          initContainers:
            - name: extension-zea
-             image: quay.io/argoprojlabs/argocd-extension-installer:v1.1.0
-             env:
-               - name: EXTENSIONS_DIR
-                 value: /tmp/extensions
-               - name: EXTENSION_NAME
-                 value: zea
-               - name: EXTENSION_VERSION
-                 value: v0.5.4
-               - name: EXTENSION_URL
-                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.5.4/extension-zea.tar.gz
-               - name: EXTENSION_CHECKSUM_URL
-                 value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.5.4/extension-zea_checksums.txt
+             image: ghcr.io/harchschoolboy/argocd-zea-backend:0.5.5
+             args: [install-ui, /tmp/extensions]
              securityContext:
                runAsNonRoot: true
-               runAsUser: 1000
                readOnlyRootFilesystem: true
                allowPrivilegeEscalation: false
                capabilities:
@@ -265,8 +301,6 @@ one Zea installation.
              volumeMounts:
                - name: extensions
                  mountPath: /tmp/extensions/
-               - name: tmp
-                 mountPath: /tmp
          containers:
            - name: argocd-server
              volumeMounts:
@@ -641,8 +675,11 @@ Bump the version in both places, so the UI and the backend match:
 
 - `targetRevision` of the Zea Application, or
   `helm upgrade zea oci://ghcr.io/harchschoolboy/charts/zea --version <new> -n argocd --reuse-values`;
-- `EXTENSION_VERSION` / `EXTENSION_URL` / `EXTENSION_CHECKSUM_URL` in the
-  Argo CD values.
+- the `image` tag of the `extension-zea` init container in the Argo CD
+  values (or `EXTENSION_URL` / `EXTENSION_CHECKSUM_URL` if you download the
+  UI from GitHub releases). This changes the `argocd-server` pod template,
+  so Argo CD restarts the server and loads the new UI; reload the browser
+  tab afterwards.
 
 Available versions: `helm show chart oci://ghcr.io/harchschoolboy/charts/zea`
 (latest) or the GitHub releases page; chart version = release tag without
@@ -703,7 +740,7 @@ security contexts, scheduling).
 
 | Symptom | Check |
 |---------|-------|
-| No Zea item in the sidebar | The Zea chart installs only the backend; the UI comes from the Argo CD configuration in [Step 2](#step-2-configure-argo-cd). Check that `argocd-server` has an `extension-zea` init container, that the release has the `extension-zea.tar.gz` asset, and the installer logs: `kubectl -n argocd logs deploy/argocd-server -c extension-zea`. Then hard-refresh the browser |
+| No Zea item in the sidebar | The Zea chart installs only the backend; the UI comes from the Argo CD configuration in [Step 2](#step-2-configure-argo-cd). Check that `argocd-server` has an `extension-zea` init container and its logs (`kubectl -n argocd logs deploy/argocd-server -c extension-zea` should print "UI extension installed"; with the GitHub download, check that the release has the `extension-zea.tar.gz` asset). Then hard-refresh the browser |
 | Zea says no anchor Application found | The anchor has the label `argocd-zea.io/anchor: "true"` and the user can `get` it |
 | `request did not come through the Argo CD proxy` (401) | `zea-proxy` has the label `app.kubernetes.io/part-of=argocd`. Restart `argocd-server` if Argo CD was configured before the Secret existed. After a token rotation, restart both `zea` and `argocd-server` |
 | `requests must be scoped to the Zea anchor Application` (403) | `anchorApplication` matches the labelled Application's `<namespace>:<name>` |
@@ -764,7 +801,8 @@ Backend configuration (set by the Helm chart):
 Releases are built by GitHub Actions on `v*` tags (`v1.2.3` -> version
 `1.2.3`):
 
-- backend image `ghcr.io/harchschoolboy/argocd-zea-backend:<version>`;
+- backend image `ghcr.io/harchschoolboy/argocd-zea-backend:<version>`, which
+  also carries the UI extension (`zea-backend install-ui`);
 - Helm chart `oci://ghcr.io/harchschoolboy/charts/zea:<version>`, whose
   version and appVersion are set from the tag (the `version` in `Chart.yaml`
   in git is only used for local development);

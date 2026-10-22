@@ -34,20 +34,57 @@ export const Help = ({ children }: { children: React.ReactNode }) => (
   <div style={{ fontSize: '0.85em', color: COLORS.muted, marginTop: '0.2em', wordBreak: 'break-word' }}>{children}</div>
 );
 
+// cardStyle frames one item of a list (a param, a step input or variable).
+export const cardStyle: React.CSSProperties = {
+  border: `1px solid ${COLORS.border}`,
+  borderRadius: 4,
+  background: COLORS.surface,
+  padding: '0.5em 0.7em',
+  marginBottom: '0.5em',
+};
+
+// matchesFilter matches names containing the filter text, ignoring case.
+export const matchesFilter = (name: string, filter: string) => {
+  const f = filter.trim().toLowerCase();
+  return f === '' || name.toLowerCase().includes(f);
+};
+
+export const FilterInput = ({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder: string }) => (
+  <div style={{ display: 'flex', alignItems: 'center', gap: '0.4em', marginBottom: '0.5em' }}>
+    <i className='fa fa-search' style={{ color: COLORS.muted }} />
+    <input
+      className='argo-field'
+      style={{ flex: 1, minWidth: 0, fontFamily: 'monospace' }}
+      value={value}
+      placeholder={placeholder}
+      spellCheck={false}
+      onChange={e => onChange(e.target.value)}
+      onKeyDown={e => e.key === 'Escape' && onChange('')}
+    />
+    {value && (
+      <button type='button' className='argo-button argo-button--base-o' style={{ padding: '0 0.6em' }} title='Clear filter' onClick={() => onChange('')}>
+        <i className='fa fa-times' />
+      </button>
+    )}
+  </div>
+);
+
 export const Field = ({
   label,
   hint,
   required,
   help,
+  card,
   children,
 }: {
   label: React.ReactNode;
   hint?: string;
   required?: boolean;
   help?: React.ReactNode;
+  card?: boolean;
   children: React.ReactNode;
 }) => (
-  <div style={{ marginBottom: '0.7em' }}>
+  <div style={card ? cardStyle : { marginBottom: '0.7em' }}>
     <label style={{ display: 'block', fontWeight: 600, marginBottom: '0.2em', wordBreak: 'break-word' }}>
       {label}
       {required && <span style={{ color: COLORS.error }}> *</span>}
@@ -216,10 +253,12 @@ interface KeyValueProps {
   refs: Reference[];
   keyPlaceholder: string;
   addLabel: string;
+  // Only rows whose name matches are shown; rows without a name always are.
+  filter?: string;
 }
 
 // KeyValueEditor edits free name/value pairs; values may be expressions.
-export const KeyValueEditor = ({ entries, exclude = [], onChange, refs, keyPlaceholder, addLabel }: KeyValueProps) => {
+export const KeyValueEditor = ({ entries, exclude = [], onChange, refs, keyPlaceholder, addLabel, filter = '' }: KeyValueProps) => {
   // Row order and rows whose name is still empty; values live in entries.
   const [rows, setRows] = React.useState<string[]>([]);
   const keys = Object.keys(entries ?? {}).filter(k => !exclude.includes(k));
@@ -255,8 +294,9 @@ export const KeyValueEditor = ({ entries, exclude = [], onChange, refs, keyPlace
 
   return (
     <div>
-      {shown.map((k, i) => (
-        <div key={i} style={{ display: 'flex', gap: '0.3em', marginBottom: '0.3em', alignItems: 'center' }}>
+      {shown.map((k, i) =>
+        k !== '' && !matchesFilter(k, filter) ? null : (
+        <div key={i} style={{ ...cardStyle, display: 'flex', gap: '0.3em', alignItems: 'center', padding: '0.4em 0.5em' }}>
           <input
             className='argo-field'
             style={{ flex: '0 0 38%', minWidth: 0, fontFamily: 'monospace' }}
@@ -290,7 +330,8 @@ export const KeyValueEditor = ({ entries, exclude = [], onChange, refs, keyPlace
             <i className='fa fa-exclamation-triangle' style={{ color: COLORS.warn }} title='Duplicate name: only the first one is used' />
           )}
         </div>
-      ))}
+        ),
+      )}
       <button type='button' className='argo-button argo-button--base-o' onClick={() => setRows([...shown, ''])}>
         <i className='fa fa-plus' /> {addLabel}
       </button>

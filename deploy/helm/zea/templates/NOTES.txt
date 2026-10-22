@@ -1,7 +1,6 @@
 {{- $anchor := include "zea.anchorApplication" . -}}
 {{- $parts := splitList ":" $anchor -}}
 {{- $version := printf "v%s" (.Chart.AppVersion | trimPrefix "v") -}}
-{{- $release := printf "https://github.com/harchschoolboy/argocd-zea/releases/download/%s" $version -}}
 Zea backend {{ $version }} installed as {{ include "zea.fullname" . }} in namespace {{ .Release.Namespace }}.
 
   Anchor Application:    {{ $anchor }}
@@ -30,17 +29,20 @@ Remaining steps:
 server:
   extensions:
     enabled: true
-    extensionList:
-      - name: extension-zea
-        env:
-          - name: EXTENSION_NAME
-            value: zea
-          - name: EXTENSION_VERSION
-            value: {{ $version }}
-          - name: EXTENSION_URL
-            value: {{ $release }}/extension-zea.tar.gz
-          - name: EXTENSION_CHECKSUM_URL
-            value: {{ $release }}/extension-zea_checksums.txt
+    extensionList: []
+  initContainers:
+    - name: extension-zea
+      image: {{ include "zea.image" . }}
+      args: [install-ui, /tmp/extensions]
+      securityContext:
+        runAsNonRoot: true
+        readOnlyRootFilesystem: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+      volumeMounts:
+        - name: extensions
+          mountPath: /tmp/extensions
 configs:
   params:
     server.enable.proxy.extension: "true"

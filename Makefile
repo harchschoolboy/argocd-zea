@@ -17,7 +17,7 @@ backend-test:
 	$(GO_RUN) sh -c 'test -z "$$(gofmt -l .)" || (gofmt -l . && exit 1); go vet ./... && go test ./...'
 
 backend-image:
-	docker build --build-arg VERSION=$(VERSION) -t $(IMAGE):$(VERSION) backend
+	docker build -f backend/Dockerfile --build-arg VERSION=$(VERSION) -t $(IMAGE):$(VERSION) .
 
 ui:
 	cd ui && npm ci && npm run typecheck && npm run build && npm run package

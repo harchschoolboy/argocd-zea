@@ -24,7 +24,7 @@ jobs:
       - run: go vet ./...
       - run: go test ./...
       - name: Docker build
-        run: docker build --build-arg VERSION=${{ github.sha }} -t zea-backend:ci .
+        run: docker build -f Dockerfile --build-arg VERSION=${{ github.sha }} -t zea-backend:ci ..
 
   ui:
     runs-on: ubuntu-latest

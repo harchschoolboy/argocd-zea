@@ -101,7 +101,9 @@ design is in [docs/design.md](docs/design.md).
 - Rotate the proxy token as described in the README
   ([Rotate the proxy token](README.md#rotate-the-proxy-token)) if it may have
   leaked.
-- Pin the extension version and set `EXTENSION_CHECKSUM_URL` so that the
-  extension installer verifies the archive.
+- Pin the image tag of the `extension-zea` init container (or its digest).
+  If you download the UI from GitHub releases instead, set
+  `EXTENSION_CHECKSUM_URL` so that the extension installer verifies the
+  archive.
 - Ship the backend log (`audit` lines) to central logging if the audit trail
   must outlive the in-cluster retention.

@@ -30,7 +30,8 @@ jobs:
           echo "version=${version}" >> "$GITHUB_OUTPUT"
       - uses: docker/build-push-action@v6
         with:
-          context: backend
+          context: .
+          file: backend/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           build-args: VERSION=${{ github.ref_name }}

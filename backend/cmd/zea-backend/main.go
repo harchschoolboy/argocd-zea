@@ -30,6 +30,7 @@ import (
 	"github.com/harchschoolboy/argocd-zea/backend/internal/registries"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/server"
 	"github.com/harchschoolboy/argocd-zea/backend/internal/streams"
+	"github.com/harchschoolboy/argocd-zea/backend/internal/uiinstall"
 )
 
 // imagesCacheTTL is how long registry listings are reused.
@@ -41,8 +42,10 @@ func main() {
 		switch os.Args[1] {
 		case "init-proxy-token":
 			cmd = runInitProxyToken
+		case "install-ui":
+			cmd = runInstallUI
 		default:
-			fmt.Fprintf(os.Stderr, "usage: %s [init-proxy-token]\n", os.Args[0])
+			fmt.Fprintf(os.Stderr, "usage: %s [init-proxy-token | install-ui [extensions-dir]]\n", os.Args[0])
 			os.Exit(2)
 		}
 	}
@@ -50,6 +53,31 @@ func main() {
 		slog.Error("zea-backend failed", "error", err)
 		os.Exit(1)
 	}
+}
+
+// runInstallUI copies the UI extension bundled in the image (ZEA_UI_DIR,
+// default /ui) into the Argo CD extensions directory (the argument,
+// EXTENSIONS_DIR or /tmp/extensions). Used as an init container of
+// argocd-server instead of downloading the extension.
+func runInstallUI() error {
+	src := envOr("ZEA_UI_DIR", "/ui")
+	dst := envOr("EXTENSIONS_DIR", "/tmp/extensions")
+	if len(os.Args) > 2 {
+		dst = os.Args[2]
+	}
+	files, err := uiinstall.Install(src, dst)
+	if err != nil {
+		return err
+	}
+	slog.Info("UI extension installed", "version", server.Version, "dir", dst, "files", files)
+	return nil
+}
+
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
 }
 
 // runInitProxyToken creates the proxy token Secret if it is missing. Used by

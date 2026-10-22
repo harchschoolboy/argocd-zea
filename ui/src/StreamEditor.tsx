@@ -7,6 +7,9 @@ import {
   Field,
   Help,
   KeyValueEditor,
+  FilterInput,
+  matchesFilter,
+  cardStyle,
   PipelineName,
   ProblemList,
   RefSelect,
@@ -254,6 +257,14 @@ const StepPanel = ({ data, spec, step, pos, connections, problems, onChange, onM
   const needs = step.needs ?? [];
   const extraInputs = Object.keys(step.inputs ?? {}).filter(k => !declared.includes(k));
   const freeVars = Object.keys(step.variables ?? {}).filter(k => !prefilled.some(p => p.name === k));
+  const [filter, setFilter] = React.useState('');
+  React.useEffect(() => setFilter(''), [step.id]);
+  const valueCount = declared.length + prefilled.length + extraInputs.length + freeVars.length;
+  const filtered = filter.trim() !== '';
+  const shownInputs = fd?.inputs.filter(i => matchesFilter(i.name, filter)) ?? [];
+  const shownPrefilled = prefilled.filter(p => matchesFilter(p.name, filter));
+  const extraShown = extraInputs.some(k => matchesFilter(k, filter));
+  const freeShown = freeVars.some(k => matchesFilter(k, filter));
 
   const toggleNeed = (id: string, on: boolean) => {
     const next = on ? [...needs, id] : needs.filter(n => n !== id);
@@ -456,8 +467,14 @@ const StepPanel = ({ data, spec, step, pos, connections, problems, onChange, onM
                 </div>
               )}
               {fd && fd.inputs.length === 0 && prefilled.length === 0 && !fd.variables && <Muted>This pipeline has no inputs.</Muted>}
-              {fd?.inputs.map(i => (
-                <Field key={i.name} label={<code>{i.name}</code>} hint={i.type} required={i.required && !i.default} help={i.description}>
+              {valueCount > 3 && <FilterInput value={filter} onChange={setFilter} placeholder='Filter inputs and variables by name' />}
+              {filtered && shownInputs.length + shownPrefilled.length === 0 && !extraShown && !freeShown && (
+                <div style={{ marginBottom: '0.5em' }}>
+                  <Muted>Nothing matches the filter.</Muted>
+                </div>
+              )}
+              {shownInputs.map(i => (
+                <Field key={i.name} card label={<code>{i.name}</code>} hint={i.type} required={i.required && !i.default} help={i.description}>
                   <div style={{ display: 'flex', gap: '0.3em', alignItems: 'flex-start' }}>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <ValueField
@@ -473,13 +490,14 @@ const StepPanel = ({ data, spec, step, pos, connections, problems, onChange, onM
                   </div>
                 </Field>
               ))}
-              {(form.state === 'error' || extraInputs.length > 0) && (
+              {(form.state === 'error' || extraInputs.length > 0) && (!filtered || extraShown) && (
                 <Field
                   label='Other inputs'
                   help={form.state === 'error' ? 'The pipeline inputs could not be read; enter them by name.' : 'Not declared by this pipeline.'}>
                   <KeyValueEditor
                     entries={step.inputs}
                     exclude={declared}
+                    filter={filter}
                     refs={valueRefs}
                     keyPlaceholder='input'
                     addLabel='Add input'
@@ -487,8 +505,8 @@ const StepPanel = ({ data, spec, step, pos, connections, problems, onChange, onM
                   />
                 </Field>
               )}
-              {prefilled.map(p => (
-                <Field key={p.name} label={<code>{p.name}</code>} help={p.description}>
+              {shownPrefilled.map(p => (
+                <Field key={p.name} card label={<code>{p.name}</code>} help={p.description}>
                   <div style={{ display: 'flex', gap: '0.3em', alignItems: 'flex-start' }}>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <ValueField
@@ -504,11 +522,12 @@ const StepPanel = ({ data, spec, step, pos, connections, problems, onChange, onM
                   </div>
                 </Field>
               ))}
-              {(fd?.variables || freeVars.length > 0) && (
+              {(fd?.variables || freeVars.length > 0) && (!filtered || freeShown) && (
                 <Field label={prefilled.length > 0 ? 'Other variables' : 'Variables'}>
                   <KeyValueEditor
                     entries={step.variables}
                     exclude={prefilled.map(p => p.name)}
+                    filter={filter}
                     refs={valueRefs}
                     keyPlaceholder='NAME'
                     addLabel='Add variable'
@@ -639,6 +658,8 @@ interface ParamRowProps {
   onChange: (next: StreamParam) => void;
   onRename: (name: string) => void;
   onDelete: () => void;
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
 }
 
 const BOOL_WIDGETS: [string, string][] = [
@@ -658,7 +679,7 @@ const parseOptions = (s: string) =>
     .map(x => x.trim())
     .filter(Boolean);
 
-const ParamRow = ({ data, param, connections, problems, onChange, onRename, onDelete }: ParamRowProps) => {
+const ParamRow = ({ data, param, connections, problems, onChange, onRename, onDelete, onMoveUp, onMoveDown }: ParamRowProps) => {
   const [nameText, setNameText] = React.useState(param.name);
   const [optText, setOptText] = React.useState((param.options ?? []).join(', '));
   React.useEffect(() => setNameText(param.name), [param.name]);
@@ -699,7 +720,7 @@ const ParamRow = ({ data, param, connections, problems, onChange, onRename, onDe
   };
 
   return (
-    <div style={{ borderTop: `1px solid ${COLORS.border}`, padding: '0.5em 0' }}>
+    <div style={cardStyle}>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5em', alignItems: 'flex-end' }}>
         <div style={{ flex: '1 1 140px' }}>
           <Help>Name</Help>
@@ -795,6 +816,12 @@ const ParamRow = ({ data, param, connections, problems, onChange, onRename, onDe
         <label style={{ flex: '0 0 auto', cursor: 'pointer', paddingBottom: '0.4em' }}>
           <input type='checkbox' checked={!!param.required} onChange={e => set({ required: e.target.checked || undefined })} /> required
         </label>
+        <button className='argo-button argo-button--base-o' title='Move up' disabled={!onMoveUp} onClick={onMoveUp}>
+          <i className='fa fa-arrow-up' />
+        </button>
+        <button className='argo-button argo-button--base-o' title='Move down' disabled={!onMoveDown} onClick={onMoveDown}>
+          <i className='fa fa-arrow-down' />
+        </button>
         <button className='argo-button argo-button--base-o' title='Remove param' onClick={onDelete}>
           <i className='fa fa-times' />
         </button>
@@ -907,6 +934,13 @@ const ParamsEditor = ({
     const next = PARAM_NAME_RE.test(old) && PARAM_NAME_RE.test(name) ? renameParam(spec, old, name) : spec;
     onChange({ ...next, params: next.params.map((x, j) => (j === i ? { ...x, name } : x)) });
   };
+  const [filter, setFilter] = React.useState('');
+  const filtered = filter.trim() !== '';
+  const move = (i: number, j: number) => {
+    const params = [...spec.params];
+    [params[i], params[j]] = [params[j], params[i]];
+    onChange({ ...spec, params });
+  };
   const add = () => {
     const names = new Set(spec.params.map(p => p.name));
     const hasBranch = spec.params.some(p => p.type === 'branch');
@@ -926,7 +960,10 @@ const ParamsEditor = ({
           Params are asked when the stream starts and used in steps as <code>{'${{ params.<name> }}'}</code>.
         </Help>
       )}
-      {spec.params.map((p, i) => (
+      {spec.params.length > 3 && <FilterInput value={filter} onChange={setFilter} placeholder='Filter params by name' />}
+      {filtered && !spec.params.some(p => matchesFilter(p.name, filter)) && <Help>No params match the filter.</Help>}
+      {spec.params.map((p, i) =>
+        !matchesFilter(p.name, filter) ? null : (
         <ParamRow
           key={i}
           data={data}
@@ -936,8 +973,11 @@ const ParamsEditor = ({
           onChange={next => setParam(i, next)}
           onRename={name => rename(i, name)}
           onDelete={() => onChange({ ...spec, params: spec.params.filter((_, j) => j !== i) })}
+          onMoveUp={i > 0 && !filtered ? () => move(i, i - 1) : undefined}
+          onMoveDown={i < spec.params.length - 1 && !filtered ? () => move(i, i + 1) : undefined}
         />
-      ))}
+        ),
+      )}
       <button className='argo-button argo-button--base-o' style={{ marginTop: '0.5em' }} onClick={add}>
         <i className='fa fa-plus' /> Add param
       </button>

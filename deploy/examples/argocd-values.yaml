@@ -7,23 +7,32 @@
 #   2. The Secret "zea-proxy" exists in the Argo CD namespace. The Zea chart
 #      creates it by default (proxyToken.source=generate).
 #
+# The UI is copied from the Zea backend image by an init container, so
+# argocd-server needs no internet access; in air-gapped clusters mirror the
+# image like any other. Keep its tag equal to the Zea chart version.
+#
 # After installing the Zea chart, "helm get notes zea -n argocd" (or the
 # release notes) prints this snippet with your actual names filled in.
 
 server:
   extensions:
+    # Creates the "extensions" volume of argocd-server. Nothing is downloaded:
+    # the Zea image copies its UI into the volume.
     enabled: true
-    extensionList:
-      - name: extension-zea
-        env:
-          - name: EXTENSION_NAME
-            value: zea
-          - name: EXTENSION_VERSION
-            value: v0.5.4
-          - name: EXTENSION_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.5.4/extension-zea.tar.gz
-          - name: EXTENSION_CHECKSUM_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.5.4/extension-zea_checksums.txt
+    extensionList: []
+  initContainers:
+    - name: extension-zea
+      image: ghcr.io/harchschoolboy/argocd-zea-backend:0.5.5
+      args: [install-ui, /tmp/extensions]
+      securityContext:
+        runAsNonRoot: true
+        readOnlyRootFilesystem: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+      volumeMounts:
+        - name: extensions
+          mountPath: /tmp/extensions
 
 configs:
   params:

@@ -1,0 +1,6 @@
+.git
+.github
+docs
+deploy
+ui/node_modules
+ui/dist

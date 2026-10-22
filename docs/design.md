@@ -89,8 +89,14 @@ has no access to Secrets in the Argo CD namespace. Alternatives:
 `proxyToken.source=value` (rendered from values) or `existing` (managed
 elsewhere, e.g. SealedSecrets / External Secrets).
 
+The UI bundle ships in the backend image under `/ui`. An init container of
+argocd-server runs the same image with `install-ui`, which copies it into the
+extensions volume. argocd-server then starts without network access and the
+UI always matches the backend version; the release tarball for
+argocd-extension-installer remains as an alternative.
+
 Argo CD itself (argocd-cm, argocd-cmd-params-cm, argocd-rbac-cm and the UI
-extension installer on argocd-server) is configured through the argo-cd
+init container on argocd-server) is configured through the argo-cd
 chart values, not patched by the Zea chart: those objects belong to whoever
 manages Argo CD, and patching them from a second owner causes drift.
 
