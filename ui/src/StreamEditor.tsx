@@ -1077,7 +1077,7 @@ export const StreamEditor = ({ client, data, connections, existing, categories, 
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState('');
   const [showParams, setShowParams] = React.useState(true);
-  const [showVars, setShowVars] = React.useState(() => (existing?.vars?.length ?? 0) > 0);
+  const [showVars, setShowVars] = React.useState(true);
   const drag = React.useRef<Drag | null>(null);
   const [drop, setDrop] = React.useState<Drop | null>(null);
 
@@ -1343,18 +1343,6 @@ export const StreamEditor = ({ client, data, connections, existing, categories, 
             </Field>
           </div>
         </div>
-        <div
-          style={{ fontWeight: 600, cursor: 'pointer', userSelect: 'none', marginTop: '0.2em' }}
-          onClick={() => setShowParams(v => !v)}>
-          <i className={showParams ? 'fa fa-angle-down' : 'fa fa-angle-right'} /> Params ({spec.params.length})
-        </div>
-        {showParams && <ParamsEditor data={data} spec={spec} connections={connections} problems={problems} onChange={change} />}
-        <div
-          style={{ fontWeight: 600, cursor: 'pointer', userSelect: 'none', marginTop: '0.6em' }}
-          onClick={() => setShowVars(v => !v)}>
-          <i className={showVars ? 'fa fa-angle-down' : 'fa fa-angle-right'} /> Variables ({spec.vars?.length ?? 0})
-        </div>
-        {showVars && <VarsEditor spec={spec} problems={problems} onChange={change} />}
         {general.length > 0 && (
           <div style={{ color: COLORS.warn, marginTop: '0.8em' }}>
             <ProblemList problems={general} />
@@ -1583,6 +1571,20 @@ export const StreamEditor = ({ client, data, connections, existing, categories, 
           <ProblemList problems={problems.filter(p => p.step)} onStep={selectByID} />
         </div>
       )}
+
+      <div className='white-box' style={{ padding: '0.8em 1em', marginTop: '1em' }}>
+        <div style={{ fontWeight: 600, cursor: 'pointer', userSelect: 'none' }} onClick={() => setShowParams(v => !v)}>
+          <i className={showParams ? 'fa fa-angle-down' : 'fa fa-angle-right'} /> Params ({spec.params.length})
+        </div>
+        {showParams && <ParamsEditor data={data} spec={spec} connections={connections} problems={problems} onChange={change} />}
+      </div>
+
+      <div className='white-box' style={{ padding: '0.8em 1em', marginTop: '1em' }}>
+        <div style={{ fontWeight: 600, cursor: 'pointer', userSelect: 'none' }} onClick={() => setShowVars(v => !v)}>
+          <i className={showVars ? 'fa fa-angle-down' : 'fa fa-angle-right'} /> Variables ({spec.vars?.length ?? 0})
+        </div>
+        {showVars && <VarsEditor spec={spec} problems={problems} onChange={change} />}
+      </div>
     </div>
   );
 };

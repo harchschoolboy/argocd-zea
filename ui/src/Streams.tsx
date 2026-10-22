@@ -64,7 +64,8 @@ const LastStreamRun = ({ stream, runs }: { stream: string; runs: { data?: Stream
   );
 };
 
-const StreamCard = ({ client, stream }: { client: ZeaClient; stream: Stream }) => {
+// StreamCard is a Stream on the list page: a card, or one compact row.
+const StreamCard = ({ client, stream, compact }: { client: ZeaClient; stream: Stream; compact?: boolean }) => {
   const steps = stream.stages.reduce((n, s) => n + s.steps.length, 0);
   const runs = usePoll(
     () => client.streamRuns(stream.name),
@@ -99,6 +100,43 @@ const StreamCard = ({ client, stream }: { client: ZeaClient; stream: Stream }) =
     }
   };
 
+  const runButton = can(stream.actions, 'run') && (
+    <button
+      className='argo-button argo-button--base'
+      style={{ flex: '0 0 auto' }}
+      disabled={busy || blocked}
+      title={blocked ? 'Fix the problems first' : parameterized ? 'Run with parameters' : 'Run'}
+      onClick={run}>
+      <i className={busy ? 'fa fa-circle-notch fa-spin' : parameterized ? 'fa fa-sliders-h' : 'fa fa-play'} /> {parameterized ? 'Run...' : 'Run'}
+    </button>
+  );
+
+  if (compact) {
+    return (
+      <div
+        className='white-box'
+        style={{ padding: '0.4em 1em', cursor: 'pointer', margin: 0 }}
+        title={stream.description || undefined}
+        onClick={() => navigate({ view: 'streams', stream: stream.name })}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1.4fr) 110px', gap: '1em', alignItems: 'center' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4em', minWidth: 0 }}>
+            <i className='fa fa-stream' style={{ color: COLORS.muted }} />
+            <b style={ellipsis}>{stream.name}</b>
+          </div>
+          <div style={{ minWidth: 0 }}>
+            <LastStreamRun stream={stream.name} runs={runs} />
+          </div>
+          <div style={{ textAlign: 'right' }}>{runButton}</div>
+        </div>
+        {error && (
+          <div onClick={e => e.stopPropagation()}>
+            <ErrorText text={error} />
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className='white-box' style={{ padding: '0.8em 1em', cursor: 'pointer', margin: 0 }} onClick={() => navigate({ view: 'streams', stream: stream.name })}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.4em' }}>
@@ -107,16 +145,7 @@ const StreamCard = ({ client, stream }: { client: ZeaClient; stream: Stream }) =
           <b style={{ ...ellipsis, fontSize: '1.05em' }}>{stream.name}</b>
           <StreamBadges stream={stream} />
         </div>
-        {can(stream.actions, 'run') && (
-          <button
-            className='argo-button argo-button--base'
-            style={{ flex: '0 0 auto' }}
-            disabled={busy || blocked}
-            title={blocked ? 'Fix the problems first' : parameterized ? 'Run with parameters' : 'Run'}
-            onClick={run}>
-            <i className={busy ? 'fa fa-circle-notch fa-spin' : parameterized ? 'fa fa-sliders-h' : 'fa fa-play'} /> {parameterized ? 'Run...' : 'Run'}
-          </button>
-        )}
+        {runButton}
       </div>
       {stream.description && <div style={{ marginTop: '0.3em', wordBreak: 'break-word' }}>{stream.description}</div>}
       <div style={{ fontSize: '0.85em', color: COLORS.muted, marginTop: '0.3em', wordBreak: 'break-word' }}>
@@ -252,8 +281,39 @@ const CategoryTab = ({ active, onClick, children }: { active: boolean; onClick: 
   </a>
 );
 
+const LAYOUT_KEY = 'zea.streams.layout';
+
+type Layout = 'cards' | 'rows';
+
+function savedLayout(): Layout {
+  try {
+    return window.localStorage.getItem(LAYOUT_KEY) === 'rows' ? 'rows' : 'cards';
+  } catch {
+    return 'cards';
+  }
+}
+
+const LayoutButton = ({ value, current, icon, title, onPick }: { value: Layout; current: Layout; icon: string; title: string; onPick: (l: Layout) => void }) => (
+  <button
+    className={current === value ? 'argo-button argo-button--base' : 'argo-button argo-button--base-o'}
+    style={{ padding: '0 0.7em' }}
+    title={title}
+    onClick={() => onPick(value)}>
+    <i className={icon} />
+  </button>
+);
+
 const StreamList = ({ client, me, tab }: { client: ZeaClient; me: Me; tab?: string }) => {
   const [list, reload] = useLoad(() => client.streams(), [client]);
+  const [layout, setLayout] = React.useState<Layout>(savedLayout);
+  const pickLayout = (l: Layout) => {
+    setLayout(l);
+    try {
+      window.localStorage.setItem(LAYOUT_KEY, l);
+    } catch {
+      // The layout is only kept for this page view.
+    }
+  };
   const canCreate = can(me.permissions.streams, 'edit');
   const [importing, setImporting] = React.useState(false);
   const all = list.state === 'ok' ? list.data : [];
@@ -278,6 +338,10 @@ const StreamList = ({ client, me, tab }: { client: ZeaClient; me: Me; tab?: stri
             </button>
           </>
         )}
+        <div style={{ display: 'flex', gap: '0.2em' }}>
+          <LayoutButton value='cards' current={layout} icon='fa fa-th-large' title='Cards' onPick={pickLayout} />
+          <LayoutButton value='rows' current={layout} icon='fa fa-list' title='Compact list' onPick={pickLayout} />
+        </div>
         <button className='argo-button argo-button--base-o' onClick={reload}>
           <i className='fa fa-redo' /> Refresh
         </button>
@@ -313,9 +377,14 @@ const StreamList = ({ client, me, tab }: { client: ZeaClient; me: Me; tab?: stri
         </div>
       )}
       {list.state === 'ok' && list.data.length > 0 && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: '1em' }}>
+        <div
+          style={
+            layout === 'rows'
+              ? { display: 'flex', flexDirection: 'column', gap: '0.4em' }
+              : { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: '1em' }
+          }>
           {shown.map(s => (
-            <StreamCard key={s.name} client={client} stream={s} />
+            <StreamCard key={s.name} client={client} stream={s} compact={layout === 'rows'} />
           ))}
         </div>
       )}
