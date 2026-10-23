@@ -56,7 +56,7 @@ prints a ready-to-merge values snippet for the argo-cd chart.
   `argocd-server` to `github.com` to download the UI extension at startup.
 
 In the commands below the Argo CD namespace is `argocd`, the Helm release and
-the anchor Application are both called `zea`, and the release is `v0.5.6`.
+the anchor Application are both called `zea`, and the release is `v0.5.7`.
 
 ### Step 1. Install the backend
 
@@ -109,7 +109,7 @@ set `image.tag`.
 #### Option B: with the Helm CLI
 
 ```bash
-helm install zea oci://ghcr.io/harchschoolboy/charts/zea --version 0.5.6 \
+helm install zea oci://ghcr.io/harchschoolboy/charts/zea --version 0.5.7 \
   -n argocd \
   --set anchorApplication=argocd:<existing-app> \
   --set 'admins.users={admin}'
@@ -159,7 +159,7 @@ server:
     extensionList: []
   initContainers:
     - name: extension-zea
-      image: ghcr.io/harchschoolboy/argocd-zea-backend:0.5.6
+      image: ghcr.io/harchschoolboy/argocd-zea-backend:0.5.7
       args: [install-ui, /tmp/extensions]
       securityContext:
         runAsNonRoot: true
@@ -223,9 +223,9 @@ server:
           - name: EXTENSION_NAME
             value: zea
           - name: EXTENSION_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.5.6/extension-zea.tar.gz
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.5.7/extension-zea.tar.gz
           - name: EXTENSION_CHECKSUM_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.5.6/extension-zea_checksums.txt
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.5.7/extension-zea_checksums.txt
 ```
 
 #### Argo CD that manages itself (GitOps)
@@ -290,7 +290,7 @@ one Zea installation.
        spec:
          initContainers:
            - name: extension-zea
-             image: ghcr.io/harchschoolboy/argocd-zea-backend:0.5.6
+             image: ghcr.io/harchschoolboy/argocd-zea-backend:0.5.7
              args: [install-ui, /tmp/extensions]
              securityContext:
                runAsNonRoot: true
@@ -619,7 +619,8 @@ column headers to reorder the categories for everyone (All stays first,
 "Without category" last), and drag cards to reorder the Streams inside a
 category. Dropping a card on another column, tab or a card of another
 category moves the Stream there (this saves the Stream, so it needs edit
-on it):
+on it). While a card is dragged, **New category** (asks for the name) and
+**Without category** take it out of its category:
 
 - **New stream** (edit access to streams): drag Connections into stage columns, pick the
   branch and pipeline of each step, fill its inputs. Values may use
@@ -671,7 +672,11 @@ on it):
   kept); **Run again** starts a new run with the same params.
 - **Export** gives a ConfigMap to keep the Stream in git; once Argo CD syncs
   it, the Stream is read-only in Zea. **Edit as draft** makes an editable
-  copy to change and export again. **Import** creates a Stream from YAML.
+  copy to change and export again. **Import** reads a Stream from YAML
+  and opens it in the editor unsaved, marking a name that is taken, a
+  display name used by another Stream and duplicate params or step ids.
+  **Clone** opens a copy of a Stream (`<name>-copy`) in the editor the
+  same way; unlike a draft it is an independent Stream.
 
 Who sees, runs and edits a Stream is set in the access policy. Polling
 interval, step timeout and run history are set under `streams:` in the chart

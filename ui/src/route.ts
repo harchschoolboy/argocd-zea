@@ -13,12 +13,15 @@ export interface Route {
   tab?: string;
   // Selected Stream; with mode "edit" its editor, with srun one of its runs.
   stream?: string;
-  // "edit" opens the Stream editor, "new" a new Stream, "run" the run form.
+  // "edit" opens the Stream editor, "new" a new Stream, "import" an
+  // imported one before it is saved, "run" the run form.
   mode?: string;
   srun?: string;
+  // With mode "new": the Stream to clone.
+  from?: string;
 }
 
-const KEYS: (keyof Route)[] = ['view', 'connection', 'ref', 'run', 'tab', 'stream', 'mode', 'srun'];
+const KEYS: (keyof Route)[] = ['view', 'connection', 'ref', 'run', 'tab', 'stream', 'mode', 'srun', 'from'];
 const NAVIGATE_EVENT = 'zea:navigate';
 
 export function readRoute(): Route {

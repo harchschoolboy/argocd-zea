@@ -290,8 +290,9 @@ export class ZeaClient {
     return this.call<StreamExport>(`api/v1/streams/${encodeURIComponent(name)}/export`);
   }
 
-  importStream(yaml: string, replace: boolean): Promise<Stream> {
-    return this.call<Stream>('api/v1/streams/import', { method: 'POST', json: { yaml, replace } });
+  // parseStream reads an exported or plain stream document without saving it.
+  parseStream(yaml: string): Promise<StreamInput> {
+    return this.call<StreamInput>('api/v1/streams/parse', { method: 'POST', json: { yaml } });
   }
 
   async validateStream(input: StreamInput): Promise<StreamProblem[]> {

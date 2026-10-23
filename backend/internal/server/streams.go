@@ -525,6 +525,33 @@ func (a *api) handleImportStream(w http.ResponseWriter, r *http.Request) {
 	a.respondStream(w, r, http.StatusCreated, created)
 }
 
+// parseInput carries YAML to read without saving.
+type parseInput struct {
+	YAML string `json:"yaml"`
+}
+
+// handleParseStream reads an exported or plain Stream document and returns
+// it unsaved, so the UI can open it in the editor before it is created.
+func (a *api) handleParseStream(w http.ResponseWriter, r *http.Request) {
+	var in parseInput
+	if !decodeJSONMax(w, r, &in, maxStreamBodyBytes) {
+		return
+	}
+	st, err := streams.Import(in.YAML)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	out := streamInput{Name: st.Name, Spec: st.Spec}
+	if out.Params == nil {
+		out.Params = []streams.Param{}
+	}
+	if out.Stages == nil {
+		out.Stages = []streams.Stage{}
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 // handleValidateStream reports the problems of an unsaved Stream.
 func (a *api) handleValidateStream(w http.ResponseWriter, r *http.Request) {
 	var in streamInput

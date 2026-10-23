@@ -993,19 +993,24 @@ interface EditorProps {
   existing?: Stream;
   // Categories of the other streams, offered in the category field.
   categories?: string[];
+  // Names and labels of the other streams, to flag duplicates.
+  others?: { name: string; label?: string }[];
+  // An unsaved stream to start from (an import or a clone), and its origin.
+  initial?: { name: string; spec: StreamSpec; note: string };
   onSaved: (stream: Stream, created: boolean) => void;
   onClose: () => void;
 }
 
-export const StreamEditor = ({ client, data, connections, existing, categories, onSaved, onClose }: EditorProps) => {
-  const [name, setName] = React.useState(existing?.name ?? '');
-  const [spec, setSpec] = React.useState<StreamSpec>(() => (existing ? specOf(existing) : emptySpec()));
+export const StreamEditor = ({ client, data, connections, existing, categories, others, initial, onSaved, onClose }: EditorProps) => {
+  const [name, setName] = React.useState(existing?.name ?? initial?.name ?? '');
+  const [spec, setSpec] = React.useState<StreamSpec>(() => (existing ? specOf(existing) : initial ? specOf(initial.spec) : emptySpec()));
   const [version, setVersion] = React.useState(existing?.version ?? '');
   const [selected, setSelected] = React.useState<StreamStep | null>(null);
   const [panelKey, setPanelKey] = React.useState(0);
   const [problems, setProblems] = React.useState<StreamProblem[]>(existing?.problems ?? []);
   const [validateError, setValidateError] = React.useState('');
-  const [dirty, setDirty] = React.useState(false);
+  // An import or a clone is not saved yet.
+  const [dirty, setDirty] = React.useState(!!initial);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState('');
   const [showParams, setShowParams] = React.useState(true);
@@ -1013,6 +1018,9 @@ export const StreamEditor = ({ client, data, connections, existing, categories, 
   const [drop, setDrop] = React.useState<Drop | null>(null);
 
   const nameOK = STREAM_NAME_RE.test(name) && name.length <= MAX_STREAM_NAME;
+  const nameTaken = !existing && !!others?.some(o => o.name === name);
+  const shownLabel = streamLabel({ name, label: spec.label }).toLowerCase();
+  const sameLabel = (others ?? []).filter(o => o.name !== name && streamLabel(o).toLowerCase() === shownLabel);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -1153,6 +1161,10 @@ export const StreamEditor = ({ client, data, connections, existing, categories, 
       setError(`Invalid name: use lowercase letters, digits and '-', max ${MAX_STREAM_NAME} characters.`);
       return;
     }
+    if (nameTaken) {
+      setError(`A stream named ${name} already exists; choose another name.`);
+      return;
+    }
     setBusy(true);
     setError('');
     try {
@@ -1196,6 +1208,7 @@ export const StreamEditor = ({ client, data, connections, existing, categories, 
         </button>
         <b style={{ fontSize: '1.1em' }}>{existing ? 'Edit stream' : 'New stream'}</b>
         {existing?.draftOf && <Badge>draft of {existing.draftOf}</Badge>}
+        {!existing && initial && <Badge title='Not saved yet; press Save to create it'>{initial.note}</Badge>}
         <div style={{ flex: 1 }} />
         {dirty && <Muted>Unsaved changes</Muted>}
         {problems.length > 0 ? (
@@ -1230,6 +1243,7 @@ export const StreamEditor = ({ client, data, connections, existing, categories, 
                 onChange={e => setName(e.target.value.trim())}
               />
               {name && !nameOK && <ErrorText text='Invalid name' />}
+              {nameTaken && <ErrorText text='A stream with this name already exists' />}
             </Field>
           </div>
           <div style={{ flex: '0 1 280px' }}>
@@ -1242,6 +1256,11 @@ export const StreamEditor = ({ client, data, connections, existing, categories, 
                 placeholder={name || 'Build and deploy'}
                 onChange={e => change({ ...spec, label: e.target.value || undefined })}
               />
+              {sameLabel.length > 0 && (
+                <div style={{ color: COLORS.warn, marginTop: '0.3em' }} title='Two streams with the same display name are hard to tell apart'>
+                  <i className='fa fa-exclamation-triangle' /> Same display name as {sameLabel.map(o => o.name).join(', ')}
+                </div>
+              )}
             </Field>
           </div>
           <div style={{ flex: '1 1 300px' }}>

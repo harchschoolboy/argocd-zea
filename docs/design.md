@@ -569,8 +569,9 @@ GitOps flow: "Edit as draft" copies any Stream into an editable draft
 "Export" returns a declarative ConfigMap (no managed-by label, named after
 `draftOf` for drafts) to commit to git. Once Argo CD syncs it, the Stream is
 read-only in Zea and the draft can be deleted. Import accepts an exported
-ConfigMap or a plain document (`name` plus the spec) and creates a
-UI-managed Stream.
+ConfigMap or a plain document (`name` plus the spec). The UI parses it
+(`/streams/parse`) and opens it in the editor; it is created as a
+UI-managed Stream only on Save.
 
 The order of the category tabs and columns and the order of the Streams
 inside them are stored in the ConfigMap `zea-streams-settings` (label
@@ -709,7 +710,7 @@ step's automatic retries over.
 The page has the tabs **Streams** (default), **Connections**,
 **Registries** (with view access to some Registry) and, for admins,
 **Access**
-(`?view=streams[&stream=<name>][&mode=edit|new|run][&srun=<id>]`,
+(`?view=streams[&stream=<name>][&mode=edit|new|import|run][&from=<name>][&srun=<id>]`,
 `?view=connections`, `?connection=<name>`, `?view=registries`,
 `?view=access`). Buttons follow the user's actions on each item.
 
@@ -720,17 +721,23 @@ The page has the tabs **Streams** (default), **Connections**,
   width. Tabs and column headers can be dragged to reorder the categories
   (edit on some Stream; All stays first, "Without category" last), cards to
   reorder the Streams of a category. Dropping a card on another category
-  (column, tab or card) saves the Stream with that category (edit on it).
+  (column, tab or card) saves the Stream with that category (edit on it);
+  while a card is dragged, **New category** (asks for a name) and
+  **Without category** drop targets appear.
   The flat All list follows the category order, then the Stream order.
   **Run** on a card asks for confirmation (listing the default params) and
   starts the Stream with its defaults; when a required param has no
   default it opens the run form instead. Users with edit on Streams get
-  **New stream** and **Import** (paste YAML).
+  **New stream** and **Import** (paste YAML; it opens in the editor
+  unsaved, `mode=import`).
 - **Detail** - read-only stage columns, problems, run history (polled while a
   run is active) and the actions **Run**, **Edit** (UI-managed only),
-  **Edit as draft**, **Export** (copy or download the ConfigMap) and
+  **Edit as draft**, **Clone** (the editor with an unsaved copy,
+  `mode=new&from=<name>`), **Export** (copy or download the ConfigMap) and
   **Delete**.
-- **Editor** - name, description, lock and params; a palette of
+- **Editor** - name, display name, description, category, lock and params
+  (a taken name blocks saving a new Stream; a display name used by another
+  Stream is flagged); a palette of
   Connections (and the control steps **Approval** and **Argo CD sync**) that are dragged (or clicked) into stage columns; stages and steps are
   reordered by drag-and-drop, and a drop on the last zone creates a stage.
   The step panel picks the branch and pipeline of the Connection, prefills
@@ -772,6 +779,7 @@ Admins also get the **Audit** tab (`?view=audit`), see [Audit](#audit).
 | `POST /api/v1/streams/{name}/draft` | view; edit on the draft name + run on its Connections | Copy into a draft `{name?}` |
 | `GET /api/v1/streams/{name}/export` | view | `{name, fileName, yaml}` - declarative ConfigMap |
 | `POST /api/v1/streams/import` | edit + run on its Connections | `{yaml, replace?}` - create, or replace a UI-managed Stream |
+| `POST /api/v1/streams/parse` | edit on some Stream | `{yaml}` - read an exported or plain Stream without saving; returns `{name, ...spec}` |
 | `POST /api/v1/streams/validate` | edit on some Stream | Problems of an unsaved Stream |
 | `POST /api/v1/streams/{name}/runs` | run | Start a run `{params}`; 409 when the Stream has problems |
 | `GET /api/v1/streams/{name}/runs` | view | Runs, newest first, without the Spec snapshot |

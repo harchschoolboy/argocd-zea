@@ -84,6 +84,7 @@ func New(cfg *config.Config, log *slog.Logger, deps Deps) http.Handler {
 	mux.HandleFunc("POST /api/v1/streams", requireAny(authz.ResourceStreams, authz.ActionEdit, a.handleCreateStream))
 	mux.HandleFunc("POST /api/v1/streams/import", requireAny(authz.ResourceStreams, authz.ActionEdit, a.handleImportStream))
 	mux.HandleFunc("POST /api/v1/streams/validate", requireAny(authz.ResourceStreams, authz.ActionEdit, a.handleValidateStream))
+	mux.HandleFunc("POST /api/v1/streams/parse", requireAny(authz.ResourceStreams, authz.ActionEdit, a.handleParseStream))
 	mux.HandleFunc("PUT /api/v1/stream-categories", requireAny(authz.ResourceStreams, authz.ActionEdit, a.handleSetCategoryOrder))
 	mux.HandleFunc("PUT /api/v1/stream-order", requireAny(authz.ResourceStreams, authz.ActionEdit, a.handleSetStreamOrder))
 	mux.HandleFunc("GET /api/v1/streams/{name}", a.handleGetStream)

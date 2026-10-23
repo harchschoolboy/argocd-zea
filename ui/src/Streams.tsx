@@ -4,9 +4,9 @@ import { navigate, useRoute } from './route';
 import { ago, usePoll } from './Runs';
 import { Badge, ellipsis, Help, ProblemList, StreamStatusIcon, StreamStatusLabel } from './StreamFields';
 import { StreamEditor } from './StreamEditor';
-import { ConnData, specOf, streamLabel } from './streamModel';
+import { ConnData, MAX_STREAM_NAME, specOf, streamLabel } from './streamModel';
 import { ApprovalBadge, LockBadge, runActive, StagesBoard, StreamRunForm, StreamRunHistory, StreamRunView, waitingSteps } from './StreamRun';
-import { can, Connection, Me, Stream, StreamExport, StreamList as StreamListData, StreamRun } from './types';
+import { can, Connection, Me, Stream, StreamExport, StreamInput, StreamList as StreamListData, StreamRun, StreamSpec } from './types';
 import { COLORS, ErrorText, Muted, useLoad } from './ui';
 
 const StreamBadges = ({ stream }: { stream: Stream }) => (
@@ -200,17 +200,62 @@ const StreamCard = ({
   );
 };
 
+const IMPORT_KEY = 'zea.streams.import';
+// The parsed import, kept until the editor opens it; also in session
+// storage so that a reload of the editor keeps it.
+let pendingImport: StreamInput | null = null;
+
+function keepImport(s: StreamInput) {
+  pendingImport = s;
+  try {
+    window.sessionStorage.setItem(IMPORT_KEY, JSON.stringify(s));
+  } catch {
+    // Kept in memory only.
+  }
+}
+
+function readImport(): StreamInput | null {
+  try {
+    const raw = window.sessionStorage.getItem(IMPORT_KEY);
+    if (raw) {
+      return JSON.parse(raw) as StreamInput;
+    }
+  } catch {
+    // Falls back to the copy in memory.
+  }
+  return pendingImport;
+}
+
+function dropImport() {
+  pendingImport = null;
+  try {
+    window.sessionStorage.removeItem(IMPORT_KEY);
+  } catch {
+    // Nothing kept.
+  }
+}
+
+// freeName is base with a suffix that no stream uses yet.
+function freeName(base: string, taken: Set<string>): string {
+  for (let i = 1; ; i++) {
+    const suffix = i === 1 ? '-copy' : `-copy-${i}`;
+    const name = base.slice(0, MAX_STREAM_NAME - suffix.length).replace(/-+$/, '') + suffix;
+    if (!taken.has(name)) {
+      return name;
+    }
+  }
+}
+
 const ImportPanel = ({ client, onClose }: { client: ZeaClient; onClose: () => void }) => {
   const [yaml, setYaml] = React.useState('');
-  const [replace, setReplace] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState('');
   const submit = async () => {
     setBusy(true);
     setError('');
     try {
-      const s = await client.importStream(yaml, replace);
-      navigate({ view: 'streams', stream: s.name });
+      keepImport(await client.parseStream(yaml));
+      navigate({ view: 'streams', mode: 'import' });
     } catch (err) {
       setError(describeError(err));
       setBusy(false);
@@ -219,7 +264,10 @@ const ImportPanel = ({ client, onClose }: { client: ZeaClient; onClose: () => vo
   return (
     <div className='white-box' style={{ padding: '0.8em 1em', marginBottom: '1em' }}>
       <b>Import a stream</b>
-      <Help>Paste an exported ConfigMap, or a document with name, params and stages. The stream is created as UI-managed.</Help>
+      <Help>
+        Paste an exported ConfigMap, or a document with name, params and stages. It opens in the editor, where duplicates are marked;
+        nothing is saved until you press Save.
+      </Help>
       <textarea
         className='argo-field'
         rows={14}
@@ -228,14 +276,10 @@ const ImportPanel = ({ client, onClose }: { client: ZeaClient; onClose: () => vo
         onChange={e => setYaml(e.target.value)}
         style={{ width: '100%', fontFamily: 'monospace', marginTop: '0.5em' }}
       />
-      <label style={{ display: 'block', cursor: 'pointer', margin: '0.4em 0' }}>
-        <input type='checkbox' checked={replace} onChange={e => setReplace(e.target.checked)} /> Replace a UI-managed stream with the
-        same name
-      </label>
       {error && <ErrorText text={error} />}
-      <div style={{ display: 'flex', gap: '0.5em' }}>
+      <div style={{ display: 'flex', gap: '0.5em', marginTop: '0.4em' }}>
         <button className='argo-button argo-button--base' disabled={busy || !yaml.trim()} onClick={submit}>
-          <i className={busy ? 'fa fa-circle-notch fa-spin' : 'fa fa-file-import'} /> Import
+          <i className={busy ? 'fa fa-circle-notch fa-spin' : 'fa fa-file-import'} /> Open in editor
         </button>
         <button className='argo-button argo-button--base-o' disabled={busy} onClick={onClose}>
           Cancel
@@ -302,6 +346,9 @@ const ExportPanel = ({ client, stream, onClose }: { client: ZeaClient; stream: s
 const OTHER = '~other';
 // GROUP prefixes a category used as a drop target for streams.
 const GROUP = 'group:';
+// NEW is the drop target that moves a stream into a new category.
+const NEW = '~new';
+const MAX_CATEGORY = 60;
 
 const categoryOf = (s: Stream) => s.category?.trim() || OTHER;
 
@@ -431,7 +478,6 @@ const StreamList = ({ client, me, tab }: { client: ZeaClient; me: Me; tab?: stri
   const known = tab === OTHER ? uncategorized > 0 : !!tab && categories.includes(tab);
   const current = known ? tab : undefined;
   const shown = all.filter(s => !current || categoryOf(s) === current);
-  const count = (n: number) => <span style={{ fontWeight: 400, fontSize: '0.85em', color: COLORS.muted }}> {n}</span>;
   const canOrder = canCreate && categories.length > 1;
   const groups = [
     ...categories.map(c => ({ key: c, title: c, streams: all.filter(s => categoryOf(s) === c) })),
@@ -591,7 +637,9 @@ const StreamList = ({ client, me, tab }: { client: ZeaClient; me: Me; tab?: stri
       },
       onDragStart: e => {
         e.stopPropagation();
-        setDragStream(s);
+        // Deferred: Chrome cancels a drag when the page changes its layout
+        // (the extra drop targets) inside dragstart.
+        window.setTimeout(() => setDragStream(s), 0);
         e.dataTransfer.effectAllowed = 'move';
         e.dataTransfer.setData('text/plain', s.name);
       },
@@ -617,6 +665,48 @@ const StreamList = ({ client, me, tab }: { client: ZeaClient; me: Me; tab?: stri
       },
       onDragEnd: endDrag,
     };
+  };
+
+  // movable is the dragged stream when it may change its category.
+  const movable = dragStream && dragStream.editable && can(dragStream.actions, 'edit') ? dragStream : null;
+  const newCategoryProps: DragProps = {
+    title: 'Drop a stream here to move it into a new category',
+    style: {
+      border: `1px dashed ${COLORS.border}`,
+      borderRadius: 4,
+      padding: '0.3em 0.6em',
+      marginBottom: 4,
+      boxShadow: streamDrop?.key === GROUP + NEW ? `inset 0 0 0 2px ${DROP_COLOR}` : undefined,
+    },
+    onDragOver: e => {
+      if (!movable) {
+        return;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      if (streamDrop?.key !== GROUP + NEW) {
+        setStreamDrop({ key: GROUP + NEW, after: true });
+      }
+    },
+    onDrop: e => {
+      if (!movable) {
+        return;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      const s = movable;
+      endDrag();
+      const c = window.prompt(`New category for ${streamLabel(s)}`, '')?.trim();
+      if (!c) {
+        return;
+      }
+      if (c.length > MAX_CATEGORY) {
+        setOrderError(`Category name is longer than ${MAX_CATEGORY} characters.`);
+        return;
+      }
+      moveStream(s, c, null, true);
+    },
+    onDragEnd: endDrag,
   };
 
   const columns = grouped && !current && categories.length > 0;
@@ -665,20 +755,29 @@ const StreamList = ({ client, me, tab }: { client: ZeaClient; me: Me; tab?: stri
           </div>
         </div>
       )}
-      {categories.length > 0 && (
+      {(categories.length > 0 || movable) && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0 1.5em', borderBottom: `1px solid ${COLORS.border}`, marginBottom: '1em' }}>
           <CategoryTab active={!current} onClick={() => navigate({ view: 'streams' })}>
-            All{count(all.length)}
+            All
           </CategoryTab>
           {categories.map(c => (
             <CategoryTab key={c} active={current === c} drag={groupProps(c, 'tab')} onClick={() => navigate({ view: 'streams', tab: c })}>
               {c}
-              {count(all.filter(s => categoryOf(s) === c).length)}
             </CategoryTab>
           ))}
           {uncategorized > 0 && (
             <CategoryTab active={current === OTHER} drag={groupProps(OTHER, 'tab')} onClick={() => navigate({ view: 'streams', tab: OTHER })}>
-              Without category{count(uncategorized)}
+              Without category
+            </CategoryTab>
+          )}
+          {movable && uncategorized === 0 && categoryOf(movable) !== OTHER && (
+            <CategoryTab active={false} drag={groupProps(OTHER, 'tab')} onClick={() => undefined}>
+              Without category
+            </CategoryTab>
+          )}
+          {movable && (
+            <CategoryTab active={false} drag={newCategoryProps} onClick={() => undefined}>
+              <i className='fa fa-plus' /> New category
             </CategoryTab>
           )}
         </div>
@@ -704,7 +803,6 @@ const StreamList = ({ client, me, tab }: { client: ZeaClient; me: Me; tab?: stri
                   <a style={{ cursor: 'pointer', fontWeight: 600, ...ellipsis }} onClick={() => navigate({ view: 'streams', tab: g.key })}>
                     {g.title}
                   </a>
-                  {count(g.streams.length)}
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: layout === 'rows' ? '0.4em' : '0.6em' }}>
                   {g.streams.map(s => (
@@ -805,6 +903,15 @@ const StreamDetail = ({ client, data, me, name, openRun }: { client: ZeaClient; 
                 <i className='fa fa-copy' /> Edit as draft
               </button>
             )}
+            {can(me.permissions.streams, 'edit') && (
+              <button
+                className='argo-button argo-button--base-o'
+                disabled={busy}
+                onClick={() => navigate({ view: 'streams', mode: 'new', from: name })}
+                title='Open a copy in the editor as a new stream'>
+                <i className='fa fa-clone' /> Clone
+              </button>
+            )}
             <button className='argo-button argo-button--base-o' disabled={busy} onClick={() => setPanel(panel === 'export' ? 'none' : 'export')}>
               <i className='fa fa-file-export' /> Export
             </button>
@@ -858,11 +965,16 @@ const StreamDetail = ({ client, data, me, name, openRun }: { client: ZeaClient; 
   );
 };
 
-const EditorPage = ({ client, data, name }: { client: ZeaClient; data: ConnData; name?: string }) => {
+type Initial = { name: string; spec: StreamSpec; note: string };
+
+// EditorPage edits a stream (name), or a new one: empty, a clone of from,
+// or the pending import.
+const EditorPage = ({ client, data, name, from, imported }: { client: ZeaClient; data: ConnData; name?: string; from?: string; imported?: boolean }) => {
   const [loaded] = useLoad(
-    async (): Promise<{ stream?: Stream; connections: Connection[]; categories: string[] }> => {
-      const [stream, connections, streams] = await Promise.all([
+    async (): Promise<{ stream?: Stream; initial?: Initial; others: Stream[]; connections: Connection[]; categories: string[] }> => {
+      const [stream, source, connections, streams] = await Promise.all([
         name ? client.stream(name) : Promise.resolve(undefined),
+        from ? client.stream(from) : Promise.resolve(undefined),
         client.connections(),
         // Only offers existing categories; the editor works without them.
         client.streams().then(
@@ -871,10 +983,27 @@ const EditorPage = ({ client, data, name }: { client: ZeaClient; data: ConnData;
         ),
       ]);
       const categories = [...new Set(streams.map(s => s.category?.trim() ?? '').filter(c => c !== ''))].sort((a, b) => a.localeCompare(b));
+      let initial: Initial | undefined;
+      if (source) {
+        const spec = specOf(source);
+        const label = source.label?.trim();
+        initial = {
+          name: freeName(source.name, new Set(streams.map(s => s.name))),
+          spec: { ...spec, label: label ? `${label} (copy)`.slice(0, 100) : undefined },
+          note: `clone of ${source.name}`,
+        };
+      } else if (imported) {
+        const parsed = readImport();
+        if (!parsed) {
+          throw new Error('The imported stream is no longer available; import it again.');
+        }
+        initial = { name: parsed.name, spec: parsed, note: 'imported' };
+      }
+      const others = streams.filter(s => s.name !== name);
       // A stream can only use connections the user may run.
-      return { stream, connections: connections.filter(c => can(c.actions, 'run')), categories };
+      return { stream, initial, others, connections: connections.filter(c => can(c.actions, 'run')), categories };
     },
-    [client, name],
+    [client, name, from, imported],
   );
   if (loaded.state === 'loading') {
     return <Muted>Loading...</Muted>;
@@ -882,7 +1011,7 @@ const EditorPage = ({ client, data, name }: { client: ZeaClient; data: ConnData;
   if (loaded.state === 'error') {
     return <ErrorText text={loaded.error} />;
   }
-  const { stream, connections, categories } = loaded.data;
+  const { stream, initial, others, connections, categories } = loaded.data;
   if (stream && !can(stream.actions, 'edit')) {
     return (
       <>
@@ -909,9 +1038,23 @@ const EditorPage = ({ client, data, name }: { client: ZeaClient; data: ConnData;
       data={data}
       connections={connections}
       existing={stream}
+      initial={initial}
       categories={categories}
-      onSaved={(s, created) => created && navigate({ view: 'streams', stream: s.name, mode: 'edit' })}
-      onClose={() => navigate(stream ? { view: 'streams', stream: stream.name } : { view: 'streams' })}
+      others={others}
+      onSaved={(s, created) => {
+        if (created) {
+          if (imported) {
+            dropImport();
+          }
+          navigate({ view: 'streams', stream: s.name, mode: 'edit' });
+        }
+      }}
+      onClose={() => {
+        if (imported) {
+          dropImport();
+        }
+        navigate(stream ? { view: 'streams', stream: stream.name } : from ? { view: 'streams', stream: from } : { view: 'streams' });
+      }}
     />
   );
 };
@@ -921,7 +1064,10 @@ export const StreamsView = ({ client, me }: { client: ZeaClient; me: Me }) => {
   const data = React.useMemo(() => new ConnData(client), [client]);
   const canCreate = can(me.permissions.streams, 'edit');
   if (canCreate && route.mode === 'new') {
-    return <EditorPage client={client} data={data} />;
+    return <EditorPage key={`new:${route.from ?? ''}`} client={client} data={data} from={route.from} />;
+  }
+  if (canCreate && route.mode === 'import') {
+    return <EditorPage key='import' client={client} data={data} imported />;
   }
   if (route.stream) {
     if (canCreate && route.mode === 'edit') {

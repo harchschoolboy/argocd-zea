@@ -71,6 +71,7 @@ func TestOnlyAdminsManageStreams(t *testing.T) {
 		{"POST", "/api/v1/streams/pub/draft"},
 		{"POST", "/api/v1/streams/import"},
 		{"POST", "/api/v1/streams/validate"},
+		{"POST", "/api/v1/streams/parse"},
 		{"PUT", "/api/v1/stream-categories"},
 		{"PUT", "/api/v1/stream-order"},
 	} {
@@ -235,6 +236,18 @@ func TestStreamDraftExportImport(t *testing.T) {
 	}
 	if code, _ := e.do(t, "POST", "/api/v1/streams/import", map[string]any{"yaml": "kind: Secret"}, admin); code != http.StatusBadRequest {
 		t.Fatalf("import secret: %d", code)
+	}
+
+	// Parsing reads the export without saving it, even under a taken name.
+	code, body = e.do(t, "POST", "/api/v1/streams/parse", map[string]any{"yaml": manifest}, admin)
+	if code != http.StatusOK || body["name"] != "git" || body["description"] != "edited" || body["stages"] == nil {
+		t.Fatalf("parse: %d %v", code, body)
+	}
+	if _, err := e.strms.Get(context.Background(), "git"); err != nil {
+		t.Fatalf("parse changed the stored stream: %v", err)
+	}
+	if code, _ := e.do(t, "POST", "/api/v1/streams/parse", map[string]any{"yaml": "kind: Secret"}, admin); code != http.StatusBadRequest {
+		t.Fatalf("parse secret: %d", code)
 	}
 }
 
