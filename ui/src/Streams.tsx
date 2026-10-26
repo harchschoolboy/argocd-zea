@@ -830,11 +830,11 @@ const StreamList = ({ client, me, tab }: { client: ZeaClient; me: Me; tab?: stri
   );
 };
 
-type Panel = 'none' | 'run' | 'export';
-
 const StreamDetail = ({ client, data, me, name, openRun }: { client: ZeaClient; data: ConnData; me: Me; name: string; openRun?: boolean }) => {
   const [st, reload] = useLoad(() => client.stream(name), [client, name]);
-  const [panel, setPanel] = React.useState<Panel>(openRun ? 'run' : 'none');
+  // Separate flags, so opening Export keeps the params typed into the run form.
+  const [running, setRunning] = React.useState(!!openRun);
+  const [exporting, setExporting] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState('');
   const [runsKey, setRunsKey] = React.useState(0);
@@ -884,12 +884,12 @@ const StreamDetail = ({ client, data, me, name, openRun }: { client: ZeaClient; 
         <div style={{ flex: 1 }} />
         {st.state === 'ok' && (
           <>
-            {can(st.data.actions, 'run') && (
+            {can(st.data.actions, 'run') && !running && (
               <button
                 className='argo-button argo-button--base'
                 disabled={busy || st.data.problems.length > 0}
                 title={st.data.problems.length > 0 ? 'Fix the problems first' : 'Start this stream'}
-                onClick={() => setPanel(panel === 'run' ? 'none' : 'run')}>
+                onClick={() => setRunning(true)}>
                 <i className='fa fa-play' /> Run
               </button>
             )}
@@ -912,7 +912,7 @@ const StreamDetail = ({ client, data, me, name, openRun }: { client: ZeaClient; 
                 <i className='fa fa-clone' /> Clone
               </button>
             )}
-            <button className='argo-button argo-button--base-o' disabled={busy} onClick={() => setPanel(panel === 'export' ? 'none' : 'export')}>
+            <button className='argo-button argo-button--base-o' disabled={busy} onClick={() => setExporting(!exporting)}>
               <i className='fa fa-file-export' /> Export
             </button>
             {can(st.data.actions, 'edit') && st.data.editable && (
@@ -946,15 +946,15 @@ const StreamDetail = ({ client, data, me, name, openRun }: { client: ZeaClient; 
               <ProblemList problems={st.data.problems} />
             </div>
           )}
-          {panel === 'run' && can(st.data.actions, 'run') && (
+          {running && can(st.data.actions, 'run') && (
             <StreamRunForm
               client={client}
               stream={st.data}
               onStarted={r => navigate({ view: 'streams', stream: name, srun: r.id })}
-              onClose={() => setPanel('none')}
+              onClose={() => setRunning(false)}
             />
           )}
-          {panel === 'export' && <ExportPanel client={client} stream={name} onClose={() => setPanel('none')} />}
+          {exporting && <ExportPanel client={client} stream={name} onClose={() => setExporting(false)} />}
           <div style={{ marginBottom: '1em' }}>
             <StagesBoard data={data} spec={st.data} />
           </div>

@@ -9,7 +9,7 @@ import { RegistriesView } from './Registries';
 import { navigate, useRoute } from './route';
 import { StreamsView } from './Streams';
 import { can, Connection, Me, ProviderInfo } from './types';
-import { COLORS, ErrorText, Muted, useLoad } from './ui';
+import { COLORS, ErrorText, Muted, THEME_CSS, useLoad } from './ui';
 
 const REPO_URL = 'https://github.com/harchschoolboy/argocd-zea';
 
@@ -208,7 +208,8 @@ export const ZeaPage = () => {
   );
 
   return (
-    <div style={{ padding: '1em 2em' }}>
+    <div className='zea' style={{ padding: '1em 2em' }}>
+      <style>{THEME_CSS}</style>
       <h2 style={{ marginTop: 0, display: 'flex', alignItems: 'baseline', gap: '0.6em' }}>
         <span>
           <i className='fa fa-anchor' /> Zea

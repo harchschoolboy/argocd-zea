@@ -7,12 +7,22 @@ export type Load<T> = { state: 'loading' } | { state: 'ok'; data: T } | { state:
 export const COLORS = {
   ok: '#18be94',
   error: '#e96d76',
-  muted: '#6d7f8b',
+  // Lighter in the dark theme, see THEME_CSS.
+  muted: 'var(--zea-muted, #6d7f8b)',
   warn: '#f4c030',
   // Translucent neutrals work on both the light and the dark Argo CD theme.
   surface: 'rgba(128, 128, 128, 0.08)',
   border: 'rgba(128, 128, 128, 0.25)',
 };
+
+// Argo CD's dark theme recolours only its own components (white-box,
+// argo-field, ...); text outside them keeps the dark body colour and native
+// select popups stay white. Applied below the "zea" root class.
+export const THEME_CSS = `
+.zea { --zea-muted: #6d7f8b; }
+.theme-dark .zea { --zea-muted: #8fa4b1; color: #dee6eb; color-scheme: dark; }
+.theme-dark .zea select option, .theme-dark .zea select optgroup { background-color: #303237; color: #eff3f5; }
+`;
 
 export const ErrorText = ({ text }: { text: string }) => (
   <div style={{ color: COLORS.error, margin: '0.5em 0', wordBreak: 'break-word' }}>

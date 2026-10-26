@@ -22,7 +22,7 @@ server:
     extensionList: []
   initContainers:
     - name: extension-zea
-      image: ghcr.io/harchschoolboy/argocd-zea-backend:0.5.7
+      image: ghcr.io/harchschoolboy/argocd-zea-backend:0.5.8
       args: [install-ui, /tmp/extensions]
       securityContext:
         runAsNonRoot: true

@@ -472,8 +472,9 @@ const StepDetails = ({
   const earlier = earlierTries(run, stepID);
   const def = run.spec?.stages.flatMap(s => s.steps).find(s => s.id === stepID);
   const approval = isApproval(state);
+  // As wide as its content, so the job links stay next to the job names.
   return (
-    <div className='white-box' style={{ padding: '0.8em 1em', marginTop: '0.8em' }}>
+    <div className='white-box' style={{ padding: '0.8em 1em', marginTop: '0.8em', width: 'fit-content', minWidth: 'min(100%, 420px)', maxWidth: '100%' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
         <StreamStatusIcon status={state.status} />
         <code>{state.id}</code>
@@ -789,12 +790,12 @@ export const StreamRunForm = ({ client, stream, initial, title, onStarted, onClo
         </InlineField>
       ))}
       {error && <ErrorText text={error} />}
-      <div style={{ display: 'flex', gap: '0.5em', marginTop: '0.6em' }}>
-        <button type='submit' className='argo-button argo-button--base' disabled={busy}>
-          <i className={busy ? 'fa fa-circle-notch fa-spin' : 'fa fa-play'} /> Run
-        </button>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5em', marginTop: '0.6em' }}>
         <button type='button' className='argo-button argo-button--base-o' disabled={busy} onClick={onClose}>
           Cancel
+        </button>
+        <button type='submit' className='argo-button argo-button--base' disabled={busy}>
+          <i className={busy ? 'fa fa-circle-notch fa-spin' : 'fa fa-play'} /> Run
         </button>
       </div>
     </form>
@@ -1061,8 +1062,8 @@ export const StreamRunView = ({ client, data, me, stream, runID }: { client: Zea
             <i className='fa fa-redo' /> Retry failed
           </button>
         )}
-        {canRun && r && !runActive(r.status) && (
-          <button className='argo-button argo-button--base-o' disabled={busy} onClick={() => setAgain(!again)} title='Start a new run with these params'>
+        {canRun && r && !runActive(r.status) && !again && (
+          <button className='argo-button argo-button--base-o' disabled={busy} onClick={() => setAgain(true)} title='Start a new run with these params'>
             <i className='fa fa-play' /> Run again
           </button>
         )}
