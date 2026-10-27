@@ -2,7 +2,7 @@ import * as React from 'react';
 import { BranchPicker } from './BranchPicker';
 import { ConnData, isTemplate, Reference } from './streamModel';
 import { BranchList, Pipeline, StreamProblem } from './types';
-import { COLORS, useLoad } from './ui';
+import { COLORS, Muted, useLoad } from './ui';
 
 export const STREAM_STATUS: Record<string, { icon: string; color: string; label: string }> = {
   pending: { icon: 'fa fa-clock', color: COLORS.muted, label: 'Pending' },
@@ -48,6 +48,78 @@ export const matchesFilter = (name: string, filter: string) => {
   const f = filter.trim().toLowerCase();
   return f === '' || name.toLowerCase().includes(f);
 };
+
+// A pipeline input or variable named DELIMITER_<X> starts a group that holds
+// the following ones up to the next delimiter. The group is titled by the
+// delimiter value without decoration ("--- LES apps ---"), else by <X>.
+const DELIMITER = 'DELIMITER_';
+
+export const isDelimiter = (name: string) => name.length > DELIMITER.length && name.toUpperCase().startsWith(DELIMITER);
+
+export interface VarGroup<T> {
+  // Absent for the items before the first delimiter.
+  delimiter?: T;
+  title: string;
+  items: T[];
+}
+
+const DECORATION = /^[\s\-=_*#~.:|+<>/\\]+|[\s\-=_*#~.:|+<>/\\]+$/g;
+
+export function groupByDelimiter<T extends { name: string; default?: string }>(items: T[]): VarGroup<T>[] {
+  const groups: VarGroup<T>[] = [{ title: '', items: [] }];
+  for (const item of items) {
+    if (isDelimiter(item.name)) {
+      const text = (item.default ?? '').replace(DECORATION, '');
+      groups.push({ delimiter: item, title: text || item.name.slice(DELIMITER.length), items: [] });
+    } else {
+      groups[groups.length - 1].items.push(item);
+    }
+  }
+  return groups.filter(g => g.delimiter || g.items.length > 0);
+}
+
+// VarGroupBox is a collapsible group of pipeline inputs or variables; set
+// counts the items that have a value in the step.
+export const VarGroupBox = ({
+  title,
+  count,
+  set,
+  open,
+  onToggle,
+  children,
+}: {
+  title: string;
+  count: number;
+  set: number;
+  open: boolean;
+  onToggle?: () => void;
+  children?: React.ReactNode;
+}) => (
+  <div style={{ border: `1px solid ${COLORS.border}`, borderRadius: 4, marginBottom: '0.5em' }}>
+    <div
+      onClick={onToggle}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: '0.5em',
+        padding: '0.4em 0.7em',
+        cursor: onToggle ? 'pointer' : undefined,
+        background: COLORS.surface,
+        userSelect: 'none',
+      }}>
+      <i className={open ? 'fa fa-angle-down' : 'fa fa-angle-right'} style={{ width: '0.8em' }} />
+      <b style={{ ...ellipsis }}>{title}</b>
+      <Muted>{count}</Muted>
+      <div style={{ flex: 1 }} />
+      {set > 0 && (
+        <span style={{ fontSize: '0.85em', color: '#0dadea' }} title='Values set in this step'>
+          {set} set
+        </span>
+      )}
+    </div>
+    {open && <div style={{ padding: '0.5em 0.5em 0' }}>{children}</div>}
+  </div>
+);
 
 export const FilterInput = ({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder: string }) => (
   <div style={{ display: 'flex', alignItems: 'center', gap: '0.4em', marginBottom: '0.5em' }}>

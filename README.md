@@ -56,7 +56,7 @@ prints a ready-to-merge values snippet for the argo-cd chart.
   `argocd-server` to `github.com` to download the UI extension at startup.
 
 In the commands below the Argo CD namespace is `argocd`, the Helm release and
-the anchor Application are both called `zea`, and the release is `v0.5.8`.
+the anchor Application are both called `zea`, and the release is `v0.6.0`.
 
 ### Step 1. Install the backend
 
@@ -109,7 +109,7 @@ set `image.tag`.
 #### Option B: with the Helm CLI
 
 ```bash
-helm install zea oci://ghcr.io/harchschoolboy/charts/zea --version 0.5.8 \
+helm install zea oci://ghcr.io/harchschoolboy/charts/zea --version 0.6.0 \
   -n argocd \
   --set anchorApplication=argocd:<existing-app> \
   --set 'admins.users={admin}'
@@ -159,7 +159,7 @@ server:
     extensionList: []
   initContainers:
     - name: extension-zea
-      image: ghcr.io/harchschoolboy/argocd-zea-backend:0.5.8
+      image: ghcr.io/harchschoolboy/argocd-zea-backend:0.6.0
       args: [install-ui, /tmp/extensions]
       securityContext:
         runAsNonRoot: true
@@ -223,9 +223,9 @@ server:
           - name: EXTENSION_NAME
             value: zea
           - name: EXTENSION_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.5.8/extension-zea.tar.gz
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.6.0/extension-zea.tar.gz
           - name: EXTENSION_CHECKSUM_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.5.8/extension-zea_checksums.txt
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.6.0/extension-zea_checksums.txt
 ```
 
 #### Argo CD that manages itself (GitOps)
@@ -290,7 +290,7 @@ one Zea installation.
        spec:
          initContainers:
            - name: extension-zea
-             image: ghcr.io/harchschoolboy/argocd-zea-backend:0.5.8
+             image: ghcr.io/harchschoolboy/argocd-zea-backend:0.6.0
              args: [install-ui, /tmp/extensions]
              securityContext:
                runAsNonRoot: true
@@ -454,6 +454,12 @@ reads the parameters from the pipeline file at that branch and shows a form.
   arrive in jobs as regular environment variables. Passing variables needs
   the Developer role or higher, and the project setting "Minimum role to use
   pipeline variables" must allow it.
+- **Groups in the Stream editor**: in the step panel, an input or variable
+  named `DELIMITER_<X>` (e.g. `DELIMITER_LES: "-----"`) starts a collapsible
+  group of the following ones up to the next delimiter. The group is named
+  by the delimiter value without dashes and similar decoration, or by `<X>`
+  when nothing is left. Groups start collapsed and show how many of their
+  values the step sets; the name filter opens the groups with matches.
 
 Each card shows the last run of the selected branch. Click the card (or its
 name, or the last run) to open the Connection view: it keeps the branch and

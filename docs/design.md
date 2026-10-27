@@ -742,7 +742,12 @@ The page has the tabs **Streams** (default), **Connections**,
   reordered by drag-and-drop, and a drop on the last zone creates a stage.
   The step panel picks the branch and pipeline of the Connection, prefills
   inputs and variables from the provider run form, and inserts
-  `${{ ... }}` references to params and upstream steps. Renaming a step or
+  `${{ ... }}` references to params and upstream steps. An input or
+  variable named `DELIMITER_<X>` starts a collapsible group (collapsed at
+  first) holding the following ones up to the next delimiter; the group is
+  titled by the delimiter value without decoration, else by `<X>`, and
+  counts the values the step sets. The name filter opens the groups with
+  matches. Renaming a step or
   a param rewrites its references. The Stream is validated while it is
   edited; it can be saved with problems but not run.
 - **Run** - a form for the params (branch params get the branch picker),

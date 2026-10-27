@@ -8,6 +8,8 @@ import {
   Help,
   KeyValueEditor,
   FilterInput,
+  groupByDelimiter,
+  isDelimiter,
   matchesFilter,
   cardStyle,
   PipelineName,
@@ -15,6 +17,7 @@ import {
   RefSelect,
   useDebounced,
   ValueField,
+  VarGroupBox,
 } from './StreamFields';
 import {
   allSteps,
@@ -259,13 +262,82 @@ const StepPanel = ({ data, spec, step, pos, connections, problems, onChange, onM
   const extraInputs = Object.keys(step.inputs ?? {}).filter(k => !declared.includes(k));
   const freeVars = Object.keys(step.variables ?? {}).filter(k => !prefilled.some(p => p.name === k));
   const [filter, setFilter] = React.useState('');
-  React.useEffect(() => setFilter(''), [step.id]);
+  // Delimiter groups the user opened; all start collapsed.
+  const [openGroups, setOpenGroups] = React.useState<string[]>([]);
+  React.useEffect(() => {
+    setFilter('');
+    setOpenGroups([]);
+  }, [step.id]);
   const valueCount = declared.length + prefilled.length + extraInputs.length + freeVars.length;
   const filtered = filter.trim() !== '';
-  const shownInputs = fd?.inputs.filter(i => matchesFilter(i.name, filter)) ?? [];
-  const shownPrefilled = prefilled.filter(p => matchesFilter(p.name, filter));
+  // A delimiter is shown as its group header unless the step sets it.
+  const listed = (name: string, values: Record<string, string> | undefined) => !isDelimiter(name) || !!values?.[name];
+  const shownInputs = fd?.inputs.filter(i => listed(i.name, step.inputs) && matchesFilter(i.name, filter)) ?? [];
+  const shownPrefilled = prefilled.filter(p => listed(p.name, step.variables) && matchesFilter(p.name, filter));
   const extraShown = extraInputs.some(k => matchesFilter(k, filter));
   const freeShown = freeVars.some(k => matchesFilter(k, filter));
+
+  const toggleGroup = (key: string) => setOpenGroups(prev => (prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]));
+  // grouped lists inputs or variables in their delimiter groups; a filter
+  // opens the groups with matches and hides the others.
+  const grouped = <T extends RunInput>(kind: string, all: T[], values: Record<string, string> | undefined, row: (item: T) => React.ReactNode) =>
+    groupByDelimiter(all).map(g => {
+      const items = g.delimiter && values?.[g.delimiter.name] ? [g.delimiter, ...g.items] : g.items;
+      const shown = items.filter(x => matchesFilter(x.name, filter));
+      if (!g.delimiter) {
+        return shown.map(row);
+      }
+      if (filtered && shown.length === 0) {
+        return null;
+      }
+      const key = `${kind}:${g.delimiter.name}`;
+      const open = filtered || openGroups.includes(key);
+      return (
+        <VarGroupBox
+          key={key}
+          title={g.title}
+          count={g.items.length}
+          set={items.filter(x => !!values?.[x.name]).length}
+          open={open}
+          onToggle={filtered ? undefined : () => toggleGroup(key)}>
+          {shown.map(row)}
+        </VarGroupBox>
+      );
+    });
+  const inputRow = (i: RunInput) => (
+    <Field key={i.name} card label={<code>{i.name}</code>} hint={i.type} required={i.required && !i.default} help={i.description}>
+      <div style={{ display: 'flex', gap: '0.3em', alignItems: 'flex-start' }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <ValueField
+            value={step.inputs?.[i.name] ?? ''}
+            refs={valueRefs}
+            options={i.type === 'choice' ? i.options : i.type === 'boolean' ? ['true', 'false'] : undefined}
+            branches={isBranchInput(i) ? bl : undefined}
+            placeholder={i.default ? `default: ${i.default}` : ''}
+            onChange={v => set({ inputs: setKey(step.inputs, i.name, v) })}
+          />
+        </div>
+        <MakeParam value={step.inputs?.[i.name] ?? ''} onClick={() => makeParam(i, 'inputs')} />
+      </div>
+    </Field>
+  );
+  const varRow = (p: RunInput) => (
+    <Field key={p.name} card label={<code>{p.name}</code>} help={p.description}>
+      <div style={{ display: 'flex', gap: '0.3em', alignItems: 'flex-start' }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <ValueField
+            value={step.variables?.[p.name] ?? ''}
+            refs={valueRefs}
+            options={p.options?.length ? p.options : undefined}
+            placeholder={p.default ? `default: ${p.default}` : ''}
+            mono
+            onChange={v => set({ variables: setKey(step.variables, p.name, v) })}
+          />
+        </div>
+        <MakeParam value={step.variables?.[p.name] ?? ''} onClick={() => makeParam(p, 'variables')} />
+      </div>
+    </Field>
+  );
 
   const toggleNeed = (id: string, on: boolean) => {
     const next = on ? [...needs, id] : needs.filter(n => n !== id);
@@ -474,23 +546,7 @@ const StepPanel = ({ data, spec, step, pos, connections, problems, onChange, onM
                   <Muted>Nothing matches the filter.</Muted>
                 </div>
               )}
-              {shownInputs.map(i => (
-                <Field key={i.name} card label={<code>{i.name}</code>} hint={i.type} required={i.required && !i.default} help={i.description}>
-                  <div style={{ display: 'flex', gap: '0.3em', alignItems: 'flex-start' }}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <ValueField
-                        value={step.inputs?.[i.name] ?? ''}
-                        refs={valueRefs}
-                        options={i.type === 'choice' ? i.options : i.type === 'boolean' ? ['true', 'false'] : undefined}
-                        branches={isBranchInput(i) ? bl : undefined}
-                        placeholder={i.default ? `default: ${i.default}` : ''}
-                        onChange={v => set({ inputs: setKey(step.inputs, i.name, v) })}
-                      />
-                    </div>
-                    <MakeParam value={step.inputs?.[i.name] ?? ''} onClick={() => makeParam(i, 'inputs')} />
-                  </div>
-                </Field>
-              ))}
+              {grouped('in', fd?.inputs ?? [], step.inputs, inputRow)}
               {(form.state === 'error' || extraInputs.length > 0) && (!filtered || extraShown) && (
                 <Field
                   label='Other inputs'
@@ -506,23 +562,7 @@ const StepPanel = ({ data, spec, step, pos, connections, problems, onChange, onM
                   />
                 </Field>
               )}
-              {shownPrefilled.map(p => (
-                <Field key={p.name} card label={<code>{p.name}</code>} help={p.description}>
-                  <div style={{ display: 'flex', gap: '0.3em', alignItems: 'flex-start' }}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <ValueField
-                        value={step.variables?.[p.name] ?? ''}
-                        refs={valueRefs}
-                        options={p.options?.length ? p.options : undefined}
-                        placeholder={p.default ? `default: ${p.default}` : ''}
-                        mono
-                        onChange={v => set({ variables: setKey(step.variables, p.name, v) })}
-                      />
-                    </div>
-                    <MakeParam value={step.variables?.[p.name] ?? ''} onClick={() => makeParam(p, 'variables')} />
-                  </div>
-                </Field>
-              ))}
+              {grouped('var', prefilled, step.variables, varRow)}
               {(fd?.variables || freeVars.length > 0) && (!filtered || freeShown) && (
                 <Field label={prefilled.length > 0 ? 'Other variables' : 'Variables'}>
                   <KeyValueEditor
