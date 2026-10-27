@@ -377,6 +377,7 @@ export function describeError(err: unknown): string {
           ? err.message
           : 'Zea backend not found. Is the proxy extension enabled (server.enable.proxy.extension) and extension.config.zea set in argocd-cm?';
       case 400:
+      case 409:
       case 422:
         return err.message;
       case 502:

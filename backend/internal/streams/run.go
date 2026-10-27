@@ -2,6 +2,8 @@ package streams
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math/big"
@@ -49,6 +51,9 @@ var (
 	ErrInvalidParams = errors.New("invalid stream params")
 	// ErrNotRunnable is returned when a Stream has problems.
 	ErrNotRunnable = errors.New("stream cannot run")
+	// ErrLocked is returned when a Stream that rejects runs on a held lock
+	// is started while another active run holds the lock.
+	ErrLocked = errors.New("the lock of the stream is held")
 	// ErrNotRetryable is returned when a run cannot be retried.
 	ErrNotRetryable = errors.New("stream run cannot be retried")
 	// ErrNotWaiting is returned when deciding a step that does not wait
@@ -201,17 +206,44 @@ func NewRun(st *Stream, given map[string]string, user string, now time.Time) (*R
 			r.Steps = append(r.Steps, StepState{ID: step.ID, Status: StepPending})
 		}
 	}
-	lock, err := Render(st.Lock, r.values())
+	lock, err := lockKey(st, r)
 	if err != nil {
-		return nil, fmt.Errorf("%w: lock: %s", ErrInvalidParams, err)
-	}
-	if lock = strings.TrimSpace(lock); len(lock) > MaxLockLen {
-		return nil, fmt.Errorf("%w: the lock is longer than %d characters", ErrInvalidParams, MaxLockLen)
+		return nil, err
 	}
 	if lock != "" {
 		r.Lock, r.Status, r.QueuedAt = lock, RunQueued, r.CreatedAt
 	}
 	return r, nil
+}
+
+// lockKey renders the lock of a new run: the Lock template, or the Stream
+// name and the values of the params marked with Lock. Empty means no lock.
+func lockKey(st *Stream, r *Run) (string, error) {
+	if !st.LockParams {
+		lock, err := Render(st.Lock, r.values())
+		if err != nil {
+			return "", fmt.Errorf("%w: lock: %s", ErrInvalidParams, err)
+		}
+		if lock = strings.TrimSpace(lock); len(lock) > MaxLockLen {
+			return "", fmt.Errorf("%w: the lock is longer than %d characters", ErrInvalidParams, MaxLockLen)
+		}
+		return lock, nil
+	}
+	var parts []string
+	for _, p := range st.Params {
+		if p.Lock {
+			parts = append(parts, p.Name+"="+r.Params[p.Name])
+		}
+	}
+	if len(parts) == 0 {
+		return "", nil
+	}
+	lock := st.Name + "(" + strings.Join(parts, ", ") + ")"
+	if len(lock) > MaxLockLen {
+		sum := sha256.Sum256([]byte(lock))
+		lock = st.Name + "(sha256:" + hex.EncodeToString(sum[:8]) + ")"
+	}
+	return lock, nil
 }
 
 // ResolveParams applies defaults to the given values and checks them

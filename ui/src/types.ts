@@ -316,6 +316,8 @@ export interface StreamParam {
   falseValue?: string;
   // Lists the branches of a branch param.
   connection?: string;
+  // Part of the lock when the stream locks by params.
+  lock?: boolean;
 }
 
 export type StepWhen = 'success' | 'failure' | 'always';
@@ -364,6 +366,10 @@ export interface StreamSpec {
   category?: string;
   // Runs with the same rendered lock (of any stream) run one at a time.
   lock?: string;
+  // The lock is the stream name and the values of the params marked lock.
+  lockParams?: boolean;
+  // What a start does while the lock is held: wait (default) or fail.
+  onLocked?: 'queue' | 'reject';
   params: StreamParam[];
   stages: StreamStage[];
 }

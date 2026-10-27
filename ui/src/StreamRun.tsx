@@ -88,11 +88,25 @@ const ArgoBox = ({ state }: { state: StreamRunStep }) => {
 // waitingSteps are the approval steps of a run that wait for a decision.
 export const waitingSteps = (run: StreamRun) => (run.status === 'running' ? run.steps.filter(s => s.status === 'waiting') : []);
 
-export const LockBadge = ({ lock }: { lock: string }) => (
-  <Badge title='Runs with the same lock, of any stream, run one at a time'>
+export const LockBadge = ({ lock, title, reject }: { lock: string; title?: string; reject?: boolean }) => (
+  <Badge
+    title={`${title ?? 'Runs with the same lock, of any stream, run one at a time'}${reject ? '; a start while the lock is held is refused' : ''}`}>
     <i className='fa fa-key' /> {lock}
+    {reject && ' (refuse)'}
   </Badge>
 );
+
+// StreamLockBadge shows how a stream locks its runs, if it does.
+export const StreamLockBadge = ({ stream }: { stream: StreamSpec }) => {
+  const reject = stream.onLocked === 'reject';
+  if (stream.lockParams) {
+    const names = (stream.params ?? []).filter(p => p.lock).map(p => p.name);
+    return names.length === 0 ? null : (
+      <LockBadge lock={names.join(', ')} reject={reject} title='Runs of this stream with the same values of these params do not run at the same time' />
+    );
+  }
+  return stream.lock ? <LockBadge lock={stream.lock} reject={reject} /> : null;
+};
 
 const HolderLink = ({ blockedBy }: { blockedBy: string }) => {
   const [stream, run] = blockedBy.split('/');
@@ -851,6 +865,39 @@ const FILTERS: { key: 'all' | StreamRunStatus; label: string }[] = [
 ];
 
 // StreamRunHistory lists the runs of a Stream.
+// StreamRunLine is one run: status, id, who and when, step dots, and the
+// params and message below. Wrapped lines show all params instead of
+// cutting them at the width.
+export const StreamRunLine = ({ run: r, stream, wrap, style }: { run: StreamRun; stream: string; wrap?: boolean; style?: React.CSSProperties }) => {
+  const params = Object.entries(r.params);
+  const details = [params.map(([k, v]) => `${k}=${v || '""'}`).join('  '), r.message].filter(Boolean).join(' · ');
+  return (
+    <div
+      onClick={e => {
+        e.stopPropagation();
+        navigate({ view: 'streams', stream, srun: r.id });
+      }}
+      style={{ cursor: 'pointer', display: 'flex', gap: '0.6em', alignItems: 'baseline', ...style }}>
+      <StreamStatusIcon status={r.status} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: 'flex', gap: '0.6em', alignItems: 'baseline', flexWrap: 'wrap' }}>
+          <StreamStatusLabel status={r.status} />
+          <code>{r.id}</code>
+          {r.attempt > 1 && <Badge title={r.retriedBy ? `Retried by ${r.retriedBy} ${ago(r.retriedAt)}` : undefined}>attempt {r.attempt}</Badge>}
+          <Muted>{[r.user, ago(r.createdAt), duration(r.retriedAt || r.createdAt, r.finishedAt)].filter(Boolean).join(' · ')}</Muted>
+          <StepDots run={r} />
+          {waitingSteps(r).length > 0 && <ApprovalBadge steps={waitingSteps(r)} />}
+        </div>
+        {details && (
+          <div title={details} style={{ ...(wrap ? { wordBreak: 'break-word' } : ellipsis), fontSize: '0.85em', color: COLORS.muted }}>
+            {details}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
 export const StreamRunHistory = ({ client, stream, refreshKey }: { client: ZeaClient; stream: string; refreshKey: number }) => {
   const runs = usePoll(
     () => client.streamRuns(stream),
@@ -894,36 +941,9 @@ export const StreamRunHistory = ({ client, stream, refreshKey }: { client: ZeaCl
       {runs.error && <ErrorText text={runs.error} />}
       {!runs.data && runs.loading && <Muted>Loading...</Muted>}
       {runs.data && list.length === 0 && <Muted>{all.length === 0 ? 'No runs yet.' : 'No runs match.'}</Muted>}
-      {list.slice(0, shown).map(r => {
-        const params = Object.entries(r.params);
-        return (
-          <div
-            key={r.id}
-            onClick={() => navigate({ view: 'streams', stream, srun: r.id })}
-            style={{ borderTop: `1px solid ${COLORS.border}`, padding: '0.45em 0', cursor: 'pointer', display: 'flex', gap: '0.6em', alignItems: 'baseline' }}>
-            <StreamStatusIcon status={r.status} />
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ display: 'flex', gap: '0.6em', alignItems: 'baseline', flexWrap: 'wrap' }}>
-                <StreamStatusLabel status={r.status} />
-                <code>{r.id}</code>
-                {r.attempt > 1 && (
-                  <Badge title={r.retriedBy ? `Retried by ${r.retriedBy} ${ago(r.retriedAt)}` : undefined}>attempt {r.attempt}</Badge>
-                )}
-                <Muted>{[r.user, ago(r.createdAt), duration(r.retriedAt || r.createdAt, r.finishedAt)].filter(Boolean).join(' · ')}</Muted>
-                <StepDots run={r} />
-                {waitingSteps(r).length > 0 && <ApprovalBadge steps={waitingSteps(r)} />}
-              </div>
-              {(params.length > 0 || r.message) && (
-                <div style={{ ...ellipsis, fontSize: '0.85em', color: COLORS.muted }}>
-                  {params.map(([k, v]) => `${k}=${v || '""'}`).join('  ')}
-                  {params.length > 0 && r.message && ' · '}
-                  {r.message}
-                </div>
-              )}
-            </div>
-          </div>
-        );
-      })}
+      {list.slice(0, shown).map(r => (
+        <StreamRunLine key={r.id} run={r} stream={stream} style={{ borderTop: `1px solid ${COLORS.border}`, padding: '0.45em 0' }} />
+      ))}
       {list.length > shown && (
         <div style={{ borderTop: `1px solid ${COLORS.border}`, paddingTop: '0.5em' }}>
           <a style={{ cursor: 'pointer' }} onClick={() => setShown(n => n + HISTORY_PAGE)}>

@@ -1,11 +1,11 @@
 import * as React from 'react';
 import { describeError, ZeaClient } from './api';
 import { navigate, useRoute } from './route';
-import { ago, usePoll } from './Runs';
-import { Badge, ellipsis, Help, ProblemList, StreamStatusIcon, StreamStatusLabel } from './StreamFields';
+import { usePoll } from './Runs';
+import { Badge, ellipsis, Help, ProblemList } from './StreamFields';
 import { StreamEditor } from './StreamEditor';
 import { ConnData, MAX_STREAM_NAME, specOf, streamLabel } from './streamModel';
-import { ApprovalBadge, LockBadge, runActive, StagesBoard, StreamRunForm, StreamRunHistory, StreamRunView, waitingSteps } from './StreamRun';
+import { runActive, StagesBoard, StreamLockBadge, StreamRunForm, StreamRunHistory, StreamRunLine, StreamRunView } from './StreamRun';
 import { can, Connection, Me, Stream, StreamExport, StreamInput, StreamList as StreamListData, StreamRun, StreamSpec } from './types';
 import { COLORS, ErrorText, Muted, useLoad } from './ui';
 
@@ -17,7 +17,7 @@ const StreamBadges = ({ stream }: { stream: Stream }) => (
         <i className='fa fa-lock' /> git
       </Badge>
     )}
-    {stream.lock && <LockBadge lock={stream.lock} />}
+    <StreamLockBadge stream={stream} />
     {stream.problems.length > 0 ? (
       <Badge color={COLORS.warn} title={stream.problems.map(p => p.message).join('\n')}>
         {stream.problems.length} problem{stream.problems.length > 1 ? 's' : ''}
@@ -28,44 +28,37 @@ const StreamBadges = ({ stream }: { stream: Stream }) => (
 
 const CARD_POLL_MS = 10_000;
 
-const LastStreamRun = ({ stream, runs }: { stream: string; runs: { data?: StreamRun[]; error: string } }) => {
+// StreamRuns lists every active run of a Stream (running or queued, newest
+// first), or the last run when none is active.
+const StreamRuns = ({ stream, runs }: { stream: string; runs: { data?: StreamRun[]; error: string } }) => {
   if (runs.error && !runs.data) {
     return <Muted>runs unavailable</Muted>;
   }
   if (!runs.data) {
     return <Muted>...</Muted>;
   }
-  const r = runs.data[0];
-  if (!r) {
+  if (runs.data.length === 0) {
     return <Muted>No runs yet.</Muted>;
   }
-  const open = (e: React.MouseEvent, id: string) => {
-    e.stopPropagation();
-    navigate({ view: 'streams', stream, srun: id });
-  };
-  // Older runs may wait for an approval too; link the oldest one.
-  const waiting = runs.data.filter(x => waitingSteps(x).length > 0);
-  const first = waiting[waiting.length - 1];
+  const active = runs.data.filter(r => runActive(r.status));
+  const shown = active.length > 0 ? active : runs.data.slice(0, 1);
   return (
-    <span style={{ display: 'inline-flex', gap: '0.5em', alignItems: 'baseline', flexWrap: 'wrap' }}>
-      <span style={{ cursor: 'pointer' }} onClick={e => open(e, r.id)}>
-        <StreamStatusIcon status={r.status} /> <StreamStatusLabel status={r.status} />{' '}
-        <Muted>
-          {ago(r.createdAt)} by {r.user}
-        </Muted>
-      </span>
-      {first && (
-        <span style={{ cursor: 'pointer' }} onClick={e => open(e, first.id)}>
-          <ApprovalBadge steps={waiting.flatMap(waitingSteps)} />
-          {waiting.length > 1 && <Muted> {waiting.length} runs</Muted>}
-        </span>
-      )}
-    </span>
+    <div style={{ minWidth: 0 }}>
+      {shown.map((r, i) => (
+        <StreamRunLine
+          key={r.id}
+          run={r}
+          stream={stream}
+          wrap
+          style={i > 0 ? { borderTop: `1px solid ${COLORS.border}`, marginTop: '0.3em', paddingTop: '0.3em' } : undefined}
+        />
+      ))}
+    </div>
   );
 };
 
 // StreamCard is a Stream on the list page: a card, or one compact row.
-// Narrow compact rows (category columns) show the last run under the name.
+// Narrow compact rows (category columns) show the runs under the name.
 const StreamCard = ({
   client,
   stream,
@@ -145,16 +138,16 @@ const StreamCard = ({
             <div style={{ flex: 1, minWidth: 0 }}>
               {title}
               <div style={{ fontSize: '0.85em', marginTop: '0.15em' }}>
-                <LastStreamRun stream={stream.name} runs={runs} />
+                <StreamRuns stream={stream.name} runs={runs} />
               </div>
             </div>
             {runButton}
           </div>
         ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1.4fr) 110px', gap: '1em', alignItems: 'center' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 2fr) 110px', gap: '1em', alignItems: 'center' }}>
             {title}
             <div style={{ minWidth: 0 }}>
-              <LastStreamRun stream={stream.name} runs={runs} />
+              <StreamRuns stream={stream.name} runs={runs} />
             </div>
             <div style={{ textAlign: 'right' }}>{runButton}</div>
           </div>
@@ -194,7 +187,7 @@ const StreamCard = ({
         </div>
       )}
       <div style={{ marginTop: '0.5em', paddingTop: '0.4em', borderTop: `1px solid ${COLORS.border}` }}>
-        <LastStreamRun stream={stream.name} runs={runs} />
+        <StreamRuns stream={stream.name} runs={runs} />
       </div>
     </div>
   );
@@ -784,7 +777,7 @@ const StreamList = ({ client, me, tab }: { client: ZeaClient; me: Me; tab?: stri
       )}
       {orderError && <ErrorText text={orderError} />}
       {all.length > 0 && columns && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: '1.5em 1em', alignItems: 'start' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: '1.5em 1em', alignItems: 'start' }}>
           {groups.map(g => {
             const drag = groupProps(g.key, 'header');
             const column = groupProps(g.key, 'column');
@@ -819,7 +812,7 @@ const StreamList = ({ client, me, tab }: { client: ZeaClient; me: Me; tab?: stri
           style={
             layout === 'rows'
               ? { display: 'flex', flexDirection: 'column', gap: '0.4em' }
-              : { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: '1em' }
+              : { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(440px, 1fr))', gap: '1em' }
           }>
           {shown.map(s => (
             <StreamCard key={s.name} client={client} stream={s} compact={layout === 'rows'} drag={streamProps(s, layout === 'rows' ? 'y' : 'x')} />

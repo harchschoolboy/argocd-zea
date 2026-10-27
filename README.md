@@ -56,7 +56,7 @@ prints a ready-to-merge values snippet for the argo-cd chart.
   `argocd-server` to `github.com` to download the UI extension at startup.
 
 In the commands below the Argo CD namespace is `argocd`, the Helm release and
-the anchor Application are both called `zea`, and the release is `v0.6.0`.
+the anchor Application are both called `zea`, and the release is `v0.6.1`.
 
 ### Step 1. Install the backend
 
@@ -109,7 +109,7 @@ set `image.tag`.
 #### Option B: with the Helm CLI
 
 ```bash
-helm install zea oci://ghcr.io/harchschoolboy/charts/zea --version 0.6.0 \
+helm install zea oci://ghcr.io/harchschoolboy/charts/zea --version 0.6.1 \
   -n argocd \
   --set anchorApplication=argocd:<existing-app> \
   --set 'admins.users={admin}'
@@ -159,7 +159,7 @@ server:
     extensionList: []
   initContainers:
     - name: extension-zea
-      image: ghcr.io/harchschoolboy/argocd-zea-backend:0.6.0
+      image: ghcr.io/harchschoolboy/argocd-zea-backend:0.6.1
       args: [install-ui, /tmp/extensions]
       securityContext:
         runAsNonRoot: true
@@ -223,9 +223,9 @@ server:
           - name: EXTENSION_NAME
             value: zea
           - name: EXTENSION_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.6.0/extension-zea.tar.gz
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.6.1/extension-zea.tar.gz
           - name: EXTENSION_CHECKSUM_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.6.0/extension-zea_checksums.txt
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.6.1/extension-zea_checksums.txt
 ```
 
 #### Argo CD that manages itself (GitOps)
@@ -290,7 +290,7 @@ one Zea installation.
        spec:
          initContainers:
            - name: extension-zea
-             image: ghcr.io/harchschoolboy/argocd-zea-backend:0.6.0
+             image: ghcr.io/harchschoolboy/argocd-zea-backend:0.6.1
              args: [install-ui, /tmp/extensions]
              securityContext:
                runAsNonRoot: true
@@ -460,6 +460,11 @@ reads the parameters from the pipeline file at that branch and shows a form.
   by the delimiter value without dashes and similar decoration, or by `<X>`
   when nothing is left. Groups start collapsed and show how many of their
   values the step sets; the name filter opens the groups with matches.
+- **Changed values first**: inputs and variables the step sets are listed
+  under **Changed** at the top of the step panel, above the groups, with
+  their group name. The reset button clears the value, so the pipeline
+  default applies, and returns it to its group. A field you are typing in
+  moves only when you leave it.
 
 Each card shows the last run of the selected branch. Click the card (or its
 name, or the last run) to open the Connection view: it keeps the branch and
@@ -667,11 +672,23 @@ on it). While a card is dragged, **New category** (asks for the name) and
   the anchor Application) can be used; the chart grants Zea `get` and
   `patch` on Applications there. Anyone who may run the Stream sees the
   health and images of the Applications it names.
-- **Lock**: runs with the same rendered lock (e.g. `deploy-${{ params.env }}`),
-  of this or any other Stream, run one at a time. Later runs are **queued**
-  and start in order; the run view links the run that holds the lock.
+- **Lock** keeps runs from running at the same time. In the editor choose:
+  - **Same values of lock params**: check **lock** on some params; a run
+    of this Stream is locked while another run of it is queued or running
+    with the same values of all checked params (lock `env` and `app`:
+    prod/les and prod/mcp run together, a second prod/les does not).
+  - **Custom lock key**: runs with the same rendered key (e.g.
+    `deploy-${{ params.env }}`), of this or any other Stream, run one at a
+    time; a fixed key such as `db-migrations` is shared across Streams.
+
+  **When the lock is held** a new run either **waits in a queue** (default;
+  queued runs start in order and the run view links the run that holds the
+  lock) or is **refused**: the start (or retry) fails and names the active
+  run.
 - **Run** on a stream card starts a Stream without params after a
   confirmation; **Run...** opens the start form of a Stream with params.
+- A stream card lists every running or queued run with its params, or the
+  last run when nothing runs; click a run to open it.
 - **Run**: fill the params and follow the steps live; click a step to see
   its jobs. **Cancel** stops the active provider runs. **Retry failed**
   reruns the steps that did not succeed in the same run (succeeded steps are
@@ -771,6 +788,7 @@ security contexts, scheduling).
 | `failed to fetch chart` / `401` / `403` from `ghcr.io` | The chart version is not released, or the ghcr package is not public |
 | Argo CD sync step: `not allowed to read the application` or `is not one of the application namespaces` | Add the namespace to `argocd.applicationNamespaces` (with `argocd.rbac` the chart creates the Role there) |
 | A Stream run stays **queued** | Another run holds the same lock; the run view links it. Cancel it or wait |
+| A start fails with "is still active with the lock" | The Stream refuses starts while the lock is held (When the lock is held: Refuse to start). Wait for the named run or cancel it |
 | `GitHub API returned 401` / `GitLab API returned 401` | Credentials of the Connection; use **Test** in the Connection view |
 | `GitHub API returned 403` on Run, Cancel or Rerun | The GitHub App or token needs **Actions** read and write (an App owner must also accept the new permissions on the installation) |
 | `Unexpected inputs provided` (GitHub) | The workflow file on the branch changed after the form was opened; close and reopen the form |

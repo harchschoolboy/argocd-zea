@@ -112,7 +112,7 @@ export const VarGroupBox = ({
       <Muted>{count}</Muted>
       <div style={{ flex: 1 }} />
       {set > 0 && (
-        <span style={{ fontSize: '0.85em', color: '#0dadea' }} title='Values set in this step'>
+        <span style={{ fontSize: '0.85em', color: '#0dadea' }} title='Values set in this step; they are listed under Changed at the top'>
           {set} set
         </span>
       )}

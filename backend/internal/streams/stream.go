@@ -70,6 +70,14 @@ const (
 	ParamImage = "image"
 )
 
+// What happens to a run whose lock is held by another active run.
+const (
+	// LockQueue makes the run wait until the lock is free.
+	LockQueue = "queue"
+	// LockReject refuses to start the run.
+	LockReject = "reject"
+)
+
 // Param widgets: how the run form shows a boolean or choice param. Empty
 // is a checkbox for a boolean and a select for a choice.
 const (
@@ -117,9 +125,15 @@ type Spec struct {
 	// Lock names a lock held while a run is active; runs with the same
 	// rendered lock, of any Stream, wait in a queue and start one at a time.
 	// It may reference params and zea.user / stream.name.
-	Lock   string  `json:"lock,omitempty" yaml:"lock,omitempty"`
-	Params []Param `json:"params" yaml:"params,omitempty"`
-	Stages []Stage `json:"stages" yaml:"stages"`
+	Lock string `json:"lock,omitempty" yaml:"lock,omitempty"`
+	// LockParams locks runs of this Stream by the values of the params
+	// marked with Lock instead of a Lock template.
+	LockParams bool `json:"lockParams,omitempty" yaml:"lockParams,omitempty"`
+	// OnLocked is what happens to a run whose lock is held: LockQueue
+	// (default) or LockReject.
+	OnLocked string  `json:"onLocked,omitempty" yaml:"onLocked,omitempty"`
+	Params   []Param `json:"params" yaml:"params,omitempty"`
+	Stages   []Stage `json:"stages" yaml:"stages"`
 }
 
 // Param is a value asked when the Stream starts, referenced in steps as
@@ -127,12 +141,14 @@ type Spec struct {
 type Param struct {
 	Name string `json:"name" yaml:"name"`
 	// Label is shown in the run form instead of the name.
-	Label       string   `json:"label,omitempty" yaml:"label,omitempty"`
-	Type        string   `json:"type" yaml:"type"`
-	Description string   `json:"description,omitempty" yaml:"description,omitempty"`
-	Default     string   `json:"default,omitempty" yaml:"default,omitempty"`
-	Required    bool     `json:"required,omitempty" yaml:"required,omitempty"`
-	Options     []string `json:"options,omitempty" yaml:"options,omitempty"`
+	Label       string `json:"label,omitempty" yaml:"label,omitempty"`
+	Type        string `json:"type" yaml:"type"`
+	Description string `json:"description,omitempty" yaml:"description,omitempty"`
+	Default     string `json:"default,omitempty" yaml:"default,omitempty"`
+	Required    bool   `json:"required,omitempty" yaml:"required,omitempty"`
+	// Lock makes the param part of the lock of a Stream with LockParams.
+	Lock    bool     `json:"lock,omitempty" yaml:"lock,omitempty"`
+	Options []string `json:"options,omitempty" yaml:"options,omitempty"`
 	// OptionLabels shows choice options (keys) under other names.
 	OptionLabels map[string]string `json:"optionLabels,omitempty" yaml:"optionLabels,omitempty"`
 	// Widget is how the run form shows a boolean or choice param.
@@ -360,6 +376,9 @@ func (s *Stream) Validate() error {
 	if len(s.Lock) > MaxLockLen {
 		return fmt.Errorf("lock is longer than %d characters", MaxLockLen)
 	}
+	if len(s.OnLocked) > maxKeyLen {
+		return errors.New("onLocked is too long")
+	}
 	if len(s.Category) > maxCategoryLen {
 		return fmt.Errorf("category is longer than %d characters", maxCategoryLen)
 	}
@@ -485,6 +504,12 @@ func (s *Stream) Problems() []Problem {
 	}
 	if strings.Contains(s.Lock, "stream.run") {
 		add(Problem{Message: "lock: stream.run is different for every run, so it would never make runs wait"})
+	}
+	if s.LockParams && strings.TrimSpace(s.Lock) != "" {
+		add(Problem{Message: "lock: use either a lock template or the lock by params, not both"})
+	}
+	if s.OnLocked != "" && s.OnLocked != LockQueue && s.OnLocked != LockReject {
+		add(Problem{Message: fmt.Sprintf("onLocked: must be %q or %q", LockQueue, LockReject)})
 	}
 	if len(s.Stages) == 0 {
 		add(Problem{Message: "the stream has no stages"})

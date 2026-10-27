@@ -457,6 +457,8 @@ label: Build and deploy API         # optional display name
 description: Build and deploy
 category: Backend                  # optional, groups Streams in tabs
 lock: "deploy-${{ params.env }}"   # optional, see Runs
+# lockParams: true                 # or: lock by the params marked lock (not with lock)
+# onLocked: reject                 # queue (default) | reject while the lock is held
 params:
   - {name: branch, type: branch, connection: api, default: main, required: true}
   - name: env
@@ -654,11 +656,18 @@ a rolling update do not trigger a step twice. The engine is still meant for
 one replica (`replicaCount: 1`).
 
 **Locks.** A Stream with `lock` renders it when a run starts (or is
-retried). While another active run of any Stream holds the same rendered lock
+retried). With `lockParams: true` instead, the lock is
+`<stream>(<p1>=<v1>, <p2>=<v2>)` over the params marked `lock: true`, in
+param order (a key longer than 200 characters becomes
+`<stream>(sha256:<16 hex>)`); without marked params the run has no lock.
+While another active run of any Stream holds the same rendered lock
 the new run is `queued`: no step starts, `blockedBy` names the holder
 (`<stream>/<run>`) and the message says so. Queued runs take the lock in the
 order they were queued (`queuedAt`) once the holder finishes. A queued run
-can be cancelled; retrying a locked run queues it again.
+can be cancelled; retrying a locked run queues it again. With
+`onLocked: reject` a start or a retry is refused instead (409) while any
+active (queued or running) run holds the lock; the error names that run.
+Such starts are serialized, so two concurrent starts cannot both pass.
 
 **Argo CD steps.** Zea never syncs or edits an Application; deploying stays
 with the pipelines (or auto-sync), the step only verifies the result. When
@@ -716,7 +725,8 @@ The page has the tabs **Streams** (default), **Connections**,
 
 - **List** - cards (or compact rows) with the display name, badges (draft,
   managed in git, problems), stages and steps count, Connections used and
-  the last run (polled while it runs). Tabs per category; on **All** the
+  every active (running or queued) run with its params, or the last run
+  when none is active (polled while one runs). Tabs per category; on **All** the
   Streams can be grouped into category columns that wrap with the screen
   width. Tabs and column headers can be dragged to reorder the categories
   (edit on some Stream; All stays first, "Without category" last), cards to
@@ -735,7 +745,9 @@ The page has the tabs **Streams** (default), **Connections**,
   **Edit as draft**, **Clone** (the editor with an unsaved copy,
   `mode=new&from=<name>`), **Export** (copy or download the ConfigMap) and
   **Delete**.
-- **Editor** - name, display name, description, category, lock and params
+- **Editor** - name, display name, description, category, lock (none, by
+  the params checked **lock**, or a custom key; wait in a queue or refuse
+  while held) and params
   (a taken name blocks saving a new Stream; a display name used by another
   Stream is flagged); a palette of
   Connections (and the control steps **Approval** and **Argo CD sync**) that are dragged (or clicked) into stage columns; stages and steps are
@@ -747,7 +759,9 @@ The page has the tabs **Streams** (default), **Connections**,
   first) holding the following ones up to the next delimiter; the group is
   titled by the delimiter value without decoration, else by `<X>`, and
   counts the values the step sets. The name filter opens the groups with
-  matches. Renaming a step or
+  matches. Values the step sets are listed under **Changed** at the top,
+  above the groups (a field moves there when it loses focus); a reset
+  button clears a value and returns it to its group. Renaming a step or
   a param rewrites its references. The Stream is validated while it is
   edited; it can be saved with problems but not run.
 - **Run** - a form for the params (branch params get the branch picker),

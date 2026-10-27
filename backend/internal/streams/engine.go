@@ -63,6 +63,9 @@ type Engine struct {
 	now   func() time.Time
 	kick  chan struct{}
 	mu    sync.Mutex
+	// startMu makes the check of a rejecting lock and the start of the run
+	// atomic.
+	startMu sync.Mutex
 }
 
 // NewEngine returns an Engine. Call Run to start reconciling.
@@ -95,6 +98,13 @@ func (e *Engine) Start(ctx context.Context, st *Stream, params map[string]string
 	if err != nil {
 		return nil, err
 	}
+	if r.Lock != "" && st.OnLocked == LockReject {
+		e.startMu.Lock()
+		defer e.startMu.Unlock()
+		if err := e.lockFree(ctx, r.Lock, ""); err != nil {
+			return nil, err
+		}
+	}
 	created, err := e.runs.Create(ctx, r)
 	if err != nil {
 		return nil, err
@@ -103,6 +113,21 @@ func (e *Engine) Start(ctx context.Context, st *Stream, params map[string]string
 	e.log.Info("stream run started", "stream", st.Name, "run", created.ID, "user", user, "params", sortedKeys(created.Params))
 	e.Kick()
 	return created, nil
+}
+
+// lockFree returns ErrLocked when an active run other than except holds
+// lock.
+func (e *Engine) lockFree(ctx context.Context, lock, except string) error {
+	runs, err := e.runs.ListActive(ctx)
+	if err != nil {
+		return err
+	}
+	for _, h := range runs {
+		if h.Lock == lock && h.ID != except && RunActive(h.Status) {
+			return fmt.Errorf("%w: run %s of stream %s, started by %s, is still active with the lock %q", ErrLocked, h.ID, h.Stream, h.User, lock)
+		}
+	}
+	return nil
 }
 
 // Cancel asks the Engine to stop a run.
@@ -127,6 +152,17 @@ func (e *Engine) Cancel(ctx context.Context, stream, id, user string) (*Run, err
 
 // Retry runs the steps of a finished run that did not succeed again.
 func (e *Engine) Retry(ctx context.Context, stream, id, user string) (*Run, error) {
+	old, err := e.runs.Get(ctx, stream, id)
+	if err != nil {
+		return nil, err
+	}
+	if old.Lock != "" && old.Spec.OnLocked == LockReject && !RunActive(old.Status) {
+		e.startMu.Lock()
+		defer e.startMu.Unlock()
+		if err := e.lockFree(ctx, old.Lock, id); err != nil {
+			return nil, err
+		}
+	}
 	now := e.now()
 	r, err := Mutate(ctx, e.runs, stream, id, func(r *Run) error { return r.retry(user, now) })
 	if err != nil {

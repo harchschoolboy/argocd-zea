@@ -213,6 +213,17 @@ const MakeParam = ({ value, onClick }: { value: string; onClick: () => void }) =
     </button>
   );
 
+// ResetValue clears a value set in the step, so the pipeline default applies.
+const ResetValue = ({ onClick }: { onClick: () => void }) => (
+  <button
+    className='argo-button argo-button--base-o'
+    style={{ flex: '0 0 auto' }}
+    title='Reset to the default: clear the value set in this step and return it to its group'
+    onClick={onClick}>
+    <i className='fa fa-undo' />
+  </button>
+);
+
 const WHEN_HELP: Record<string, string> = {
   success: 'Runs when the steps it waits for succeeded.',
   failure: 'Runs only when an earlier step failed or was cancelled, e.g. a rollback or a notification.',
@@ -264,9 +275,14 @@ const StepPanel = ({ data, spec, step, pos, connections, problems, onChange, onM
   const [filter, setFilter] = React.useState('');
   // Delimiter groups the user opened; all start collapsed.
   const [openGroups, setOpenGroups] = React.useState<string[]>([]);
+  // Values set in the step are listed under Changed at the top. The row being
+  // edited keeps its place until the focus leaves it, so typing a value does
+  // not move the field away.
+  const [editing, setEditing] = React.useState<{ key: string; changed: boolean } | null>(null);
   React.useEffect(() => {
     setFilter('');
     setOpenGroups([]);
+    setEditing(null);
   }, [step.id]);
   const valueCount = declared.length + prefilled.length + extraInputs.length + freeVars.length;
   const filtered = filter.trim() !== '';
@@ -278,14 +294,43 @@ const StepPanel = ({ data, spec, step, pos, connections, problems, onChange, onM
   const freeShown = freeVars.some(k => matchesFilter(k, filter));
 
   const toggleGroup = (key: string) => setOpenGroups(prev => (prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]));
+  const isChanged = (kind: string, name: string, values: Record<string, string> | undefined) =>
+    editing?.key === `${kind}:${name}` ? editing.changed : !!values?.[name];
+  // holder tracks the focus of a row, see editing.
+  const holder = (kind: string, name: string, values: Record<string, string> | undefined, node: React.ReactNode) => {
+    const key = `${kind}:${name}`;
+    return (
+      <div
+        key={key}
+        onFocus={() => editing?.key !== key && setEditing({ key, changed: isChanged(kind, name, values) })}
+        onBlur={e => !e.currentTarget.contains(e.relatedTarget as Node | null) && setEditing(null)}>
+        {node}
+      </div>
+    );
+  };
+  const groupTitles = (all: RunInput[]) => {
+    const out: Record<string, string> = {};
+    for (const g of groupByDelimiter(all)) {
+      if (g.delimiter) {
+        out[g.delimiter.name] = g.title;
+        g.items.forEach(x => (out[x.name] = g.title));
+      }
+    }
+    return out;
+  };
+  const inputGroups = groupTitles(fd?.inputs ?? []);
+  const varGroups = groupTitles(prefilled);
+  const changedInputs = (fd?.inputs ?? []).filter(i => isChanged('in', i.name, step.inputs));
+  const changedVars = prefilled.filter(p => isChanged('var', p.name, step.variables));
+  const changedShown = [...changedInputs, ...changedVars].filter(x => matchesFilter(x.name, filter)).length;
   // grouped lists inputs or variables in their delimiter groups; a filter
   // opens the groups with matches and hides the others.
   const grouped = <T extends RunInput>(kind: string, all: T[], values: Record<string, string> | undefined, row: (item: T) => React.ReactNode) =>
     groupByDelimiter(all).map(g => {
       const items = g.delimiter && values?.[g.delimiter.name] ? [g.delimiter, ...g.items] : g.items;
-      const shown = items.filter(x => matchesFilter(x.name, filter));
+      const shown = items.filter(x => matchesFilter(x.name, filter) && !isChanged(kind, x.name, values));
       if (!g.delimiter) {
-        return shown.map(row);
+        return shown.map(x => row(x));
       }
       if (filtered && shown.length === 0) {
         return null;
@@ -300,44 +345,64 @@ const StepPanel = ({ data, spec, step, pos, connections, problems, onChange, onM
           set={items.filter(x => !!values?.[x.name]).length}
           open={open}
           onToggle={filtered ? undefined : () => toggleGroup(key)}>
-          {shown.map(row)}
+          {shown.map(x => row(x))}
         </VarGroupBox>
       );
     });
-  const inputRow = (i: RunInput) => (
-    <Field key={i.name} card label={<code>{i.name}</code>} hint={i.type} required={i.required && !i.default} help={i.description}>
-      <div style={{ display: 'flex', gap: '0.3em', alignItems: 'flex-start' }}>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <ValueField
-            value={step.inputs?.[i.name] ?? ''}
-            refs={valueRefs}
-            options={i.type === 'choice' ? i.options : i.type === 'boolean' ? ['true', 'false'] : undefined}
-            branches={isBranchInput(i) ? bl : undefined}
-            placeholder={i.default ? `default: ${i.default}` : ''}
-            onChange={v => set({ inputs: setKey(step.inputs, i.name, v) })}
-          />
+  const reset = (kind: 'inputs' | 'variables', name: string) => {
+    setEditing(null);
+    set({ [kind]: setKey(step[kind], name, '') });
+  };
+  // group is the delimiter group of a row listed under Changed.
+  const inputRow = (i: RunInput, group?: string) =>
+    holder(
+      'in',
+      i.name,
+      step.inputs,
+      <Field
+        card
+        label={<code>{i.name}</code>}
+        hint={[group, i.type].filter(Boolean).join(' · ')}
+        required={i.required && !i.default}
+        help={i.description}>
+        <div style={{ display: 'flex', gap: '0.3em', alignItems: 'flex-start' }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <ValueField
+              value={step.inputs?.[i.name] ?? ''}
+              refs={valueRefs}
+              options={i.type === 'choice' ? i.options : i.type === 'boolean' ? ['true', 'false'] : undefined}
+              branches={isBranchInput(i) ? bl : undefined}
+              placeholder={i.default ? `default: ${i.default}` : ''}
+              onChange={v => set({ inputs: setKey(step.inputs, i.name, v) })}
+            />
+          </div>
+          <MakeParam value={step.inputs?.[i.name] ?? ''} onClick={() => makeParam(i, 'inputs')} />
+          {step.inputs?.[i.name] && <ResetValue onClick={() => reset('inputs', i.name)} />}
         </div>
-        <MakeParam value={step.inputs?.[i.name] ?? ''} onClick={() => makeParam(i, 'inputs')} />
-      </div>
-    </Field>
-  );
-  const varRow = (p: RunInput) => (
-    <Field key={p.name} card label={<code>{p.name}</code>} help={p.description}>
-      <div style={{ display: 'flex', gap: '0.3em', alignItems: 'flex-start' }}>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <ValueField
-            value={step.variables?.[p.name] ?? ''}
-            refs={valueRefs}
-            options={p.options?.length ? p.options : undefined}
-            placeholder={p.default ? `default: ${p.default}` : ''}
-            mono
-            onChange={v => set({ variables: setKey(step.variables, p.name, v) })}
-          />
+      </Field>,
+    );
+  const varRow = (p: RunInput, group?: string) =>
+    holder(
+      'var',
+      p.name,
+      step.variables,
+      <Field card label={<code>{p.name}</code>} hint={group} help={p.description}>
+        <div style={{ display: 'flex', gap: '0.3em', alignItems: 'flex-start' }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <ValueField
+              value={step.variables?.[p.name] ?? ''}
+              refs={valueRefs}
+              options={p.options?.length ? p.options : undefined}
+              placeholder={p.default ? `default: ${p.default}` : ''}
+              mono
+              onChange={v => set({ variables: setKey(step.variables, p.name, v) })}
+            />
+          </div>
+          <MakeParam value={step.variables?.[p.name] ?? ''} onClick={() => makeParam(p, 'variables')} />
+          {step.variables?.[p.name] && <ResetValue onClick={() => reset('variables', p.name)} />}
         </div>
-        <MakeParam value={step.variables?.[p.name] ?? ''} onClick={() => makeParam(p, 'variables')} />
-      </div>
-    </Field>
-  );
+      </Field>,
+    );
 
   const toggleNeed = (id: string, on: boolean) => {
     const next = on ? [...needs, id] : needs.filter(n => n !== id);
@@ -546,6 +611,12 @@ const StepPanel = ({ data, spec, step, pos, connections, problems, onChange, onM
                   <Muted>Nothing matches the filter.</Muted>
                 </div>
               )}
+              {changedShown > 0 && (
+                <VarGroupBox title='Changed' count={changedShown} set={0} open>
+                  {changedInputs.filter(i => matchesFilter(i.name, filter)).map(i => inputRow(i, inputGroups[i.name]))}
+                  {changedVars.filter(p => matchesFilter(p.name, filter)).map(p => varRow(p, varGroups[p.name]))}
+                </VarGroupBox>
+              )}
               {grouped('in', fd?.inputs ?? [], step.inputs, inputRow)}
               {(form.state === 'error' || extraInputs.length > 0) && (!filtered || extraShown) && (
                 <Field
@@ -701,6 +772,8 @@ interface ParamRowProps {
   onDelete: () => void;
   onMoveUp?: () => void;
   onMoveDown?: () => void;
+  // The stream locks by params: offer the lock checkbox.
+  lockable?: boolean;
 }
 
 const BOOL_WIDGETS: [string, string][] = [
@@ -720,7 +793,7 @@ const parseOptions = (s: string) =>
     .map(x => x.trim())
     .filter(Boolean);
 
-const ParamRow = ({ data, param, connections, problems, onChange, onRename, onDelete, onMoveUp, onMoveDown }: ParamRowProps) => {
+const ParamRow = ({ data, param, connections, problems, onChange, onRename, onDelete, onMoveUp, onMoveDown, lockable }: ParamRowProps) => {
   const [nameText, setNameText] = React.useState(param.name);
   const [optText, setOptText] = React.useState((param.options ?? []).join(', '));
   React.useEffect(() => setNameText(param.name), [param.name]);
@@ -857,6 +930,14 @@ const ParamRow = ({ data, param, connections, problems, onChange, onRename, onDe
         <label style={{ flex: '0 0 auto', cursor: 'pointer', paddingBottom: '0.4em' }}>
           <input type='checkbox' checked={!!param.required} onChange={e => set({ required: e.target.checked || undefined })} /> required
         </label>
+        {lockable && (
+          <label
+            style={{ flex: '0 0 auto', cursor: 'pointer', paddingBottom: '0.4em' }}
+            title='Part of the lock: a run waits for (or is refused by) an active run of this stream with the same values of all lock params'>
+            <input type='checkbox' checked={!!param.lock} onChange={e => set({ lock: e.target.checked || undefined })} />{' '}
+            <i className='fa fa-key' /> lock
+          </label>
+        )}
         <button className='argo-button argo-button--base-o' title='Move up' disabled={!onMoveUp} onClick={onMoveUp}>
           <i className='fa fa-arrow-up' />
         </button>
@@ -1016,12 +1097,116 @@ const ParamsEditor = ({
           onDelete={() => onChange({ ...spec, params: spec.params.filter((_, j) => j !== i) })}
           onMoveUp={i > 0 && !filtered ? () => move(i, i - 1) : undefined}
           onMoveDown={i < spec.params.length - 1 && !filtered ? () => move(i, i + 1) : undefined}
+          lockable={!!spec.lockParams}
         />
         ),
       )}
       <button className='argo-button argo-button--base-o' style={{ marginTop: '0.5em' }} onClick={add}>
         <i className='fa fa-plus' /> Add param
       </button>
+    </div>
+  );
+};
+
+type LockMode = 'none' | 'params' | 'custom';
+
+const lockModeOf = (spec: StreamSpec): LockMode => (spec.lockParams ? 'params' : spec.lock ? 'custom' : 'none');
+
+const LOCK_HELP: Record<LockMode, React.ReactNode> = {
+  none: 'Runs of this stream may run at the same time, with any params.',
+  params: (
+    <>
+      A start is locked while another run of this stream is queued or running with the same values of all params marked{' '}
+      <i className='fa fa-key' /> lock (check them in Params below). Example: lock env and app - deploys of prod/les and prod/mcp run
+      together, a second prod/les deploy waits or is refused.
+    </>
+  ),
+  custom: (
+    <>
+      The lock is a key; runs with the same key, of any stream, run one at a time. Use <code>{'${{ params.<name> }}'}</code> to make it
+      depend on params: <code>{'deploy-${{ params.env }}'}</code> lets dev and prod deploy together but only one prod deploy at a time. A
+      fixed key, e.g. <code>db-migrations</code>, is shared by every stream that uses it.
+    </>
+  ),
+};
+
+const LockEditor = ({ spec, onChange }: { spec: StreamSpec; onChange: (spec: StreamSpec) => void }) => {
+  // An empty custom lock is not saved, so the mode is kept here.
+  const [mode, setMode] = React.useState<LockMode>(() => lockModeOf(spec));
+  const draft = React.useRef(spec.lock ?? '');
+  React.useEffect(() => {
+    const m = lockModeOf(spec);
+    setMode(prev => (m !== 'none' ? m : prev === 'params' ? 'none' : prev));
+  }, [spec.lockParams, spec.lock]);
+  if (spec.lock) {
+    draft.current = spec.lock;
+  }
+  const choose = (m: LockMode) => {
+    setMode(m);
+    onChange({
+      ...spec,
+      lockParams: m === 'params' || undefined,
+      lock: m === 'custom' ? draft.current || undefined : undefined,
+      onLocked: m === 'none' ? undefined : spec.onLocked,
+    });
+  };
+  const noLockParams = mode === 'params' && !spec.params.some(p => p.lock);
+  return (
+    <div style={{ marginTop: '0.8em' }}>
+      <label style={{ display: 'block', fontWeight: 600, marginBottom: '0.3em' }}>
+        <i className='fa fa-key' /> Lock
+      </label>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.8em', alignItems: 'flex-end' }}>
+        <div style={{ flex: '0 0 250px' }}>
+          <Help>Do not run at the same time</Help>
+          <select className='argo-field' style={{ width: '100%' }} value={mode} onChange={e => choose(e.target.value as LockMode)}>
+            <option value='none'>No lock</option>
+            <option value='params'>Same values of lock params</option>
+            <option value='custom'>Custom lock key</option>
+          </select>
+        </div>
+        {mode === 'custom' && (
+          <div style={{ flex: '1 1 260px' }}>
+            <Help>Lock key</Help>
+            <input
+              className='argo-field'
+              style={{ width: '100%', fontFamily: 'monospace' }}
+              value={spec.lock ?? ''}
+              placeholder={'deploy-${{ params.env }}'}
+              spellCheck={false}
+              onChange={e => {
+                draft.current = e.target.value;
+                onChange({ ...spec, lock: e.target.value || undefined });
+              }}
+            />
+          </div>
+        )}
+        {mode !== 'none' && (
+          <div style={{ flex: '0 0 250px' }}>
+            <Help>When the lock is held</Help>
+            <select
+              className='argo-field'
+              style={{ width: '100%' }}
+              value={spec.onLocked ?? 'queue'}
+              onChange={e => onChange({ ...spec, onLocked: e.target.value === 'reject' ? 'reject' : undefined })}>
+              <option value='queue'>Wait in a queue</option>
+              <option value='reject'>Refuse to start</option>
+            </select>
+          </div>
+        )}
+      </div>
+      <Help>
+        {LOCK_HELP[mode]}
+        {mode !== 'none' &&
+          (spec.onLocked === 'reject'
+            ? ' Refuse: the start fails and names the active run that holds the lock; retries are refused the same way.'
+            : ' Wait: the new run is queued and starts when the run that holds the lock finishes.')}
+      </Help>
+      {noLockParams && (
+        <div style={{ color: COLORS.warn, marginTop: '0.3em' }}>
+          <i className='fa fa-exclamation-triangle' /> No param is marked lock, so runs are not locked. Check lock on the params to compare.
+        </div>
+      )}
     </div>
   );
 };
@@ -1331,20 +1516,8 @@ export const StreamEditor = ({ client, data, connections, existing, categories, 
               </datalist>
             </Field>
           </div>
-          <div style={{ flex: '1 1 220px' }}>
-            <Field
-              label='Lock'
-              help='Runs with the same lock, of any stream, run one at a time; later ones wait in a queue. May use ${{ params.<name> }}, e.g. deploy-${{ params.env }}. Empty: runs never wait.'>
-              <input
-                className='argo-field'
-                style={{ width: '100%' }}
-                value={spec.lock ?? ''}
-                placeholder='no lock'
-                onChange={e => change({ ...spec, lock: e.target.value || undefined })}
-              />
-            </Field>
-          </div>
         </div>
+        <LockEditor spec={spec} onChange={change} />
         {general.length > 0 && (
           <div style={{ color: COLORS.warn, marginTop: '0.8em' }}>
             <ProblemList problems={general} />

@@ -933,6 +933,74 @@ func TestEngineLockQueue(t *testing.T) {
 	}
 }
 
+func TestEngineLockParamsReject(t *testing.T) {
+	env := newEngineEnv(EngineConfig{})
+	ctx := context.Background()
+	st := &Stream{Name: "flow", Spec: Spec{
+		LockParams: true,
+		OnLocked:   LockReject,
+		Params: []Param{
+			{Name: "env", Type: ParamString, Required: true, Lock: true},
+			{Name: "app", Type: ParamString, Required: true, Lock: true},
+			{Name: "note", Type: ParamString},
+		},
+		Stages: []Stage{{Steps: []Step{step("deploy", "app", "a.yml")}}},
+	}}
+	first := env.start(t, st, map[string]string{"env": "prod", "app": "les", "note": "x"})
+	if first.Lock != "flow(env=prod, app=les)" {
+		t.Fatalf("lock = %q", first.Lock)
+	}
+	first = env.tick(t, first)
+	if first.Status != RunRunning {
+		t.Fatalf("first = %s", first.Status)
+	}
+	if _, err := env.e.Start(ctx, st, map[string]string{"env": "prod", "app": "les", "note": "y"}, "bob"); !errors.Is(err, ErrLocked) || !strings.Contains(err.Error(), first.ID) {
+		t.Fatalf("same lock params: %v", err)
+	}
+	other := env.start(t, st, map[string]string{"env": "prod", "app": "mcp"})
+	if other = env.tick(t, other); other.Status != RunRunning {
+		t.Fatalf("other lock key = %s", other.Status)
+	}
+
+	env.ci.mu.Lock()
+	env.ci.runs[stepStatus(first, "deploy").RunID].Status = providers.StatusFailed
+	env.ci.mu.Unlock()
+	first = env.tick(t, first)
+	if first.Status != RunFailed {
+		t.Fatalf("first = %s", first.Status)
+	}
+	again := env.start(t, st, map[string]string{"env": "prod", "app": "les"})
+	if _, err := env.e.Retry(ctx, "flow", first.ID, "bob"); !errors.Is(err, ErrLocked) {
+		t.Fatalf("retry while held: %v", err)
+	}
+	if _, err := env.e.Cancel(ctx, "flow", again.ID, "bob"); err != nil {
+		t.Fatal(err)
+	}
+	if again = env.tick(t, again); again.Status != RunCancelled {
+		t.Fatalf("again = %s", again.Status)
+	}
+	if _, err := env.e.Retry(ctx, "flow", first.ID, "bob"); err != nil {
+		t.Fatalf("retry with a free lock: %v", err)
+	}
+}
+
+func TestLockParamsKey(t *testing.T) {
+	st := &Stream{Name: "flow", Spec: Spec{
+		LockParams: true,
+		Params:     []Param{{Name: "env", Type: ParamString}},
+		Stages:     []Stage{{Steps: []Step{step("a", "app", "a.yml")}}},
+	}}
+	r, err := NewRun(st, map[string]string{"env": "prod"}, "alice", time.Now())
+	if err != nil || r.Lock != "" || r.Status != RunRunning {
+		t.Fatalf("no marked params: %v %q %s", err, r.Lock, r.Status)
+	}
+	st.Params[0].Lock = true
+	r, err = NewRun(st, map[string]string{"env": strings.Repeat("x", 300)}, "alice", time.Now())
+	if err != nil || !strings.HasPrefix(r.Lock, "flow(sha256:") || len(r.Lock) > MaxLockLen || r.Status != RunQueued {
+		t.Fatalf("long key: %v %q %s", err, r.Lock, r.Status)
+	}
+}
+
 func TestLockProblems(t *testing.T) {
 	st := flow(Stage{Steps: []Step{step("a", "app", "a.yml")}})
 	st.Lock = "${{ stream.run }}"
@@ -944,6 +1012,18 @@ func TestLockProblems(t *testing.T) {
 		t.Fatalf("problems = %v", st.Problems())
 	}
 	st.Lock = "${{ stream.name }}-${{ zea.user }}"
+	if len(st.Problems()) != 0 {
+		t.Fatalf("problems = %v", st.Problems())
+	}
+	st.LockParams = true
+	if !hasProblem(st.Problems(), "not both") {
+		t.Fatalf("problems = %v", st.Problems())
+	}
+	st.Lock, st.OnLocked = "", "drop"
+	if !hasProblem(st.Problems(), "onLocked") {
+		t.Fatalf("problems = %v", st.Problems())
+	}
+	st.OnLocked = LockReject
 	if len(st.Problems()) != 0 {
 		t.Fatalf("problems = %v", st.Problems())
 	}

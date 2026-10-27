@@ -29,6 +29,8 @@ export function specOf(s: {
   description?: string;
   category?: string;
   lock?: string;
+  lockParams?: boolean;
+  onLocked?: string;
   params?: StreamParam[] | null;
   stages?: StreamStage[] | null;
 }): StreamSpec {
@@ -37,6 +39,8 @@ export function specOf(s: {
     description: s.description ?? '',
     category: s.category || undefined,
     lock: s.lock || undefined,
+    lockParams: s.lockParams || undefined,
+    onLocked: s.onLocked === 'queue' || s.onLocked === 'reject' ? s.onLocked : undefined,
     params: (s.params ?? []).map(p => ({
       ...p,
       options: p.options ? [...p.options] : undefined,
