@@ -31,7 +31,7 @@ function linkOf(e: AuditEvent): Route | undefined {
 }
 
 const matches = (e: AuditEvent, q: string) =>
-  !q || [e.user, e.action, e.name, e.target, e.error, String(e.status)].some(v => v && v.toLowerCase().includes(q));
+  !q || [e.user, e.action, e.name, e.target, e.error, String(e.status), ...(e.groups ?? [])].some(v => v && v.toLowerCase().includes(q));
 
 const StatusText = ({ status }: { status: number }) => (
   <span style={{ color: status >= 400 ? COLORS.error : COLORS.ok, fontWeight: 600 }}>{status}</span>
@@ -42,7 +42,9 @@ const EventRow = ({ e }: { e: AuditEvent }) => {
   return (
     <tr>
       <td style={{ ...cell, whiteSpace: 'nowrap' }}>{clock(e.time)}</td>
-      <td style={cell}>{e.user || <Muted>unknown</Muted>}</td>
+      <td style={cell} title={e.groups?.length ? `groups: ${e.groups.join(', ')}` : undefined}>
+        {e.user || <Muted>unknown</Muted>}
+      </td>
       <td style={{ ...cell, whiteSpace: 'nowrap' }}>
         <code>{e.action}</code>
       </td>
@@ -58,8 +60,9 @@ const EventRow = ({ e }: { e: AuditEvent }) => {
   );
 };
 
-// AuditView lists the changes made through Zea, one day at a time (admins).
-export const AuditView = ({ client }: { client: ZeaClient }) => {
+// AuditView lists the changes made through Zea, one day at a time. Users
+// who are not admins get only the events of the items they can see.
+export const AuditView = ({ client, admin }: { client: ZeaClient; admin: boolean }) => {
   const [day, setDay] = React.useState('');
   const [query, setQuery] = React.useState('');
   const [state, reload] = useLoad<AuditPage>(() => client.audit(day), [client, day]);
@@ -96,6 +99,7 @@ export const AuditView = ({ client }: { client: ZeaClient }) => {
       </div>
       <Help>
         Changes made through Zea: who did what and whether it succeeded. Days are in UTC, times in your timezone.
+        {!admin && ' Only the events your audit rules cover (actions and authors) on the streams, connections and registries you can see are listed.'}
         {page && (page.retention > 0 ? ` Kept for ${page.retention} days.` : ' Storing is off (audit.retentionDays: 0); events are only in the backend log.')}
       </Help>
       {state.state === 'error' && <ErrorText text={state.error} />}

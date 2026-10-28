@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/harchschoolboy/argocd-zea/backend/internal/audit"
+	"github.com/harchschoolboy/argocd-zea/backend/internal/authz"
 )
 
 const auditNoteKey ctxKey = 100
@@ -121,6 +122,9 @@ func (a *api) audited(next http.Handler) http.Handler {
 			if e.User == "" {
 				e.User = id.UserID
 			}
+			if a.deps.Authz != nil {
+				e.Groups = a.deps.Authz.EventGroups(r.Context(), id)
+			}
 		}
 		if e.Status >= 400 {
 			var body errorBody
@@ -169,7 +173,43 @@ func (a *api) handleAudit(w http.ResponseWriter, r *http.Request) {
 			a.writeErr(w, err)
 			return
 		}
-		out.Events, out.Dropped = d.Events, d.Dropped
+		out.Events, out.Dropped = visibleEvents(AccessFrom(r.Context()), d.Events), d.Dropped
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// auditResources maps the resource of an event to the policy resource that
+// guards it. Policy changes are not listed, so only admins see them.
+var auditResources = map[string]string{
+	"connection": authz.ResourceConnections,
+	"stream":     authz.ResourceStreams,
+	"registry":   authz.ResourceRegistries,
+}
+
+// visibleEvents keeps the events an audit rule of the user covers (action
+// and author) whose item the user may view. The order and category list of
+// the Streams belong to no single Stream; anyone who sees some Stream sees
+// them.
+func visibleEvents(acc *authz.Access, events []audit.Event) []audit.Event {
+	if acc.IsAdmin() {
+		return events
+	}
+	out := []audit.Event{}
+	for _, e := range events {
+		res, ok := auditResources[e.Resource]
+		if !ok || !acc.SeesEvent(e.Action, e.User, e.Groups) {
+			continue
+		}
+		var visible bool
+		switch e.Action {
+		case "stream.order", "stream.categories":
+			visible = acc.CanAny(res, authz.ActionView)
+		default:
+			visible = e.Name != "" && acc.Can(res, authz.ActionView, e.Name)
+		}
+		if visible {
+			out = append(out, e)
+		}
+	}
+	return out
 }

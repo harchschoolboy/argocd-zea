@@ -52,7 +52,7 @@ func New(cfg *config.Config, log *slog.Logger, deps Deps) http.Handler {
 	mux.HandleFunc("GET /api/v1/version", handleVersion)
 	mux.HandleFunc("GET /api/v1/providers", a.handleProviders)
 	mux.HandleFunc("GET /api/v1/policy", a.adminOnly(a.handleGetPolicy))
-	mux.HandleFunc("GET /api/v1/audit", a.adminOnly(a.handleAudit))
+	mux.HandleFunc("GET /api/v1/audit", requireAny(authz.ResourceAudit, authz.ActionView, a.handleAudit))
 	mux.HandleFunc("PUT /api/v1/policy", a.adminOnly(a.handleSavePolicy))
 	mux.HandleFunc("POST /api/v1/policy/validate", a.adminOnly(a.handleValidatePolicy))
 	mux.HandleFunc("POST /api/v1/policy/evaluate", a.adminOnly(a.handleEvaluatePolicy))

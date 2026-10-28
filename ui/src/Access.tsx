@@ -5,6 +5,7 @@ import { AccessBinding, AccessPolicy, AccessRole, AccessRule, PolicyDocument, Po
 import { COLORS, ErrorText, Muted, useLoad } from './ui';
 
 const EVERYONE = '*';
+const AUDIT = 'audit';
 const ACTIONS = ['view', 'run', 'approve', 'edit'];
 const VALIDATE_DELAY_MS = 400;
 
@@ -20,6 +21,89 @@ const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 
 const cell: React.CSSProperties = { padding: '0.3em 0.5em', borderTop: `1px solid ${COLORS.border}`, verticalAlign: 'middle' };
 const head: React.CSSProperties = { padding: '0.3em 0.5em', textAlign: 'left', fontWeight: 600, color: COLORS.muted, whiteSpace: 'nowrap' };
+
+const DROP_COLOR = '#0dadea';
+
+// move places the item at from before index to (to may be the length).
+function move<T>(list: T[], from: number, to: number): T[] {
+  const out = list.slice();
+  const [item] = out.splice(from, 1);
+  out.splice(to > from ? to - 1 : to, 0, item);
+  return out;
+}
+
+type Mark = 'before' | 'after' | undefined;
+
+// markCells draws the drop line on the cells of a table row.
+const markCells = (mark: Mark): React.CSSProperties =>
+  mark === 'before' ? { borderTop: `2px solid ${DROP_COLOR}` } : mark === 'after' ? { borderBottom: `2px solid ${DROP_COLOR}` } : {};
+
+// useReorder drags the items of one list by a grip. Each list keeps its own
+// state, so a row of another list (a rule while roles are sorted) is never
+// dropped here.
+function useReorder(onMove: (from: number, to: number) => void) {
+  const [from, setFrom] = React.useState<number | null>(null);
+  const [over, setOver] = React.useState<{ i: number; mark: Mark } | null>(null);
+  const end = () => {
+    setFrom(null);
+    setOver(null);
+  };
+  const grip = (i: number) => (
+    <span
+      draggable
+      title='Drag to reorder'
+      style={{ cursor: 'grab', color: COLORS.muted, padding: '0 0.2em' }}
+      onDragStart={e => {
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', '');
+        const row = (e.currentTarget as HTMLElement).closest('[data-reorder]');
+        if (row) {
+          e.dataTransfer.setDragImage(row, 0, 0);
+        }
+        setFrom(i);
+      }}
+      onDragEnd={end}>
+      <i className='fa fa-grip-vertical' />
+    </span>
+  );
+  const target = (i: number) => ({
+    'data-reorder': true,
+    onDragOver: (e: React.DragEvent<HTMLElement>) => {
+      if (from === null) {
+        return;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      const box = e.currentTarget.getBoundingClientRect();
+      const mark: Mark = e.clientY < box.top + box.height / 2 ? 'before' : 'after';
+      if (over?.i !== i || over.mark !== mark) {
+        setOver({ i, mark });
+      }
+    },
+    onDrop: (e: React.DragEvent<HTMLElement>) => {
+      if (from === null) {
+        return;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      const to = over?.i === i && over.mark === 'after' ? i + 1 : i;
+      if (to !== from && to !== from + 1) {
+        onMove(from, to);
+      }
+      end();
+    },
+  });
+  const markOf = (i: number): Mark => (from !== null && over?.i === i ? over.mark : undefined);
+  return { grip, target, markOf };
+}
+
+const SortButton = ({ title, disabled, onClick }: { title: string; disabled: boolean; onClick: () => void }) => (
+  <button className='argo-button argo-button--base-o' title={title} disabled={disabled} onClick={onClick}>
+    <i className='fa fa-sort-alpha-down' /> Sort
+  </button>
+);
+
+const byName = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: 'base', numeric: true });
 
 function uniqueName(base: string, taken: string[]): string {
   for (let i = 1; ; i++) {
@@ -95,10 +179,13 @@ const CUSTOM_PATTERN = ' custom';
 interface PatternPickerProps {
   pattern: string;
   names: string[];
+  allLabel?: string;
+  placeholder?: string;
+  help?: string;
   onChange: (pattern: string) => void;
 }
 
-const PatternPicker = ({ pattern, names, onChange }: PatternPickerProps) => {
+const PatternPicker = ({ pattern, names, allLabel, placeholder, help, onChange }: PatternPickerProps) => {
   const value = pattern || '*';
   const [chosen, setChosen] = React.useState(false);
   const custom = chosen || (value !== '*' && !names.includes(value));
@@ -118,7 +205,7 @@ const PatternPicker = ({ pattern, names, onChange }: PatternPickerProps) => {
             onChange(e.target.value);
           }
         }}>
-        <option value='*'>All (*)</option>
+        <option value='*'>{allLabel ?? 'All (*)'}</option>
         {names.map(n => (
           <option key={n} value={n}>
             {n}
@@ -132,8 +219,8 @@ const PatternPicker = ({ pattern, names, onChange }: PatternPickerProps) => {
             className='argo-field'
             style={{ flex: 1, minWidth: 120, fontFamily: 'monospace' }}
             value={pattern}
-            placeholder='dev-*'
-            title='Glob over item names: * matches any characters, ? one character, [abc] a set'
+            placeholder={placeholder ?? 'dev-*'}
+            title={help ?? 'Glob over item names: * matches any characters, ? one character, [abc] a set'}
             onChange={e => onChange(e.target.value)}
           />
           <span
@@ -147,15 +234,61 @@ const PatternPicker = ({ pattern, names, onChange }: PatternPickerProps) => {
   );
 };
 
+// splitAuthor reads "user:<glob>" or "group:<glob>"; anything else is shown
+// as a group so it can be fixed.
+const splitAuthor = (a: string): ['user' | 'group', string] =>
+  a.startsWith('user:') ? ['user', a.slice(5)] : a.startsWith('group:') ? ['group', a.slice(6)] : ['group', a];
+
+// AuthorsEditor picks whose events an audit rule lists; none means everyone.
+const AuthorsEditor = ({ authors, onChange }: { authors: string[]; onChange: (authors: string[]) => void }) => {
+  const set = (i: number, value: string) => onChange(authors.map((a, j) => (j === i ? value : a)));
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4em', alignItems: 'center', marginTop: '0.3em' }}>
+      <span style={{ color: COLORS.muted }} title='Whose events this rule lists'>
+        done by
+      </span>
+      {authors.length === 0 && <Muted>everyone</Muted>}
+      {authors.map((a, i) => {
+        const [kind, name] = splitAuthor(a);
+        return (
+          <span key={i} style={{ display: 'inline-flex', gap: '0.2em', alignItems: 'center' }}>
+            <select className='argo-field' value={kind} onChange={e => set(i, `${e.target.value}:${name}`)}>
+              <option value='group'>group</option>
+              <option value='user'>user</option>
+            </select>
+            <input
+              className='argo-field'
+              style={{ width: 140 }}
+              value={name}
+              placeholder={kind === 'user' ? 'username' : 'Argo CD group'}
+              title='A name or a glob: * matches any characters'
+              onChange={e => set(i, `${kind}:${e.target.value}`)}
+            />
+            <a style={{ cursor: 'pointer', color: COLORS.muted }} title='Remove author' onClick={() => onChange(authors.filter((_, j) => j !== i))}>
+              <i className='fa fa-times' />
+            </a>
+          </span>
+        );
+      })}
+      <a style={{ cursor: 'pointer', whiteSpace: 'nowrap' }} title='List only the events of some users or groups' onClick={() => onChange([...authors, 'group:'])}>
+        <i className='fa fa-plus' /> author
+      </a>
+    </div>
+  );
+};
+
 interface RuleRowProps {
   rule: AccessRule;
   resources: ResourceInfo[];
   names: Record<string, string[]>;
+  grip: React.ReactNode;
+  target: React.HTMLAttributes<HTMLElement>;
+  mark: Mark;
   onChange: (r: AccessRule) => void;
   onDelete: () => void;
 }
 
-const RuleRow = ({ rule, resources, names, onChange, onDelete }: RuleRowProps) => {
+const RuleRow = ({ rule, resources, names, grip, target, mark, onChange, onDelete }: RuleRowProps) => {
   const supported = resources.find(r => r.name === rule.resource)?.actions ?? [];
   const toggle = (a: string, on: boolean) => {
     let next = on ? [...rule.actions, a] : rule.actions.filter(x => x !== a);
@@ -168,11 +301,19 @@ const RuleRow = ({ rule, resources, names, onChange, onDelete }: RuleRowProps) =
   const changeResource = (resource: string) => {
     const allowed = resources.find(r => r.name === resource)?.actions ?? [];
     const actions = rule.actions.filter(a => allowed.includes(a));
-    onChange({ ...rule, resource, actions: actions.length > 0 ? actions : ['view'] });
+    // Audit patterns match actions, not item names, so they do not carry over.
+    const pattern = resource === AUDIT || rule.resource === AUDIT ? '*' : rule.pattern;
+    const next: AccessRule = { ...rule, resource, pattern, actions: actions.length > 0 ? actions : ['view'] };
+    if (resource !== AUDIT) {
+      delete next.authors;
+    }
+    onChange(next);
   };
+  const c = { ...cell, ...markCells(mark) };
   return (
-    <tr>
-      <td style={{ ...cell, whiteSpace: 'nowrap' }}>
+    <tr {...target}>
+      <td style={{ ...c, whiteSpace: 'nowrap' }}>
+        {grip}{' '}
         <select className='argo-field' style={{ minWidth: 130 }} value={rule.resource} onChange={e => changeResource(e.target.value)}>
           {!supported.length && <option value={rule.resource}>{rule.resource || '(choose)'}</option>}
           {resources.map(r => (
@@ -182,14 +323,28 @@ const RuleRow = ({ rule, resources, names, onChange, onDelete }: RuleRowProps) =
           ))}
         </select>
       </td>
-      <td style={{ ...cell, width: '100%' }}>
-        <PatternPicker pattern={rule.pattern} names={names[rule.resource] ?? []} onChange={pattern => onChange({ ...rule, pattern })} />
+      <td style={{ ...c, width: '100%' }}>
+        {rule.resource === AUDIT ? (
+          <>
+            <PatternPicker
+              pattern={rule.pattern}
+              names={names[AUDIT] ?? []}
+              allLabel='All actions (*)'
+              placeholder='stream.run.*'
+              help='Glob over event actions: * matches any characters, ? one character, [abc] a set'
+              onChange={pattern => onChange({ ...rule, pattern })}
+            />
+            <AuthorsEditor authors={rule.authors ?? []} onChange={authors => onChange({ ...rule, authors })} />
+          </>
+        ) : (
+          <PatternPicker pattern={rule.pattern} names={names[rule.resource] ?? []} onChange={pattern => onChange({ ...rule, pattern })} />
+        )}
       </td>
       {ACTIONS.map(a => {
         const ok = supported.includes(a);
         const implied = a === 'view' && rule.actions.some(x => x !== 'view');
         return (
-          <td key={a} style={{ ...cell, textAlign: 'center' }}>
+          <td key={a} style={{ ...c, textAlign: 'center' }}>
             {ok ? (
               <input
                 type='checkbox'
@@ -206,7 +361,7 @@ const RuleRow = ({ rule, resources, names, onChange, onDelete }: RuleRowProps) =
           </td>
         );
       })}
-      <td style={cell}>
+      <td style={c}>
         <a style={{ cursor: 'pointer', color: COLORS.muted }} title='Remove rule' onClick={onDelete}>
           <i className='fa fa-times' />
         </a>
@@ -220,11 +375,14 @@ interface RoleCardProps {
   resources: ResourceInfo[];
   names: Record<string, string[]>;
   invalid: boolean;
+  grip: React.ReactNode;
+  target: React.HTMLAttributes<HTMLElement>;
+  mark: Mark;
   onChange: (r: AccessRole) => void;
   onDelete: () => void;
 }
 
-const RoleCard = ({ role, resources, names, invalid, onChange, onDelete }: RoleCardProps) => {
+const RoleCard = ({ role, resources, names, invalid, grip, target, mark, onChange, onDelete }: RoleCardProps) => {
   // The name is committed on blur, so bindings follow a rename once and not
   // on every keystroke.
   const [name, setName] = React.useState(role.name);
@@ -236,16 +394,26 @@ const RoleCard = ({ role, resources, names, invalid, onChange, onDelete }: RoleC
   };
   const setRule = (i: number, r: AccessRule) => onChange({ ...role, rules: role.rules.map((x, j) => (j === i ? r : x)) });
   const addRule = () => onChange({ ...role, rules: [...role.rules, { resource: resources[0]?.name ?? 'streams', pattern: '*', actions: ['view'] }] });
+  const rules = useReorder((from, to) => onChange({ ...role, rules: move(role.rules, from, to) }));
+  // Rules sort by resource in the order of the resource list, then by items.
+  const rank = (r: AccessRule) => {
+    const i = resources.findIndex(x => x.name === r.resource);
+    return i < 0 ? resources.length : i;
+  };
+  const sortRules = () => onChange({ ...role, rules: role.rules.slice().sort((a, b) => rank(a) - rank(b) || byName(a.pattern, b.pattern)) });
   return (
     <div
+      {...target}
       style={{
         border: `1px solid ${invalid ? COLORS.warn : COLORS.border}`,
         borderRadius: 4,
         padding: '0.6em 0.8em',
         marginBottom: '0.8em',
         background: COLORS.surface,
+        boxShadow: mark === 'before' ? `0 -4px 0 0 ${DROP_COLOR}` : mark === 'after' ? `0 4px 0 0 ${DROP_COLOR}` : undefined,
       }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
+        {grip}
         <i className='fa fa-id-badge' style={{ color: COLORS.muted }} />
         <input
           className='argo-field'
@@ -292,6 +460,9 @@ const RoleCard = ({ role, resources, names, invalid, onChange, onDelete }: RoleC
                 rule={r}
                 resources={resources}
                 names={names}
+                grip={rules.grip(i)}
+                target={rules.target(i)}
+                mark={rules.markOf(i)}
                 onChange={next => setRule(i, next)}
                 onDelete={() => onChange({ ...role, rules: role.rules.filter((_, j) => j !== i) })}
               />
@@ -299,9 +470,12 @@ const RoleCard = ({ role, resources, names, invalid, onChange, onDelete }: RoleC
           </tbody>
         </table>
       )}
-      <button className='argo-button argo-button--base-o' style={{ marginTop: '0.4em' }} onClick={addRule}>
-        <i className='fa fa-plus' /> Add rule
-      </button>
+      <div style={{ display: 'flex', gap: '0.5em', marginTop: '0.4em' }}>
+        <button className='argo-button argo-button--base-o' onClick={addRule}>
+          <i className='fa fa-plus' /> Add rule
+        </button>
+        <SortButton title='Sort the rules by resource, then by items' disabled={role.rules.length < 2} onClick={sortRules} />
+      </div>
     </div>
   );
 };
@@ -331,6 +505,10 @@ const BindingsMatrix = ({ policy, onChange }: MatrixProps) => {
     set(i, b.user !== undefined ? { user: value, roles: b.roles } : { group: value, roles: b.roles });
   };
   const hasEveryone = bindings.some(b => b.group === EVERYONE);
+  const rows = useReorder((from, to) => onChange(move(bindings, from, to)));
+  // Everyone first, then groups, then users, each by name.
+  const kindRank = (b: AccessBinding) => (b.group === EVERYONE ? 0 : b.user !== undefined ? 2 : 1);
+  const sortBindings = () => onChange(bindings.slice().sort((a, b) => kindRank(a) - kindRank(b) || byName(a.group ?? a.user ?? '', b.group ?? b.user ?? '')));
   return (
     <>
       {bindings.length === 0 ? (
@@ -352,9 +530,11 @@ const BindingsMatrix = ({ policy, onChange }: MatrixProps) => {
             <tbody>
               {bindings.map((b, i) => {
                 const unknown = b.roles.filter(r => !roles.some(x => x.name === r));
+                const c = { ...cell, ...markCells(rows.markOf(i)) };
                 return (
-                  <tr key={i}>
-                    <td style={{ ...cell, whiteSpace: 'nowrap' }}>
+                  <tr key={i} {...rows.target(i)}>
+                    <td style={{ ...c, whiteSpace: 'nowrap' }}>
+                      {rows.grip(i)}{' '}
                       {b.group === EVERYONE ? (
                         <span title='Everyone who can open Zea'>
                           <i className='fa fa-globe' /> <b>everyone</b> <Muted>(*)</Muted>
@@ -379,11 +559,11 @@ const BindingsMatrix = ({ policy, onChange }: MatrixProps) => {
                       )}
                     </td>
                     {roles.map(r => (
-                      <td key={r.name} style={{ ...cell, textAlign: 'center' }}>
+                      <td key={r.name} style={{ ...c, textAlign: 'center' }}>
                         <input type='checkbox' checked={b.roles.includes(r.name)} onChange={e => toggle(i, r.name, e.target.checked)} />
                       </td>
                     ))}
-                    <td style={cell}>
+                    <td style={c}>
                       <a style={{ cursor: 'pointer', color: COLORS.muted }} title='Remove' onClick={() => onChange(bindings.filter((_, j) => j !== i))}>
                         <i className='fa fa-times' />
                       </a>
@@ -409,6 +589,7 @@ const BindingsMatrix = ({ policy, onChange }: MatrixProps) => {
           onClick={() => onChange([...bindings, { group: EVERYONE, roles: [] }])}>
           <i className='fa fa-globe' /> Add everyone
         </button>
+        <SortButton title='Sort: everyone, then groups, then users, each by name' disabled={bindings.length < 2} onClick={sortBindings} />
       </div>
     </>
   );
@@ -482,6 +663,16 @@ const CheckAccess = ({ client, policy, resources }: { client: ZeaClient; policy:
                     <b>{res.name}:</b>{' '}
                     {items.length === 0 ? (
                       <Muted>nothing</Muted>
+                    ) : res.name === AUDIT ? (
+                      <>
+                        {items.map((it, i) => (
+                          <React.Fragment key={i}>
+                            {i > 0 && ', '}
+                            <code>{it.name}</code> by {it.authors?.length ? it.authors.join(', ') : 'everyone'}
+                          </React.Fragment>
+                        ))}{' '}
+                        <Muted>(events of the items above only)</Muted>
+                      </>
                     ) : (
                       items.map((it, i) => (
                         <React.Fragment key={it.name}>
@@ -631,6 +822,10 @@ const PolicyEditor = ({ client, initial, onReload }: { client: ZeaClient; initia
     change({ ...draft, roles: [...draft.roles, { name, rules: [] }] });
   };
 
+  // The binding matrix shows a column per role in this order.
+  const roleOrder = useReorder((from, to) => change({ ...draft, roles: move(draft.roles, from, to) }));
+  const sortRoles = () => change({ ...draft, roles: draft.roles.slice().sort((a, b) => byName(a.name, b.name)) });
+
   const save = async () => {
     setBusy(true);
     setError('');
@@ -656,7 +851,7 @@ const PolicyEditor = ({ client, initial, onReload }: { client: ZeaClient; initia
   return (
     <>
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', marginBottom: '1em', flexWrap: 'wrap' }}>
-        <Muted>Roles grant actions on streams, connections and registries; bindings give roles to groups and users.</Muted>
+        <Muted>Roles grant actions on streams, connections, registries and the audit; bindings give roles to groups and users.</Muted>
         <div style={{ flex: 1 }} />
         {dirty && <span style={{ color: COLORS.warn }}>Unsaved changes</span>}
         {saved && !dirty && (
@@ -726,6 +921,8 @@ const PolicyEditor = ({ client, initial, onReload }: { client: ZeaClient; initia
           <>
             A rule grants actions on all items of a resource, on one item, or on the items whose names match a pattern (<b>Pattern...</b>), for
             example <code>dev-*</code>. Any action includes view; approve (streams only) does not include run. Saving a stream also needs run access to every connection it uses.
+            An <b>audit</b> rule lists the events whose action matches (for example <code>stream.run.*</code>) and, when authors are set, only those
+            done by these users or groups; only events of the items the user can view are listed, and policy changes stay with Zea admins.
           </>
         }>
         {draft.roles.map((r, i) => (
@@ -735,13 +932,19 @@ const PolicyEditor = ({ client, initial, onReload }: { client: ZeaClient; initia
             resources={doc.resources}
             names={doc.names ?? {}}
             invalid={problems.some(p => p.path.startsWith(`roles[${i}]`))}
+            grip={roleOrder.grip(i)}
+            target={roleOrder.target(i)}
+            mark={roleOrder.markOf(i)}
             onChange={next => setRole(i, next)}
             onDelete={() => deleteRole(i)}
           />
         ))}
-        <button className='argo-button argo-button--base-o' onClick={addRole}>
-          <i className='fa fa-plus' /> Add role
-        </button>
+        <div style={{ display: 'flex', gap: '0.5em' }}>
+          <button className='argo-button argo-button--base-o' onClick={addRole}>
+            <i className='fa fa-plus' /> Add role
+          </button>
+          <SortButton title='Sort the roles by name' disabled={draft.roles.length < 2} onClick={sortRoles} />
+        </div>
       </Section>
 
       <Section title='Bindings' help='Groups come from the Argo CD login (SSO). A user matches by username or user id.'>

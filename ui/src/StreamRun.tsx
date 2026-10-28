@@ -867,24 +867,53 @@ const FILTERS: { key: 'all' | StreamRunStatus; label: string }[] = [
 // StreamRunHistory lists the runs of a Stream.
 // StreamRunLine is one run: status, id, who and when, step dots, and the
 // params and message below. Wrapped lines show all params instead of
-// cutting them at the width.
-export const StreamRunLine = ({ run: r, stream, wrap, style }: { run: StreamRun; stream: string; wrap?: boolean; style?: React.CSSProperties }) => {
+// cutting them at the width. A brief line is a single row without the
+// params and message; they are in its tooltip.
+export const StreamRunLine = ({
+  run: r,
+  stream,
+  wrap,
+  brief,
+  style,
+}: {
+  run: StreamRun;
+  stream: string;
+  wrap?: boolean;
+  brief?: boolean;
+  style?: React.CSSProperties;
+}) => {
   const params = Object.entries(r.params);
   const details = [params.map(([k, v]) => `${k}=${v || '""'}`).join('  '), r.message].filter(Boolean).join(' · ');
+  const who = [r.user, ago(r.createdAt), duration(r.retriedAt || r.createdAt, r.finishedAt)].filter(Boolean).join(' · ');
+  const open = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    navigate({ view: 'streams', stream, srun: r.id });
+  };
+  if (brief) {
+    return (
+      <div
+        onClick={open}
+        title={details || undefined}
+        style={{ cursor: 'pointer', display: 'flex', gap: '0.5em', alignItems: 'baseline', minWidth: 0, whiteSpace: 'nowrap', ...style }}>
+        <StreamStatusIcon status={r.status} />
+        <StreamStatusLabel status={r.status} />
+        <code style={{ flex: '0 0 auto' }}>{r.id}</code>
+        {r.attempt > 1 && <Badge>attempt {r.attempt}</Badge>}
+        <StepDots run={r} />
+        {waitingSteps(r).length > 0 && <ApprovalBadge steps={waitingSteps(r)} />}
+        <span style={{ ...ellipsis, flex: '1 1 0', color: COLORS.muted }}>{who}</span>
+      </div>
+    );
+  }
   return (
-    <div
-      onClick={e => {
-        e.stopPropagation();
-        navigate({ view: 'streams', stream, srun: r.id });
-      }}
-      style={{ cursor: 'pointer', display: 'flex', gap: '0.6em', alignItems: 'baseline', ...style }}>
+    <div onClick={open} style={{ cursor: 'pointer', display: 'flex', gap: '0.6em', alignItems: 'baseline', ...style }}>
       <StreamStatusIcon status={r.status} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: 'flex', gap: '0.6em', alignItems: 'baseline', flexWrap: 'wrap' }}>
           <StreamStatusLabel status={r.status} />
           <code>{r.id}</code>
           {r.attempt > 1 && <Badge title={r.retriedBy ? `Retried by ${r.retriedBy} ${ago(r.retriedAt)}` : undefined}>attempt {r.attempt}</Badge>}
-          <Muted>{[r.user, ago(r.createdAt), duration(r.retriedAt || r.createdAt, r.finishedAt)].filter(Boolean).join(' · ')}</Muted>
+          <Muted>{who}</Muted>
           <StepDots run={r} />
           {waitingSteps(r).length > 0 && <ApprovalBadge steps={waitingSteps(r)} />}
         </div>

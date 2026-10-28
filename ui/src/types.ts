@@ -501,8 +501,11 @@ export interface StreamRun {
 // pattern; bindings give roles to groups ("*" is everyone) or users.
 export interface AccessRule {
   resource: string;
+  // A glob over item names; for audit rules a glob over event actions.
   pattern: string;
   actions: string[];
+  // Audit rules only: "user:<glob>" or "group:<glob>"; empty is everyone.
+  authors?: string[];
 }
 
 export interface AccessRole {
@@ -559,6 +562,8 @@ export interface PolicyValidation {
 export interface AuditEvent {
   time: string;
   user: string;
+  // The author's groups the access policy cares about.
+  groups?: string[];
   action: string;
   resource?: string;
   name?: string;
@@ -582,5 +587,5 @@ export interface PolicyEvaluation {
   isAdmin: boolean;
   roles: string[];
   // Per resource, the existing items the user has some action on.
-  items: Record<string, { name: string; actions: string[] }[]>;
+  items: Record<string, { name: string; actions: string[]; authors?: string[] }[]>;
 }

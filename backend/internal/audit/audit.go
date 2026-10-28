@@ -51,9 +51,11 @@ var ErrNotFound = errors.New("no audit events for this day")
 
 // Event is one recorded action.
 type Event struct {
-	Time   time.Time `json:"time"`
-	User   string    `json:"user"`
-	Action string    `json:"action"`
+	Time time.Time `json:"time"`
+	User string    `json:"user"`
+	// Groups are the author's groups the access policy cares about.
+	Groups []string `json:"groups,omitempty"`
+	Action string   `json:"action"`
 	// Resource and Name identify the item acted on, when known.
 	Resource string `json:"resource,omitempty"`
 	Name     string `json:"name,omitempty"`

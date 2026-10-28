@@ -4,6 +4,7 @@ import (
 	"path"
 	"slices"
 	"sort"
+	"strings"
 
 	"github.com/harchschoolboy/argocd-zea/backend/internal/argocd"
 )
@@ -132,6 +133,102 @@ func grants(r Rule, action string) bool {
 		return len(r.Actions) > 0
 	}
 	return slices.Contains(r.Actions, action)
+}
+
+// SeesEvent reports whether an audit rule of the user covers an event of
+// action by the author user with the given groups. The item of the event is
+// checked separately.
+func (x *Access) SeesEvent(action, user string, groups []string) bool {
+	if x == nil {
+		return false
+	}
+	if x.admin {
+		return true
+	}
+	for _, r := range x.rules {
+		if r.Resource == ResourceAudit && grants(r, ActionView) && matches(r.Pattern, action) && authorMatches(r.Authors, user, groups) {
+			return true
+		}
+	}
+	return false
+}
+
+// AuditRules are the audit rules granted to the user.
+func (x *Access) AuditRules() []Rule {
+	out := []Rule{}
+	if x == nil {
+		return out
+	}
+	if x.admin {
+		return append(out, Rule{Resource: ResourceAudit, Pattern: "*", Actions: []string{ActionView}})
+	}
+	for _, r := range x.rules {
+		if r.Resource == ResourceAudit && grants(r, ActionView) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func authorMatches(authors []string, user string, groups []string) bool {
+	if len(authors) == 0 {
+		return true
+	}
+	for _, a := range authors {
+		if n, ok := strings.CutPrefix(a, AuthorUser); ok {
+			if user != "" && matches(n, user) {
+				return true
+			}
+		} else if n, ok := strings.CutPrefix(a, AuthorGroup); ok {
+			for _, g := range groups {
+				if matches(n, g) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// AuthorGroups picks the groups of id that a policy may ask about when it
+// filters audit events: the groups it binds and the groups its audit rules
+// name. Keeping only these keeps the stored events small.
+func AuthorGroups(p Policy, id *argocd.Identity, extra func(string) bool, limit int) []string {
+	if id == nil {
+		return nil
+	}
+	var patterns []string
+	for _, b := range p.Bindings {
+		if b.Group != "" && b.Group != Everyone {
+			patterns = append(patterns, b.Group)
+		}
+	}
+	for _, r := range p.Roles {
+		for _, rule := range r.Rules {
+			for _, a := range rule.Authors {
+				if n, ok := strings.CutPrefix(a, AuthorGroup); ok {
+					patterns = append(patterns, n)
+				}
+			}
+		}
+	}
+	var out []string
+	for _, g := range id.Groups {
+		if len(out) >= limit {
+			break
+		}
+		keep := extra != nil && extra(g)
+		for _, pat := range patterns {
+			if keep {
+				break
+			}
+			keep = pat == g || matches(pat, g)
+		}
+		if keep && !slices.Contains(out, g) {
+			out = append(out, g)
+		}
+	}
+	return out
 }
 
 func matches(pattern, name string) bool {

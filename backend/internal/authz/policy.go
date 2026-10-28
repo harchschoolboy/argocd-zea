@@ -16,6 +16,11 @@ const (
 	ResourceConnections = "connections"
 	ResourceStreams     = "streams"
 	ResourceRegistries  = "registries"
+	// ResourceAudit grants the Audit page. The pattern of its rules matches
+	// event actions ("stream.run.*") and Authors limits whose events are
+	// listed; a non-admin also sees only the events of the items they may
+	// view.
+	ResourceAudit = "audit"
 )
 
 // Actions a rule can grant. Every action also grants view.
@@ -38,6 +43,13 @@ const (
 	maxPatternLen   = 253
 	maxSubjectLen   = 256
 	maxDescription  = 500
+	maxAuthors      = 50
+)
+
+// Author prefixes of audit rules.
+const (
+	AuthorUser  = "user:"
+	AuthorGroup = "group:"
 )
 
 // ResourceInfo describes a resource type and the actions it supports.
@@ -50,6 +62,7 @@ var resources = []ResourceInfo{
 	{Name: ResourceStreams, Actions: []string{ActionView, ActionRun, ActionApprove, ActionEdit}},
 	{Name: ResourceConnections, Actions: []string{ActionView, ActionRun, ActionEdit}},
 	{Name: ResourceRegistries, Actions: []string{ActionView, ActionEdit}},
+	{Name: ResourceAudit, Actions: []string{ActionView}},
 }
 
 // Resources lists the resource types in display order.
@@ -73,9 +86,13 @@ func actionsOf(resource string) []string {
 // Rule grants actions on the resources whose name matches Pattern.
 type Rule struct {
 	Resource string `json:"resource" yaml:"resource"`
-	// Pattern is a glob over resource names ("*", "deploy-*", "app-?").
+	// Pattern is a glob over resource names ("*", "deploy-*", "app-?"); for
+	// audit rules it is a glob over event actions ("stream.run.*").
 	Pattern string   `json:"pattern" yaml:"pattern"`
 	Actions []string `json:"actions" yaml:"actions,flow"`
+	// Authors limits an audit rule to the events of these authors:
+	// "user:<glob>" or "group:<glob>". Empty means every author.
+	Authors []string `json:"authors,omitempty" yaml:"authors,omitempty,flow"`
 }
 
 // Role is a named set of rules.
@@ -139,6 +156,7 @@ func (p *Policy) Normalize() {
 				rule.Pattern = "*"
 			}
 			rule.Actions = canonicalActions(rule.Resource, rule.Actions)
+			rule.Authors = normalizeAuthors(rule.Authors)
 		}
 	}
 	for i := range p.Bindings {
@@ -153,6 +171,23 @@ func (p *Policy) Normalize() {
 		}
 		b.Roles = roles
 	}
+}
+
+// normalizeAuthors trims and dedupes authors; "*" stands for every author,
+// which is the same as none.
+func normalizeAuthors(in []string) []string {
+	var out []string
+	for _, a := range in {
+		a = strings.TrimSpace(a)
+		if a == "" || slices.Contains(out, a) {
+			continue
+		}
+		if a == "*" {
+			return nil
+		}
+		out = append(out, a)
+	}
+	return out
 }
 
 // canonicalActions orders known actions like Resources() and keeps unknown
@@ -225,6 +260,25 @@ func (p *Policy) Problems() []Problem {
 					add(rat+".actions", "%s do not support action %q (expected %s)", rule.Resource, a, strings.Join(allowed, ", "))
 				}
 			}
+			if len(rule.Authors) > 0 && rule.Resource != ResourceAudit {
+				add(rat+".authors", "only audit rules have authors")
+			}
+			if len(rule.Authors) > maxAuthors {
+				add(rat+".authors", "at most %d authors are allowed", maxAuthors)
+			}
+			for _, a := range rule.Authors {
+				name, ok := authorName(a)
+				switch {
+				case !ok || name == "":
+					add(rat+".authors", "author %q must be user:<name> or group:<name>", a)
+				case len(name) > maxSubjectLen:
+					add(rat+".authors", "author %q is longer than %d characters", a, maxSubjectLen)
+				default:
+					if _, err := path.Match(name, ""); err != nil {
+						add(rat+".authors", "invalid pattern in author %q", a)
+					}
+				}
+			}
 		}
 	}
 	subjects := map[string]bool{}
@@ -257,6 +311,14 @@ func (p *Policy) Problems() []Problem {
 		}
 	}
 	return out
+}
+
+// authorName strips the user: or group: prefix of an audit author.
+func authorName(a string) (string, bool) {
+	if n, ok := strings.CutPrefix(a, AuthorUser); ok {
+		return n, true
+	}
+	return strings.CutPrefix(a, AuthorGroup)
 }
 
 func subjectLabel(b Binding) string {

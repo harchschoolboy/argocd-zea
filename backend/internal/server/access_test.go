@@ -37,7 +37,7 @@ func TestPolicyAPI(t *testing.T) {
 		!strings.Contains(body["yaml"].(string), "legacy-devs") || mustJSON(body["admins"]) != `{"groups":["zea-admins"],"users":["admin"]}` {
 		t.Fatalf("get: %d %v", code, body)
 	}
-	if names, _ := body["names"].(map[string]any); len(names) != 3 || len(names["connections"].([]any)) == 0 || names["streams"] == nil || names["registries"] == nil {
+	if names, _ := body["names"].(map[string]any); len(names) != 4 || len(names["connections"].([]any)) == 0 || names["streams"] == nil || names["registries"] == nil {
 		t.Fatalf("names: %v", body["names"])
 	}
 	version := body["version"]
@@ -72,7 +72,7 @@ func TestPolicyAPI(t *testing.T) {
 
 	e.setPolicy(t, draft)
 	_, body = e.do(t, "GET", "/api/v1/me", nil, as("zoe", "qa"))
-	if mustJSON(body["permissions"]) != `{"connections":[],"registries":[],"streams":["view","run"]}` {
+	if mustJSON(body["permissions"]) != `{"audit":[],"connections":[],"registries":[],"streams":["view","run"]}` {
 		t.Fatalf("me permissions: %v", body)
 	}
 	// The migrated roles are gone: alice no longer sees anything.

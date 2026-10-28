@@ -56,7 +56,7 @@ prints a ready-to-merge values snippet for the argo-cd chart.
   `argocd-server` to `github.com` to download the UI extension at startup.
 
 In the commands below the Argo CD namespace is `argocd`, the Helm release and
-the anchor Application are both called `zea`, and the release is `v0.6.1`.
+the anchor Application are both called `zea`, and the release is `v0.7.0`.
 
 ### Step 1. Install the backend
 
@@ -109,7 +109,7 @@ set `image.tag`.
 #### Option B: with the Helm CLI
 
 ```bash
-helm install zea oci://ghcr.io/harchschoolboy/charts/zea --version 0.6.1 \
+helm install zea oci://ghcr.io/harchschoolboy/charts/zea --version 0.7.0 \
   -n argocd \
   --set anchorApplication=argocd:<existing-app> \
   --set 'admins.users={admin}'
@@ -159,7 +159,7 @@ server:
     extensionList: []
   initContainers:
     - name: extension-zea
-      image: ghcr.io/harchschoolboy/argocd-zea-backend:0.6.1
+      image: ghcr.io/harchschoolboy/argocd-zea-backend:0.7.0
       args: [install-ui, /tmp/extensions]
       securityContext:
         runAsNonRoot: true
@@ -223,9 +223,9 @@ server:
           - name: EXTENSION_NAME
             value: zea
           - name: EXTENSION_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.6.1/extension-zea.tar.gz
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.7.0/extension-zea.tar.gz
           - name: EXTENSION_CHECKSUM_URL
-            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.6.1/extension-zea_checksums.txt
+            value: https://github.com/harchschoolboy/argocd-zea/releases/download/v0.7.0/extension-zea_checksums.txt
 ```
 
 #### Argo CD that manages itself (GitOps)
@@ -290,7 +290,7 @@ one Zea installation.
        spec:
          initContainers:
            - name: extension-zea
-             image: ghcr.io/harchschoolboy/argocd-zea-backend:0.6.1
+             image: ghcr.io/harchschoolboy/argocd-zea-backend:0.7.0
              args: [install-ui, /tmp/extensions]
              securityContext:
                runAsNonRoot: true
@@ -341,6 +341,7 @@ Who can do what:
 | Open Zea | Argo CD RBAC: `extensions, invoke, zea` and `applications, get` on the anchor |
 | Everything, including the access policy | Zea admin: `admins.users` (Argo CD usernames) or `admins.groups` (SSO groups) in the chart values |
 | See, run or edit a Stream, Connection or Registry | A role of the Zea access policy bound to the user or one of their groups |
+| See the Audit tab | Zea admin, or a role with an `audit` rule (only the events it covers) |
 
 The example Argo CD policy grants Zea to `role:readonly`. To limit it to an
 SSO group instead:
@@ -355,9 +356,11 @@ Local accounts such as `admin` have no groups, so list them in
 `admins.users`.
 
 **Zea access policy.** Admins edit it on the **Access** tab: roles are rules
-of resource (`streams`, `connections`, `registries`), a name pattern (`*`,
+of resource (`streams`, `connections`, `registries`, `audit`), a name pattern (`*`,
 `dev-*`, ...) and actions; bindings give roles to groups, users or everyone
-(`*`). The tab shows what a policy grants a given user before it is saved,
+(`*`). Roles, rules and bindings can be dragged into any order or sorted by
+name; the role columns of the bindings follow the order of the roles. The
+tab shows what a policy grants a given user before it is saved,
 and imports and exports it as YAML.
 
 | Action | Streams | Connections | Registries |
@@ -381,10 +384,33 @@ Details: [docs/design.md](docs/design.md#access).
 **Audit log.** Every change made through Zea (policy, Connections,
 Registries, Streams, starting, cancelling and retrying runs, approvals) is
 written to the backend log as an `audit` line with the user, the action, the
-target and the result. Admins also see it on the **Audit** tab: the events
+target and the result. Admins see it on the **Audit** tab: the events
 are kept in one ConfigMap per day (`zea-audit-YYYYMMDD` in the Connections
 namespace) for `audit.retentionDays` (30 by default; 0 keeps only the log
 lines). Parameter values and credentials are never recorded.
+
+Other users see the Audit tab through an `audit` rule with view. Its pattern
+matches event actions (`*`, `stream.run.*`, `connection.update`) and its
+optional `authors` limit whose events are listed (`group:<glob>`,
+`user:<glob>`), so QA can audit what admins do and developers what QA does.
+They only see events of the Streams, Connections and Registries they can
+view; policy changes stay visible to admins only. An event keeps the
+author's groups that the policy binds or names as authors, plus the admin
+groups (at most 20), so a group added to the policy later does not match
+older events.
+
+```yaml
+roles:
+  - name: qa
+    rules:
+      - resource: audit
+        pattern: "*"
+        actions: [view]
+        authors: ["group:zea-admins"]
+      - resource: streams
+        pattern: "*"
+        actions: [view]
+```
 
 Upgrading from 0.2: on the first start the backend turns the old
 per-Connection `allowedGroups` into the policy (one role per group with view
@@ -688,7 +714,9 @@ on it). While a card is dragged, **New category** (asks for the name) and
 - **Run** on a stream card starts a Stream without params after a
   confirmation; **Run...** opens the start form of a Stream with params.
 - A stream card lists every running or queued run with its params, or the
-  last run when nothing runs; click a run to open it.
+  last run when nothing runs, each run as a nested card; click a run to
+  open it. The compact list shows one short line per run (params in the
+  tooltip).
 - **Run**: fill the params and follow the steps live; click a step to see
   its jobs. **Cancel** stops the active provider runs. **Retry failed**
   reruns the steps that did not succeed in the same run (succeeded steps are

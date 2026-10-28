@@ -173,6 +173,12 @@ func (a *api) itemNames(ctx context.Context) (map[string][]string, error) {
 			names[authz.ResourceRegistries] = append(names[authz.ResourceRegistries], reg.Name)
 		}
 	}
+	for _, action := range auditActions {
+		// Policy events stay admin-only, so rules cannot ask for them.
+		if !strings.HasPrefix(action, "policy.") {
+			names[authz.ResourceAudit] = append(names[authz.ResourceAudit], action)
+		}
+	}
 	for _, list := range names {
 		sort.Strings(list)
 	}
@@ -261,10 +267,12 @@ type evaluateInput struct {
 	Groups []string     `json:"groups"`
 }
 
-// accessItem is one existing item with the actions a user has on it.
+// accessItem is one existing item with the actions a user has on it. For
+// audit, Name is the action pattern of a rule and Authors its authors.
 type accessItem struct {
 	Name    string   `json:"name"`
 	Actions []string `json:"actions"`
+	Authors []string `json:"authors,omitempty"`
 }
 
 // handleEvaluatePolicy shows what a draft policy grants a user on the
@@ -296,6 +304,13 @@ func (a *api) handleEvaluatePolicy(w http.ResponseWriter, r *http.Request) {
 	items := map[string][]accessItem{}
 	for _, res := range authz.Resources() {
 		list := []accessItem{}
+		if res.Name == authz.ResourceAudit {
+			for _, rule := range acc.AuditRules() {
+				list = append(list, accessItem{Name: rule.Pattern, Actions: []string{authz.ActionView}, Authors: rule.Authors})
+			}
+			items[res.Name] = list
+			continue
+		}
 		for _, n := range names[res.Name] {
 			if acts := acc.Actions(res.Name, n); len(acts) > 0 {
 				list = append(list, accessItem{Name: n, Actions: acts})

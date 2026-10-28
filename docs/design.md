@@ -188,8 +188,13 @@ bindings:
 | `streams` | See it, its runs and their jobs; Export | Start, cancel and retry runs | Approve or reject approval steps | Create, change, delete, draft, import |
 | `connections` | See it, branches, pipelines, runs and jobs, images; Test | Start, cancel and rerun pipelines | - | Create, change, delete; see which credential keys are set |
 | `registries` | See it and which visible Connections use it | - | - | Create, change, delete; Test |
+| `audit` | The Audit tab, filtered (see [Audit](#audit)) | - | - | - |
 
 - `pattern` is a glob over item names (`*`, `?`, `[a-z]`); empty means `*`.
+  For `audit` rules it is a glob over event actions (`stream.run.*`), and
+  the optional `authors` (`user:<glob>`, `group:<glob>`; empty is every
+  author) limit whose events the rule lists. `authors` is only valid on
+  audit rules; at most 50 per rule.
   Any action includes view; approve does not include run. Rules only grant; there is no deny. Items the
   user may not view answer 404, missing actions 403. Creating needs edit
   on the new name.
@@ -216,9 +221,13 @@ bindings:
   Application, checked through the Argo CD API on behalf of the user.
 
 The Access tab edits roles (a rule table with View / Run / Approve / Edit per
-resource and pattern) and bindings (a matrix of subjects and roles),
-validates while editing, imports and exports the YAML and shows what the
-unsaved policy grants a given user and groups on the existing items.
+resource and pattern, and the actions and authors of audit rules) and
+bindings (a matrix of subjects and roles), validates while editing, imports
+and exports the YAML and shows what the unsaved policy grants a given user
+and groups on the existing items. Roles, rules and bindings are reordered by
+dragging their grip or sorted by name (bindings: everyone, groups, users);
+the order is cosmetic and saved as is, and the role columns of the bindings
+follow the role order.
 
 **Migration from `allowedGroups`.** Before 0.3.0 a Connection listed the
 groups that may use it (`allowedGroups`, `*` for everyone) and only admins
@@ -232,7 +241,8 @@ each Connection that still sets it) and should be removed.
 ### Audit
 
 Every request that changes something (any method but GET) is recorded after
-it is handled: time, user, action (e.g. `connection.update`,
+it is handled: time, user, the user's groups that matter to the policy,
+action (e.g. `connection.update`,
 `stream.run.start`, `stream.step.approve`), resource, name, target (a run
 or step), HTTP status and error. Parameter values, request bodies and
 credentials are not recorded.
@@ -245,9 +255,18 @@ credentials are not recorded.
   later events of that day only go to the log and are counted as dropped.
 - Days older than `ZEA_AUDIT_RETENTION_DAYS` (chart `audit.retentionDays`,
   default 30, up to 366) are deleted; 0 keeps only the log lines.
-- `GET /api/v1/audit?day=YYYYMMDD` (admins) returns the stored days and the
+- `GET /api/v1/audit?day=YYYYMMDD` returns the stored days and the
   events of one day, newest first. The **Audit** tab shows them with a day
   picker, a text filter and links to the changed items.
+- Admins see every event. Other users need an `audit` rule with view and
+  see an event only when one of their audit rules matches its action and
+  author (by username, or by a group stored with the event) and they may
+  view its Stream, Connection or Registry (the Stream order and categories
+  go to anyone who sees some Stream). Policy events are admin-only.
+- The groups stored with an event are the author's groups that the policy
+  binds or names in audit authors, plus the admin groups, at most 20; this
+  keeps the day ConfigMaps small, but a group added to the policy later
+  does not match older events.
 
 ## Providers
 
@@ -726,7 +745,9 @@ The page has the tabs **Streams** (default), **Connections**,
 - **List** - cards (or compact rows) with the display name, badges (draft,
   managed in git, problems), stages and steps count, Connections used and
   every active (running or queued) run with its params, or the last run
-  when none is active (polled while one runs). Tabs per category; on **All** the
+  when none is active (polled while one runs), each run a nested card.
+  Compact rows show one line per run with its params in the tooltip.
+  Tabs per category; on **All** the
   Streams can be grouped into category columns that wrap with the screen
   width. Tabs and column headers can be dragged to reorder the categories
   (edit on some Stream; All stays first, "Without category" last), cards to
@@ -782,7 +803,7 @@ The page has the tabs **Streams** (default), **Connections**,
 - **History** - runs of the Stream with status filters (including
   Queued), a step status strip, params, attempt number and paging.
 
-Admins also get the **Audit** tab (`?view=audit`), see [Audit](#audit).
+Admins and users with an `audit` rule also get the **Audit** tab (`?view=audit`), see [Audit](#audit).
 
 ### Backend API (phase 7)
 
@@ -819,7 +840,7 @@ Admins also get the **Audit** tab (`?view=audit`), see [Audit](#audit).
 | `PUT /api/v1/policy` | admin | Save `{policy, version}`; 400 with problems, 409 on a stale version or a read-only ConfigMap |
 | `POST /api/v1/policy/validate` | admin | `{policy}` or `{yaml}` -> normalized `{policy, problems, yaml}` |
 | `POST /api/v1/policy/evaluate` | admin | `{policy, user, groups}` -> `{isAdmin, roles, items}`: actions per existing item |
-| `GET /api/v1/audit?day=` | admin | `{days, day, events, dropped, retention}`: stored days and the events of one day, newest first |
+| `GET /api/v1/audit?day=` | audit view (filtered for non-admins) | `{days, day, events, dropped, retention}`: stored days and the events of one day, newest first |
 
 ### Plan
 

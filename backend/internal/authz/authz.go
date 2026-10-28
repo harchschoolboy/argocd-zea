@@ -101,6 +101,20 @@ func (a *Authorizer) ForPolicy(p Policy, id *argocd.Identity) *Access {
 	return Evaluate(p, id)
 }
 
+// maxEventGroups caps the groups stored with one audit event.
+const maxEventGroups = 20
+
+// EventGroups are the groups of id worth storing with an audit event: the
+// admin groups and the groups the current policy binds or names as audit
+// authors. Groups added to the policy later are not in older events.
+func (a *Authorizer) EventGroups(ctx context.Context, id *argocd.Identity) []string {
+	var p Policy
+	if doc, err := a.current(ctx); err == nil && doc.Error == "" {
+		p = doc.Policy
+	}
+	return AuthorGroups(p, id, func(g string) bool { return a.adminGroups[g] }, maxEventGroups)
+}
+
 func (a *Authorizer) current(ctx context.Context) (*Document, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

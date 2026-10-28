@@ -28,9 +28,19 @@ const StreamBadges = ({ stream }: { stream: Stream }) => (
 
 const CARD_POLL_MS = 10_000;
 
+// streamFrame outlines a Stream card or row; its runs are nested cards. The
+// border also shows where Argo CD's white-box has no frame of its own.
+const streamFrame: React.CSSProperties = {
+  border: `1px solid ${COLORS.border}`,
+  borderRadius: 6,
+  cursor: 'pointer',
+  margin: 0,
+};
+
 // StreamRuns lists every active run of a Stream (running or queued, newest
-// first), or the last run when none is active.
-const StreamRuns = ({ stream, runs }: { stream: string; runs: { data?: StreamRun[]; error: string } }) => {
+// first), or the last run when none is active. Brief runs are one line each,
+// without params.
+const StreamRuns = ({ stream, runs, brief }: { stream: string; runs: { data?: StreamRun[]; error: string }; brief?: boolean }) => {
   if (runs.error && !runs.data) {
     return <Muted>runs unavailable</Muted>;
   }
@@ -43,14 +53,20 @@ const StreamRuns = ({ stream, runs }: { stream: string; runs: { data?: StreamRun
   const active = runs.data.filter(r => runActive(r.status));
   const shown = active.length > 0 ? active : runs.data.slice(0, 1);
   return (
-    <div style={{ minWidth: 0 }}>
-      {shown.map((r, i) => (
+    <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: brief ? '0.25em' : '0.4em' }}>
+      {shown.map(r => (
         <StreamRunLine
           key={r.id}
           run={r}
           stream={stream}
           wrap
-          style={i > 0 ? { borderTop: `1px solid ${COLORS.border}`, marginTop: '0.3em', paddingTop: '0.3em' } : undefined}
+          brief={brief}
+          style={{
+            border: `1px solid ${COLORS.border}`,
+            borderRadius: 4,
+            background: COLORS.surface,
+            padding: brief ? '0.15em 0.45em' : '0.4em 0.6em',
+          }}
         />
       ))}
     </div>
@@ -130,7 +146,7 @@ const StreamCard = ({
       <div
         {...drag}
         className='white-box'
-        style={{ padding: '0.4em 1em', cursor: 'pointer', margin: 0, ...drag?.style }}
+        style={{ ...streamFrame, padding: '0.5em 1em', ...drag?.style }}
         title={tooltip}
         onClick={() => navigate({ view: 'streams', stream: stream.name })}>
         {narrow ? (
@@ -138,7 +154,7 @@ const StreamCard = ({
             <div style={{ flex: 1, minWidth: 0 }}>
               {title}
               <div style={{ fontSize: '0.85em', marginTop: '0.15em' }}>
-                <StreamRuns stream={stream.name} runs={runs} />
+                <StreamRuns stream={stream.name} runs={runs} brief />
               </div>
             </div>
             {runButton}
@@ -147,7 +163,7 @@ const StreamCard = ({
           <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 2fr) 110px', gap: '1em', alignItems: 'center' }}>
             {title}
             <div style={{ minWidth: 0 }}>
-              <StreamRuns stream={stream.name} runs={runs} />
+              <StreamRuns stream={stream.name} runs={runs} brief />
             </div>
             <div style={{ textAlign: 'right' }}>{runButton}</div>
           </div>
@@ -165,7 +181,7 @@ const StreamCard = ({
     <div
       {...drag}
       className='white-box'
-      style={{ padding: '0.8em 1em', cursor: 'pointer', margin: 0, ...drag?.style }}
+      style={{ ...streamFrame, padding: '0.8em 1em', ...drag?.style }}
       title={label !== stream.name ? stream.name : undefined}
       onClick={() => navigate({ view: 'streams', stream: stream.name })}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.4em' }}>
@@ -186,7 +202,7 @@ const StreamCard = ({
           <ErrorText text={error} />
         </div>
       )}
-      <div style={{ marginTop: '0.5em', paddingTop: '0.4em', borderTop: `1px solid ${COLORS.border}` }}>
+      <div style={{ marginTop: '0.6em' }}>
         <StreamRuns stream={stream.name} runs={runs} />
       </div>
     </div>

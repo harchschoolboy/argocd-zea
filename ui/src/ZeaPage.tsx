@@ -148,7 +148,7 @@ const TABS: { view: Page; label: string; icon: string; shown?: (me: Me) => boole
   { view: 'connections', label: 'Connections', icon: 'fa fa-plug' },
   { view: 'registries', label: 'Registries', icon: 'fa fa-database', shown: me => can(me.permissions.registries, 'view') },
   { view: 'access', label: 'Access', icon: 'fa fa-user-shield', shown: me => me.isAdmin },
-  { view: 'audit', label: 'Audit', icon: 'fa fa-history', shown: me => me.isAdmin },
+  { view: 'audit', label: 'Audit', icon: 'fa fa-history', shown: me => me.isAdmin || can(me.permissions.audit, 'view') },
 ];
 
 const tabsFor = (me: Me) => TABS.filter(t => !t.shown || t.shown(me));
@@ -195,7 +195,7 @@ const Pages = ({ client, ctx }: { client: ZeaClient; ctx: Context }) => {
       {page === 'connections' && <Connections client={client} ctx={ctx} />}
       {page === 'registries' && <RegistriesView client={client} canCreate={can(ctx.me.permissions.registries, 'edit')} />}
       {page === 'access' && <AccessView client={client} />}
-      {page === 'audit' && <AuditView client={client} />}
+      {page === 'audit' && <AuditView client={client} admin={ctx.me.isAdmin} />}
     </>
   );
 };
